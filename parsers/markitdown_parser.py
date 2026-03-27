@@ -25,6 +25,8 @@ class MarkitdownParser(BaseParser):
         )
 
     def _parse_sync(self, source: bytes | str, filename: str) -> ParseResult:
+        if not _AVAILABLE:
+            raise RuntimeError("markitdown is not installed. Run: uv add markitdown")
         md = MarkItDown()
         suffix = Path(filename).suffix or ".txt"
 

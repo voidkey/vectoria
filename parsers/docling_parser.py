@@ -13,7 +13,7 @@ except ImportError:
 
 class DoclingParser(BaseParser):
     engine_name = "docling"
-    supported_types = [".pdf", ".docx", ".pptx", ".xlsx", ".xls"]
+    supported_types = [".pdf", ".docx", ".pptx", ".xlsx", ".xls", ".png", ".jpg", ".jpeg", ".tiff", ".bmp"]
 
     @classmethod
     def is_available(cls) -> bool:
