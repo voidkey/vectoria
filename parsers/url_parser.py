@@ -16,7 +16,7 @@ class UrlParser(BaseParser):
 
     async def parse(self, source: bytes | str, filename: str = "", **kwargs) -> ParseResult:
         url = source.decode() if isinstance(source, bytes) else source
-        return await asyncio.get_event_loop().run_in_executor(None, self._parse_sync, url)
+        return await asyncio.get_running_loop().run_in_executor(None, self._parse_sync, url)
 
     def _parse_sync(self, url: str) -> ParseResult:
         downloaded = trafilatura.fetch_url(url)
@@ -48,6 +48,10 @@ class UrlParser(BaseParser):
                 resp = httpx.get(abs_url, timeout=10, follow_redirects=True)
                 if resp.status_code == 200:
                     fname = abs_url.rsplit("/", 1)[-1].split("?")[0] or "image.jpg"
+                    # deduplicate filename
+                    if fname in images:
+                        stem, _, ext = fname.rpartition(".")
+                        fname = f"{stem}_{len(images)}.{ext}" if ext else f"{fname}_{len(images)}"
                     images[fname] = resp.content
             except Exception:
                 continue
