@@ -5,6 +5,8 @@ from api.schemas import QueryRequest, QueryResponse
 from config import get_settings
 from rag.embedder import Embedder
 from rag.pipeline import build_default_pipeline
+from rag.steps.query_rewrite import QueryRewriteStep
+from rag.steps.rerank import RerankStep
 from store.pgvector import PgVectorStore
 
 router = APIRouter(prefix="/knowledgebases")
@@ -27,9 +29,13 @@ async def query_kb(kb_id: str, body: QueryRequest):
 
     # Apply per-request overrides
     if not body.query_rewrite:
-        pipeline.steps[0].enabled = False
+        for step in pipeline.steps:
+            if isinstance(step, QueryRewriteStep):
+                step.enabled = False
     if body.rerank:
-        pipeline.steps[3].enabled = True
+        for step in pipeline.steps:
+            if isinstance(step, RerankStep):
+                step.enabled = True
 
     try:
         ctx = await pipeline.run(body.query, kb_id=kb_id, top_k=body.top_k)

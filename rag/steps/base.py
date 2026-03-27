@@ -18,7 +18,8 @@ class PipelineContext:
 
 
 class PipelineStep(ABC):
-    enabled: bool = True
+    def __init__(self, enabled: bool = True):
+        self.enabled = enabled
 
     @abstractmethod
     async def run(self, ctx: PipelineContext) -> PipelineContext: ...

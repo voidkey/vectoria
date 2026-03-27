@@ -6,6 +6,7 @@ from rag.embedder import Embedder
 
 class RetrieveStep(PipelineStep):
     def __init__(self, store: VectorStore, embedder: Embedder):
+        super().__init__()
         self._store = store
         self._embedder = embedder
 

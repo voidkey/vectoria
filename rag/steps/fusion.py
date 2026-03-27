@@ -4,6 +4,7 @@ from store.pgvector import rrf_fuse
 
 class FusionStep(PipelineStep):
     def __init__(self, k: int = 60):
+        super().__init__()
         self._k = k
 
     async def run(self, ctx: PipelineContext) -> PipelineContext:
