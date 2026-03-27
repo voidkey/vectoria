@@ -29,29 +29,25 @@ class ParserRegistry:
 
     def auto_select(self, filename: str = "", url: str = "") -> str:
         if url:
-            preferred = ["url"]
+            search_type = "url"
+            preferred = _EXT_PREFERENCE.get("url", ["url"])
         else:
             ext = ("." + filename.rsplit(".", 1)[-1]).lower() if "." in filename else ""
+            search_type = ext
             preferred = _EXT_PREFERENCE.get(ext, ["markitdown"])
 
-        # First try preferred engines that are registered and available
+        # 1. Try preferred engines in order (by engine name)
         result = self._first_available(preferred)
         if result in self._engines:
             return result
 
-        # Fallback: search all registered engines by supported_types
-        if url:
-            search_type = "url"
-        else:
-            ext = ("." + filename.rsplit(".", 1)[-1]).lower() if "." in filename else ""
-            search_type = ext
+        # 2. Fallback: find any registered+available engine by supported_types
+        for name, cls in self._engines.items():
+            if search_type in cls.supported_types and cls.is_available():
+                return name
 
-        for engine_name, parser_cls in self._engines.items():
-            if search_type in parser_cls.supported_types and parser_cls.is_available():
-                return engine_name
-
-        # Final fallback: return first from preference list regardless
-        return preferred[0] if preferred else ""
+        # 3. Nothing registered — return preferred[0], get_by_engine will raise
+        return preferred[0]
 
     def _first_available(self, engines: list[str]) -> str:
         for name in engines:
