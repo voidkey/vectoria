@@ -30,40 +30,36 @@ class ParserRegistry:
     def auto_select(self, filename: str = "", url: str = "") -> str:
         if url:
             preferred = ["url"]
-            result = self._first_available(preferred)
+        else:
+            ext = ("." + filename.rsplit(".", 1)[-1]).lower() if "." in filename else ""
+            preferred = _EXT_PREFERENCE.get(ext, ["markitdown"])
 
-            # If the result is not registered, find any registered engine that supports URLs
-            if result not in self._engines:
-                for engine_name, parser_cls in self._engines.items():
-                    if "url" in parser_cls.supported_types and parser_cls.is_available():
-                        return engine_name
-
+        # First try preferred engines that are registered and available
+        result = self._first_available(preferred)
+        if result in self._engines:
             return result
 
-        ext = ("." + filename.rsplit(".", 1)[-1]).lower() if "." in filename else ""
-        preferred = _EXT_PREFERENCE.get(ext, ["markitdown"])
+        # Fallback: search all registered engines by supported_types
+        if url:
+            search_type = "url"
+        else:
+            ext = ("." + filename.rsplit(".", 1)[-1]).lower() if "." in filename else ""
+            search_type = ext
 
-        # Try preferred engines first
-        result = self._first_available(preferred)
+        for engine_name, parser_cls in self._engines.items():
+            if search_type in parser_cls.supported_types and parser_cls.is_available():
+                return engine_name
 
-        # If the result is not registered, find any registered engine that supports this extension
-        if result not in self._engines:
-            for engine_name, parser_cls in self._engines.items():
-                if ext in parser_cls.supported_types and parser_cls.is_available():
-                    return engine_name
-
-        return result
+        # Final fallback: return first from preference list regardless
+        return preferred[0] if preferred else ""
 
     def _first_available(self, engines: list[str]) -> str:
         for name in engines:
             cls = self._engines.get(name)
             if cls and cls.is_available():
                 return name
-        # fallback: return first registered engine that matches the list, or first in list if none match
-        for name in engines:
-            if name in self._engines:
-                return name
-        return engines[0] if engines else ""
+        # fallback: return first regardless of availability
+        return engines[0]
 
     def list_engines(self) -> list[dict]:
         return [
