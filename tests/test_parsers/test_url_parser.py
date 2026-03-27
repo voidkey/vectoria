@@ -1,5 +1,5 @@
 import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 from parsers.url_parser import UrlParser
 from parsers.base import ParseResult
 

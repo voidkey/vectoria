@@ -20,7 +20,7 @@ class MarkitdownParser(BaseParser):
         return _AVAILABLE
 
     async def parse(self, source: bytes | str, filename: str = "", **kwargs) -> ParseResult:
-        return await asyncio.get_event_loop().run_in_executor(
+        return await asyncio.get_running_loop().run_in_executor(
             None, self._parse_sync, source, filename
         )
 
@@ -28,16 +28,17 @@ class MarkitdownParser(BaseParser):
         md = MarkItDown()
         suffix = Path(filename).suffix or ".txt"
 
-        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
-            tmp.write(source if isinstance(source, bytes) else source.encode())
-            tmp_path = tmp.name
-
+        tmp_path = ""
         try:
+            with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+                tmp.write(source if isinstance(source, bytes) else source.encode())
+                tmp_path = tmp.name
             result = md.convert(tmp_path)
             content = result.text_content or ""
         except Exception:
             content = ""
         finally:
-            Path(tmp_path).unlink(missing_ok=True)
+            if tmp_path:
+                Path(tmp_path).unlink(missing_ok=True)
 
         return ParseResult(content=content, images={}, title=Path(filename).stem)
