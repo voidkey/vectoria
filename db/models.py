@@ -34,6 +34,10 @@ class Document(Base):
     source: Mapped[str] = mapped_column(Text, default="", server_default="")
     parse_engine: Mapped[str] = mapped_column(String(50), default="", server_default="")
     chunk_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    status: Mapped[str] = mapped_column(
+        String(20), default="processing", server_default="processing", nullable=False
+    )
+    error_msg: Mapped[str] = mapped_column(Text, default="", server_default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     knowledge_base: Mapped["KnowledgeBase"] = relationship(back_populates="documents")

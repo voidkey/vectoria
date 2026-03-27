@@ -1,4 +1,5 @@
 import asyncio
+import io
 import tempfile
 from pathlib import Path
 
@@ -6,6 +7,7 @@ from parsers.base import BaseParser, ParseResult
 
 try:
     from docling.document_converter import DocumentConverter
+    from docling.datamodel.pipeline_options import PdfPipelineOptions
     _DOCLING_AVAILABLE = True
 except ImportError:
     _DOCLING_AVAILABLE = False
@@ -25,7 +27,16 @@ class DoclingParser(BaseParser):
         )
 
     def _parse_sync(self, source: bytes | str, filename: str) -> ParseResult:
-        converter = DocumentConverter()
+        from docling.datamodel.base_models import InputFormat
+        from docling.document_converter import ImageFormatOption, PdfFormatOption
+
+        pipeline_opts = PdfPipelineOptions(generate_picture_images=True)
+        converter = DocumentConverter(
+            format_options={
+                InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_opts),
+                InputFormat.IMAGE: ImageFormatOption(pipeline_options=pipeline_opts),
+            },
+        )
 
         suffix = Path(filename).suffix or ".pdf"
         with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
@@ -53,12 +64,14 @@ class DoclingParser(BaseParser):
         """Extract embedded images from Docling result."""
         images: dict[str, bytes] = {}
         try:
-            for page in result.document.pages:
-                for img_item in getattr(page, "images", []):
-                    fname = getattr(img_item, "uri", None) or f"img_{len(images)}.png"
-                    data = getattr(img_item, "data", None)
-                    if data:
-                        images[str(fname)] = data
+            for idx, picture in enumerate(result.document.pictures):
+                pil_img = picture.get_image(doc=result.document)
+                if pil_img is None:
+                    continue
+                buf = io.BytesIO()
+                pil_img.save(buf, format="PNG")
+                fname = f"image_{idx:04d}.png"
+                images[fname] = buf.getvalue()
         except Exception:
             pass
         return images

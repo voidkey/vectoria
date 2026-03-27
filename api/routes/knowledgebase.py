@@ -1,20 +1,12 @@
-from contextlib import asynccontextmanager
-
 from fastapi import APIRouter, HTTPException
 from sqlalchemy import select
 
 from api.schemas import KnowledgeBaseCreate, KnowledgeBaseResponse
-from db.base import get_session as _get_session
+from db.base import get_session
 from db.models import KnowledgeBase
 from store.pgvector import PgVectorStore
 
 router = APIRouter(prefix="/knowledgebases")
-
-
-# Wrap the async generator so it can be used as an async context manager,
-# and also so tests can patch it as a regular callable returning a context manager.
-def get_session():
-    return asynccontextmanager(_get_session)()
 
 
 @router.post("", response_model=KnowledgeBaseResponse, status_code=201)

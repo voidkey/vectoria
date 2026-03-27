@@ -4,7 +4,9 @@ A lightweight RAG (Retrieval-Augmented Generation) backend service built with Fa
 
 ## Features
 
-- **Multi-format document ingestion** — PDF, DOCX, PPTX, XLSX, CSV, Markdown, plain text, and URLs
+- **Multi-format document ingestion** — PDF, DOCX, PPTX, XLSX, CSV, Markdown, plain text, images, and URLs
+- **Async document processing** — documents are ingested asynchronously with status tracking (processing → completed / failed)
+- **Image extraction** — automatically extracts and serves images from parsed documents
 - **Hybrid search** — combines vector similarity search with BM25 keyword search via Reciprocal Rank Fusion
 - **Modular RAG pipeline** — Query Rewrite → Retrieve → Fusion → Rerank → Context Expand → Generate
 - **OpenAI-compatible** — works with any OpenAI-compatible LLM/embedding endpoint (OpenAI, DeepSeek, Ollama, etc.)
@@ -58,10 +60,11 @@ The API is now available at `http://localhost:8000`. Interactive docs at `http:/
 ### Document Parsing
 
 ```
-POST /analyze
+POST /analyze/file   # upload a file (multipart/form-data)
+POST /analyze/url    # provide a URL (JSON body)
 ```
 
-Parse a file or URL into Markdown without storing it.
+Parse a file or URL into Markdown without storing it. Returns parsed Markdown along with extracted images.
 
 ### Knowledge Bases
 
@@ -74,11 +77,13 @@ DELETE /knowledgebases/{kb_id}   # delete
 ### Documents
 
 ```
-POST   /knowledgebases/{kb_id}/documents          # ingest file
-POST   /knowledgebases/{kb_id}/documents/url      # ingest URL
-GET    /knowledgebases/{kb_id}/documents          # list
-DELETE /knowledgebases/{kb_id}/documents/{doc_id} # delete
+POST   /knowledgebases/{kb_id}/documents            # ingest file or URL
+GET    /knowledgebases/{kb_id}/documents            # list
+GET    /knowledgebases/{kb_id}/documents/{doc_id}   # get status
+DELETE /knowledgebases/{kb_id}/documents/{doc_id}   # delete
 ```
+
+Document ingestion is asynchronous — the API returns immediately with `status: "processing"`. Poll the single-document endpoint to check progress (`completed` or `failed`).
 
 ### Query
 
@@ -104,14 +109,20 @@ All settings are configured via environment variables (see [`.env.example`](.env
 | `OPENAI_BASE_URL` | `https://api.openai.com/v1` | LLM API base URL |
 | `OPENAI_API_KEY` | — | API key |
 | `LLM_MODEL` | `gpt-4o` | Model for generation and query rewrite |
+| `EMBEDDING_BASE_URL` | *(falls back to OPENAI_BASE_URL)* | Embedding API base URL |
+| `EMBEDDING_API_KEY` | *(falls back to OPENAI_API_KEY)* | Embedding API key |
 | `EMBEDDING_MODEL` | `text-embedding-3-small` | Embedding model |
 | `EMBEDDING_DIMENSIONS` | `1536` | Embedding vector dimensions |
 | `VECTOR_STORE` | `pgvector` | Vector store backend (`pgvector` or `chroma`) |
 | `DATABASE_URL` | `postgresql+asyncpg://...` | PostgreSQL connection string |
+| `STORAGE_PATH` | `./data/files` | Directory for extracted images |
 | `DEFAULT_PARSE_ENGINE` | `auto` | Parser engine (`auto`, `docling`, `markitdown`, `mineru`) |
 | `ENABLE_QUERY_REWRITE` | `true` | Rewrite queries with LLM before retrieval |
 | `ENABLE_RERANKER` | `false` | Enable cross-encoder reranking |
+| `RERANKER_BASE_URL` | — | Reranker API URL |
 | `MINERU_API_URL` | — | MinerU remote API URL (optional, for GPU-based PDF OCR) |
+| `MINERU_BACKEND` | `pipeline` | MinerU backend mode |
+| `MINERU_LANGUAGE` | `ch` | MinerU OCR language |
 
 ## Optional: OCR with PaddleOCR
 
