@@ -9,6 +9,12 @@ class ImageInfo(BaseModel):
     type: str = "unknown"
 
 
+class AnalyzeURLRequest(BaseModel):
+    url: str
+    engine: str = "auto"
+    extract_images: bool = True
+
+
 class AnalyzeResponse(BaseModel):
     title: str
     source: str
@@ -35,6 +41,8 @@ class DocumentResponse(BaseModel):
     source: str
     engine: str
     chunk_count: int
+    status: str
+    error_msg: str = ""
     created_at: str
 
 
