@@ -7,12 +7,25 @@ from functools import lru_cache
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
-    # LLM / Embedding
+    # LLM
     openai_base_url: str = "https://api.openai.com/v1"
     openai_api_key: SecretStr = SecretStr("")
+    llm_model: str = "gpt-4o"
+
+    # Embedding (falls back to LLM settings if not set)
+    embedding_base_url: str = ""
+    embedding_api_key: SecretStr = SecretStr("")
     embedding_model: str = "text-embedding-3-small"
     embedding_dimensions: int = 1536
-    llm_model: str = "gpt-4o"
+
+    @property
+    def effective_embedding_base_url(self) -> str:
+        return self.embedding_base_url or self.openai_base_url
+
+    @property
+    def effective_embedding_api_key(self) -> str:
+        key = self.embedding_api_key.get_secret_value()
+        return key if key else self.openai_api_key.get_secret_value()
 
     # Vector store
     vector_store: Literal["pgvector", "chroma"] = "pgvector"

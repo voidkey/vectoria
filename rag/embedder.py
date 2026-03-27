@@ -6,8 +6,8 @@ class Embedder:
     def __init__(self):
         cfg = get_settings()
         self._client = AsyncOpenAI(
-            base_url=cfg.openai_base_url,
-            api_key=cfg.openai_api_key.get_secret_value(),
+            base_url=cfg.effective_embedding_base_url,
+            api_key=cfg.effective_embedding_api_key,
         )
         self._model = cfg.embedding_model
 
