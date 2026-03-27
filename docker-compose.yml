@@ -15,5 +15,19 @@ services:
       timeout: 5s
       retries: 10
 
+  app:
+    build: .
+    ports:
+      - "8000:8000"
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@db/vectoria
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - vectoria_files:/app/data/files
+
 volumes:
   vectoria_pgdata:
+  vectoria_files:

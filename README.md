@@ -21,10 +21,23 @@ A lightweight RAG (Retrieval-Augmented Generation) backend service built with Fa
 
 ## Quick Start
 
+### Docker (recommended)
+
+```bash
+cp .env.example .env
+# Edit .env with your API key and settings
+
+docker compose up -d
+```
+
+That's it. The API is available at `http://localhost:8000`, interactive docs at `http://localhost:8000/docs`.
+
+### Local development
+
 **1. Start the database**
 
 ```bash
-docker compose up -d
+docker compose up -d db
 ```
 
 **2. Install dependencies**
@@ -32,6 +45,7 @@ docker compose up -d
 ```bash
 pip install uv
 uv sync
+playwright install --with-deps chromium
 ```
 
 **3. Configure environment**

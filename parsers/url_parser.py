@@ -33,7 +33,11 @@ class UrlParser(BaseParser):
             return await asyncio.get_running_loop().run_in_executor(None, self._parse_sync, url)
 
         async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True)
+            # --no-sandbox is required when running as root (e.g. inside Docker)
+            browser = await p.chromium.launch(
+                headless=True,
+                args=["--no-sandbox", "--disable-setuid-sandbox"],
+            )
             page = await browser.new_page(
                 user_agent=(
                     "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
