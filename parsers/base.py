@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from abc import ABC, abstractmethod
+from typing import ClassVar
 
 
 @dataclass
@@ -10,8 +11,8 @@ class ParseResult:
 
 
 class BaseParser(ABC):
-    engine_name: str = ""
-    supported_types: list[str] = []  # file extensions like ".pdf", or ["url"]
+    engine_name: ClassVar[str] = ""
+    supported_types: ClassVar[list[str]] = []  # file extensions like ".pdf", or ["url"]
 
     @classmethod
     def is_available(cls) -> bool:
