@@ -8,6 +8,11 @@ import trafilatura
 from parsers.base import BaseParser, ParseResult
 
 _IMG_TAG = re.compile(r'<img[^>]+src=["\']([^"\']+)["\']', re.IGNORECASE)
+_WECHAT_HOSTS = {"mp.weixin.qq.com"}
+
+
+def _is_wechat_url(url: str) -> bool:
+    return urlparse(url).hostname in _WECHAT_HOSTS
 
 
 class UrlParser(BaseParser):
@@ -16,7 +21,42 @@ class UrlParser(BaseParser):
 
     async def parse(self, source: bytes | str, filename: str = "", **kwargs) -> ParseResult:
         url = source.decode() if isinstance(source, bytes) else source
+        if _is_wechat_url(url):
+            return await self._parse_with_playwright(url)
         return await asyncio.get_running_loop().run_in_executor(None, self._parse_sync, url)
+
+    async def _parse_with_playwright(self, url: str) -> ParseResult:
+        try:
+            from playwright.async_api import async_playwright
+        except ImportError:
+            # Playwright not installed, fall back to trafilatura
+            return await asyncio.get_running_loop().run_in_executor(None, self._parse_sync, url)
+
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True)
+            page = await browser.new_page(
+                user_agent=(
+                    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
+                    "AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 "
+                    "MicroMessenger/8.0.43 NetType/WIFI Language/zh_CN"
+                ),
+            )
+            await page.goto(url, wait_until="networkidle", timeout=30000)
+            html = await page.content()
+            await browser.close()
+
+        text = trafilatura.extract(
+            html,
+            include_images=True,
+            include_links=False,
+            output_format="markdown",
+        ) or ""
+
+        title_match = re.search(r"<title[^>]*>([^<]+)</title>", html, re.IGNORECASE)
+        title = title_match.group(1).strip() if title_match else urlparse(url).netloc
+
+        images = self._download_images(html, url)
+        return ParseResult(content=text, images=images, title=title)
 
     def _parse_sync(self, url: str) -> ParseResult:
         downloaded = trafilatura.fetch_url(url)
