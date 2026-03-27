@@ -6,13 +6,17 @@ from store.base import SearchResult
 
 
 class EchoStep(PipelineStep):
+    def __init__(self):
+        super().__init__()
+
     async def run(self, ctx: PipelineContext) -> PipelineContext:
         ctx.answer = f"echo:{ctx.query}"
         return ctx
 
 
 class DisabledStep(PipelineStep):
-    enabled = False
+    def __init__(self):
+        super().__init__(enabled=False)
 
     async def run(self, ctx: PipelineContext) -> PipelineContext:
         ctx.answer = "should not run"

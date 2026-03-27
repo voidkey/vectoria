@@ -42,3 +42,9 @@ async def test_query_returns_answer(client):
 async def test_query_empty_query(client):
     resp = await client.post("/knowledgebases/kb1/query", json={"query": ""})
     assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_query_whitespace_only(client):
+    resp = await client.post("/knowledgebases/kb1/query", json={"query": "   "})
+    assert resp.status_code == 422

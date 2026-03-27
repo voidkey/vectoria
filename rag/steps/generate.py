@@ -8,6 +8,7 @@ Cite your sources using [1], [2], etc. at the end of sentences. Only use informa
 
 class GenerateStep(PipelineStep):
     def __init__(self, llm_client: AsyncOpenAI):
+        super().__init__()
         self._client = llm_client
         self._model = get_settings().llm_model
 
