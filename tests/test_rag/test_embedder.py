@@ -35,3 +35,4 @@ async def test_embed_batch():
 
     assert len(results) == 2
     assert results[0] == [0.1, 0.2]
+    assert results[1] == [0.3, 0.4]
