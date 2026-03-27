@@ -66,7 +66,6 @@ async def ingest_document(
 
     # Upsert to vector store
     doc_id = str(uuid.uuid4())
-    store = await PgVectorStore.create()
     chunk_data = [
         ChunkData(
             id=c.id, doc_id=doc_id, kb_id=kb_id,
@@ -76,8 +75,8 @@ async def ingest_document(
         for i, c in enumerate(chunks)
         if c.parent_id is None  # only index child (or flat) chunks
     ]
-    await store.upsert(chunk_data)
-    await store.close()
+    async with await PgVectorStore.create() as store:
+        await store.upsert(chunk_data)
 
     # Save metadata
     async with get_session() as session:

@@ -132,3 +132,9 @@ class PgVectorStore(VectorStore):
 
     async def close(self) -> None:
         await self._conn.close()
+
+    async def __aenter__(self) -> "PgVectorStore":
+        return self
+
+    async def __aexit__(self, *args) -> None:
+        await self.close()
