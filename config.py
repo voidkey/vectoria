@@ -1,3 +1,4 @@
+from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import Literal
 from functools import lru_cache
@@ -8,14 +9,14 @@ class Settings(BaseSettings):
 
     # LLM / Embedding
     openai_base_url: str = "https://api.openai.com/v1"
-    openai_api_key: str = ""
+    openai_api_key: SecretStr = SecretStr("")
     embedding_model: str = "text-embedding-3-small"
     embedding_dimensions: int = 1536
     llm_model: str = "gpt-4o"
 
     # Vector store
     vector_store: Literal["pgvector", "chroma"] = "pgvector"
-    database_url: str = "postgresql+asyncpg://postgres:postgres@localhost/vectoria"
+    database_url: SecretStr = SecretStr("postgresql+asyncpg://postgres:postgres@localhost/vectoria")
 
     # File storage (parsed images)
     storage_path: str = "./data/files"
