@@ -22,6 +22,8 @@ dependencies = [
     "python-multipart>=0.0.9",
     "aiofiles>=23.0",
     "playwright>=1.58.0",
+    "torch>=2.0",        # explicit: force CPU-only build via [tool.uv.sources]
+    "torchvision>=0.15", # explicit: force CPU-only build via [tool.uv.sources]
 ]
 
 [project.optional-dependencies]
