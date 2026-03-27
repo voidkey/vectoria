@@ -73,3 +73,5 @@ registry = ParserRegistry()
 # Auto-register built-in parsers
 from parsers.docling_parser import DoclingParser  # noqa: E402
 registry.register(DoclingParser)
+from parsers.mineru_parser import MinerUParser  # noqa: E402
+registry.register(MinerUParser)
