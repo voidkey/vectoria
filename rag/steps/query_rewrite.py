@@ -12,6 +12,9 @@ class QueryRewriteStep(PipelineStep):
         self._model = get_settings().llm_model
 
     async def run(self, ctx: PipelineContext) -> PipelineContext:
+        if not self.enabled:
+            ctx.rewritten_query = ctx.query
+            return ctx
         try:
             resp = await self._client.chat.completions.create(
                 model=self._model,
