@@ -51,9 +51,8 @@ async def delete_kb(kb_id: str):
             raise HTTPException(status_code=404, detail="KnowledgeBase not found")
 
         # Delete vectors
-        store = await PgVectorStore.create()
-        await store.delete_by_kb(kb_id)
-        await store.close()
+        async with await PgVectorStore.create() as store:
+            await store.delete_by_kb(kb_id)
 
         await session.delete(kb)
         await session.commit()
