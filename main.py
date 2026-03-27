@@ -3,6 +3,7 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 from config import get_settings
+from api.routes.analyze import router as analyze_router
 
 settings = get_settings()
 
@@ -18,6 +19,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Vectoria", version="0.1.0", lifespan=lifespan)
 app.mount("/files", StaticFiles(directory=settings.storage_path), name="files")
+app.include_router(analyze_router)
 
 
 @app.get("/")
