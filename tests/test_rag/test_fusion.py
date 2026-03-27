@@ -29,3 +29,10 @@ def test_rrf_vector_only():
     vector_results = [_r("a", 0.9), _r("b", 0.8)]
     fused = rrf_fuse(vector_results, [], k=60)
     assert [r.chunk_id for r in fused] == ["a", "b"]
+
+
+def test_rrf_deduplicates_vector_only():
+    """Vector-only path must also deduplicate."""
+    vector_results = [_r("a", 0.9), _r("a", 0.8)]
+    fused = rrf_fuse(vector_results, [], k=60)
+    assert len([r for r in fused if r.chunk_id == "a"]) == 1

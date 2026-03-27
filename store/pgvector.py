@@ -23,10 +23,6 @@ def rrf_fuse(
         if r.chunk_id not in best:
             best[r.chunk_id] = r
 
-    if not keyword_results:
-        # Vector-only: preserve original scores
-        return list(vector_results)
-
     return sorted(
         [SearchResult(chunk_id=cid, content=best[cid].content, score=s, doc_id=best[cid].doc_id, parent_id=best[cid].parent_id)
          for cid, s in scores.items()],
@@ -36,7 +32,7 @@ def rrf_fuse(
 
 
 _CREATE_EXTENSION = "CREATE EXTENSION IF NOT EXISTS vector"
-_CREATE_TABLE = """
+_CREATE_CHUNKS_TABLE = """
 CREATE TABLE IF NOT EXISTS chunks (
     id          TEXT PRIMARY KEY,
     doc_id      TEXT NOT NULL,
@@ -46,11 +42,13 @@ CREATE TABLE IF NOT EXISTS chunks (
     chunk_index INTEGER NOT NULL DEFAULT 0,
     parent_id   TEXT,
     content_tsv tsvector GENERATED ALWAYS AS (to_tsvector('simple', content)) STORED
-);
-CREATE INDEX IF NOT EXISTS chunks_kb_id_idx ON chunks (kb_id);
-CREATE INDEX IF NOT EXISTS chunks_doc_id_idx ON chunks (doc_id);
-CREATE INDEX IF NOT EXISTS chunks_tsv_idx ON chunks USING GIN (content_tsv);
+)
 """
+_CREATE_INDEXES = [
+    "CREATE INDEX IF NOT EXISTS chunks_kb_id_idx ON chunks (kb_id)",
+    "CREATE INDEX IF NOT EXISTS chunks_doc_id_idx ON chunks (doc_id)",
+    "CREATE INDEX IF NOT EXISTS chunks_tsv_idx ON chunks USING GIN (content_tsv)",
+]
 
 
 class PgVectorStore(VectorStore):
@@ -69,7 +67,9 @@ class PgVectorStore(VectorStore):
 
     async def _ensure_schema(self) -> None:
         await self._conn.execute(_CREATE_EXTENSION)
-        await self._conn.execute(_CREATE_TABLE.format(dim=self._dims))
+        await self._conn.execute(_CREATE_CHUNKS_TABLE.format(dim=self._dims))
+        for idx_sql in _CREATE_INDEXES:
+            await self._conn.execute(idx_sql)
 
     async def upsert(self, chunks: list[ChunkData]) -> None:
         records = [
@@ -80,7 +80,7 @@ class PgVectorStore(VectorStore):
             """
             INSERT INTO chunks (id, doc_id, kb_id, content, embedding, chunk_index, parent_id)
             VALUES ($1, $2, $3, $4, $5::vector, $6, $7)
-            ON CONFLICT (id) DO UPDATE SET content=EXCLUDED.content, embedding=EXCLUDED.embedding
+            ON CONFLICT (id) DO UPDATE SET content=EXCLUDED.content, embedding=EXCLUDED.embedding, chunk_index=EXCLUDED.chunk_index, parent_id=EXCLUDED.parent_id
             """,
             records,
         )
