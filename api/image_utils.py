@@ -40,18 +40,28 @@ async def upload_images(result, extract_images: bool, prefix: str = "") -> list[
     obj_storage = await get_storage()
     key_prefix = prefix or f"images/_analyze/{uuid.uuid4()}"
 
+    used_names: set[str] = set()
+
     async def _upload_one(img_name: str, img_bytes: bytes) -> ImageInfo:
-        safe_name = Path(img_name).name
+        base = Path(img_name.split("?")[0]).name or "image.jpg"
+        safe_name = base
+        i = 1
+        while safe_name in used_names:
+            stem, _, ext = base.rpartition(".")
+            safe_name = f"{stem}_{i}.{ext}" if ext else f"{base}_{i}"
+            i += 1
+        used_names.add(safe_name)
+
         key = f"{key_prefix}/{safe_name}"
         content_type = mimetypes.guess_type(safe_name)[0] or "image/png"
         await obj_storage.put(key, img_bytes, content_type=content_type)
-        url = await obj_storage.presign_url(key)
-        return ImageInfo(id=safe_name, url=url, context="", type="unknown")
+        presigned = await obj_storage.presign_url(key)
+        return ImageInfo(id=safe_name, url=presigned, context="", type="unknown")
 
-    images = await asyncio.gather(
+    infos = await asyncio.gather(
         *(_upload_one(name, data) for name, data in result.images.items())
     )
-    return list(images)
+    return list(infos)
 
 
 async def upload_and_store_images(
@@ -74,21 +84,41 @@ async def upload_and_store_images(
 
     obj_storage = await get_storage()
     key_prefix = f"images/{kb_id}/{doc_id}"
-    storage_keys: dict[str, str] = {}  # filename -> S3 key
+    used_names: set[str] = set()
 
-    async def _upload_one(meta) -> None:
-        safe_name = Path(meta.filename).name
-        key = f"{key_prefix}/{safe_name}"
+    def _derive_filename(raw_key: str) -> str:
+        """Derive a safe, unique filename from a key (may be a URL or filename)."""
+        base = Path(raw_key.split("?")[0]).name or "image.jpg"
+        if base not in used_names:
+            used_names.add(base)
+            return base
+        stem, _, ext = base.rpartition(".")
+        i = 1
+        while True:
+            candidate = f"{stem}_{i}.{ext}" if ext else f"{base}_{i}"
+            if candidate not in used_names:
+                used_names.add(candidate)
+                return candidate
+            i += 1
+
+    # Derive filenames and prepare upload data
+    upload_plan: list[tuple[str, str, str]] = []  # (original_key, safe_name, s3_key)
+    for meta in image_metas:
+        safe_name = _derive_filename(meta.filename)
+        s3_key = f"{key_prefix}/{safe_name}"
+        upload_plan.append((meta.filename, safe_name, s3_key))
+        meta.filename = safe_name  # replace URL/raw key with safe filename
+
+    async def _upload_one(original_key: str, s3_key: str) -> None:
+        safe_name = Path(s3_key).name
         content_type = mimetypes.guess_type(safe_name)[0] or "image/png"
-        await obj_storage.put(key, images[meta.filename], content_type=content_type)
-        storage_keys[meta.filename] = key
+        await obj_storage.put(s3_key, images[original_key], content_type=content_type)
 
-    # Upload all images in parallel
-    await asyncio.gather(*(_upload_one(m) for m in image_metas))
+    await asyncio.gather(*(_upload_one(ok, sk) for ok, _, sk in upload_plan))
 
     # Create DB records
     async with get_session() as session:
-        for meta in image_metas:
+        for (_, _, s3_key), meta in zip(upload_plan, image_metas):
             min_vision_dim = 200
             if vision_configured and (
                 (meta.width is None or meta.height is None)
@@ -102,7 +132,7 @@ async def upload_and_store_images(
                 id=str(uuid.uuid4()),
                 doc_id=doc_id,
                 kb_id=kb_id,
-                storage_key=storage_keys[meta.filename],
+                storage_key=s3_key,
                 filename=meta.filename,
                 width=meta.width,
                 height=meta.height,
