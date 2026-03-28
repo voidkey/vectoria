@@ -8,5 +8,5 @@ router = APIRouter()
 async def health():
     return {
         "status": "ok",
-        "parsers": registry.list_engines(),
+        "supported_types": registry.supported_types(),
     }
