@@ -6,6 +6,10 @@ class AnalyzeURLRequest(BaseModel):
     extract_images: bool = True
 
 
+class DocumentURLRequest(BaseModel):
+    url: str
+
+
 class OutlineItem(BaseModel):
     level: int
     title: str

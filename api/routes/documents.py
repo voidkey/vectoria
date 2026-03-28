@@ -1,12 +1,10 @@
 import asyncio
 import uuid
 import logging
-from typing import Optional
-
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException
+from fastapi import APIRouter, UploadFile, File, HTTPException
 from sqlalchemy import select
 
-from api.schemas import DocumentResponse, DocumentIngestResponse
+from api.schemas import DocumentResponse, DocumentIngestResponse, DocumentURLRequest
 from db.base import get_session
 from db.models import Document, KnowledgeBase
 from parsers.registry import registry
@@ -129,41 +127,14 @@ async def _analyze_images_with_vision(kb_id: str, doc_id: str):
     await asyncio.gather(*(_describe_one(img) for img in pending))
 
 
-@router.post("/{kb_id}/documents", response_model=DocumentIngestResponse, status_code=201)
-async def ingest_document(
-    kb_id: str,
-    url: Optional[str] = Form(None),
-    file: Optional[UploadFile] = File(None),
-):
-    # Validate KB exists
-    async with get_session() as session:
-        kb_result = await session.execute(select(KnowledgeBase).where(KnowledgeBase.id == kb_id))
-        if not kb_result.scalar_one_or_none():
-            raise HTTPException(status_code=404, detail="KnowledgeBase not found")
+async def _ingest(
+    kb_id: str, raw: bytes | str, *, filename: str, source: str,
+    selected_engine: str, storage_key: str | None, doc_id: str | None = None,
+) -> DocumentIngestResponse:
+    """Shared ingest logic: parse, store images, create DB record, kick off background tasks."""
+    doc_id = doc_id or str(uuid.uuid4())
 
-    if not url and not file:
-        raise HTTPException(status_code=422, detail="Provide either 'url' or 'file'")
-
-    doc_id = str(uuid.uuid4())
-    storage_key = None
-
-    # --- Synchronous phase: parse immediately ---
-    if url:
-        selected_engine = registry.auto_select(url=url)
-        raw: bytes | str = url
-        source = url
-        filename = ""
-    else:
-        filename = file.filename or "upload"
-        selected_engine = registry.auto_select(filename=filename)
-        raw = await file.read()
-        source = filename
-
-        obj_storage = await get_storage()
-        storage_key = f"upload_files/{kb_id}/{doc_id}/{filename}"
-        await obj_storage.put(storage_key, raw, content_type=file.content_type or "")
-
-    # Parse (synchronous — this is what the agent waits for)
+    # Parse (synchronous — this is what the caller waits for)
     try:
         parser = registry.get_by_engine(selected_engine)
         parse_result = await parser.parse(raw, filename=filename)
@@ -215,13 +186,47 @@ async def ingest_document(
     )
 
 
-@router.get("/{kb_id}/documents", response_model=list[DocumentResponse])
-async def list_documents(kb_id: str):
+async def _validate_kb(kb_id: str):
     async with get_session() as session:
         kb_result = await session.execute(select(KnowledgeBase).where(KnowledgeBase.id == kb_id))
         if not kb_result.scalar_one_or_none():
             raise HTTPException(status_code=404, detail="KnowledgeBase not found")
 
+
+@router.post("/{kb_id}/documents/file", response_model=DocumentIngestResponse, status_code=201)
+async def ingest_file(kb_id: str, file: UploadFile = File(...)):
+    await _validate_kb(kb_id)
+
+    filename = file.filename or "upload"
+    selected_engine = registry.auto_select(filename=filename)
+    raw = await file.read()
+
+    doc_id = str(uuid.uuid4())
+    obj_storage = await get_storage()
+    storage_key = f"upload_files/{kb_id}/{doc_id}/{filename}"
+    await obj_storage.put(storage_key, raw, content_type=file.content_type or "")
+
+    return await _ingest(
+        kb_id, raw, filename=filename, source=filename,
+        selected_engine=selected_engine, storage_key=storage_key, doc_id=doc_id,
+    )
+
+
+@router.post("/{kb_id}/documents/url", response_model=DocumentIngestResponse, status_code=201)
+async def ingest_url(kb_id: str, body: DocumentURLRequest):
+    await _validate_kb(kb_id)
+
+    selected_engine = registry.auto_select(url=body.url)
+    return await _ingest(
+        kb_id, body.url, filename="", source=body.url,
+        selected_engine=selected_engine, storage_key=None,
+    )
+
+
+@router.get("/{kb_id}/documents", response_model=list[DocumentResponse])
+async def list_documents(kb_id: str):
+    await _validate_kb(kb_id)
+    async with get_session() as session:
         result = await session.execute(
             select(Document).where(Document.kb_id == kb_id).order_by(Document.created_at.desc())
         )
