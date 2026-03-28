@@ -47,10 +47,9 @@ async def _process_document(doc_id: str, kb_id: str, raw: bytes | str, filename:
         parser = registry.get_by_engine(selected_engine)
         parse_result = await parser.parse(raw, filename=filename)
 
-        # Store extracted images to object storage
         if parse_result.images:
-            from api.routes.analyze import _build_images
-            await _build_images(
+            from api.image_utils import upload_images
+            await upload_images(
                 parse_result, extract_images=True,
                 prefix=f"images/{kb_id}/{doc_id}",
             )
@@ -113,7 +112,6 @@ async def ingest_document(
         raw = await file.read()
         source = filename
 
-        # Save original file to object storage
         obj_storage = await get_storage()
         storage_key = f"upload_files/{kb_id}/{doc_id}/{filename}"
         await obj_storage.put(storage_key, raw, content_type=file.content_type or "")
