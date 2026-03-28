@@ -129,6 +129,7 @@ async def _analyze_images_with_vision(kb_id: str, doc_id: str):
 
 async def _download_and_store_images(
     image_urls: list[str], kb_id: str, doc_id: str, source_url: str,
+    content: str,
 ):
     """Background task: download images from URLs, upload to S3, store records, trigger vision."""
     try:
@@ -142,7 +143,7 @@ async def _download_and_store_images(
         if not images:
             return
 
-        image_metas = extract_image_metadata("", images)
+        image_metas = extract_image_metadata(content, images)
 
         cfg = get_settings()
         vision_configured = bool(cfg.vision_base_url)
@@ -215,7 +216,7 @@ async def _ingest(
     if has_image_urls:
         # URL sources: download + upload + vision all in background
         asyncio.create_task(_download_and_store_images(
-            parse_result.image_urls, kb_id, doc_id, source,
+            parse_result.image_urls, kb_id, doc_id, source, content,
         ))
         # Optimistic count; actual may be lower after background download
         image_count = len(parse_result.image_urls)
