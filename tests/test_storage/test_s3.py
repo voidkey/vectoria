@@ -100,3 +100,15 @@ async def test_exists_true(storage):
     with patch.object(storage, "_client", return_value=_async_ctx(mock_client)):
         result = await storage.exists("test/key.txt")
     assert result is True
+
+
+@pytest.mark.asyncio
+async def test_exists_false(storage):
+    from botocore.exceptions import ClientError
+    mock_client = AsyncMock()
+    mock_client.head_object = AsyncMock(
+        side_effect=ClientError({"Error": {"Code": "404", "Message": "Not Found"}}, "HeadObject")
+    )
+    with patch.object(storage, "_client", return_value=_async_ctx(mock_client)):
+        result = await storage.exists("nonexistent/key.txt")
+    assert result is False

@@ -1,5 +1,6 @@
 import aioboto3
 from botocore.config import Config as BotoConfig
+from botocore.exceptions import ClientError
 
 from storage.base import ObjectStorage
 
@@ -79,5 +80,5 @@ class S3ObjectStorage(ObjectStorage):
             try:
                 await client.head_object(Bucket=self._bucket, Key=key)
                 return True
-            except client.exceptions.ClientError:
+            except ClientError:
                 return False
