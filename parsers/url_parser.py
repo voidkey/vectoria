@@ -148,17 +148,13 @@ def download_images(
     urls: list[str],
     headers: dict[str, str] | None = None,
 ) -> dict[str, bytes]:
-    """Download images from URL list (sync). Returns {filename: bytes}."""
+    """Download images from URL list (sync). Returns {url: bytes}."""
     images: dict[str, bytes] = {}
     for src in urls[:20]:
         try:
             resp = httpx.get(src, timeout=10, follow_redirects=True, headers=headers or {})
             if resp.status_code == 200 and resp.content:
-                fname = src.rsplit("/", 1)[-1].split("?")[0] or "image.jpg"
-                if fname in images:
-                    stem, _, ext = fname.rpartition(".")
-                    fname = f"{stem}_{len(images)}.{ext}" if ext else f"{fname}_{len(images)}"
-                images[fname] = resp.content
+                images[src] = resp.content
         except Exception:
             continue
     return images
