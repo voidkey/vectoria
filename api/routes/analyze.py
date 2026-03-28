@@ -4,29 +4,30 @@ from pathlib import Path
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException
 
 from api.schemas import AnalyzeResponse, AnalyzeURLRequest, ImageInfo
-from config import get_settings
+from storage import get_storage
 from parsers.registry import registry
 
 router = APIRouter()
 
 
-def _build_images(result, extract_images: bool) -> list[ImageInfo]:
-    """Store extracted images to disk and return their metadata."""
+async def _build_images(result, extract_images: bool, prefix: str = "") -> list[ImageInfo]:
+    """Upload extracted images to object storage and return presigned URLs."""
     if not extract_images or not result.images:
         return []
 
-    cfg = get_settings()
+    obj_storage = await get_storage()
     request_id = str(uuid.uuid4())
-    img_dir = Path(cfg.storage_path) / request_id
-    img_dir.mkdir(parents=True, exist_ok=True)
+    key_prefix = prefix or f"images/_analyze/{request_id}"
 
     images: list[ImageInfo] = []
     for img_name, img_bytes in result.images.items():
         safe_name = Path(img_name).name
-        (img_dir / safe_name).write_bytes(img_bytes)
+        key = f"{key_prefix}/{safe_name}"
+        await obj_storage.put(key, img_bytes, content_type="image/png")
+        url = await obj_storage.presign_url(key)
         images.append(ImageInfo(
             id=safe_name,
-            url=f"/files/{request_id}/{safe_name}",
+            url=url,
             context="",
             type="unknown",
         ))
@@ -51,7 +52,7 @@ async def analyze_file(
         title=result.title or Path(filename).stem,
         source=filename,
         markdown=result.content,
-        images=_build_images(result, extract_images),
+        images=await _build_images(result, extract_images),
     )
 
 
@@ -69,5 +70,5 @@ async def analyze_url(body: AnalyzeURLRequest):
         title=result.title or body.url,
         source=body.url,
         markdown=result.content,
-        images=_build_images(result, body.extract_images),
+        images=await _build_images(result, body.extract_images),
     )

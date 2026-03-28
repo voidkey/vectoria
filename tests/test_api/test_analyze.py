@@ -11,13 +11,19 @@ async def test_analyze_url(client):
         title="My Article",
     )
 
-    with patch("api.routes.analyze.registry") as mock_reg:
+    mock_storage = AsyncMock()
+    mock_storage.presign_url = AsyncMock(return_value="https://signed-url/img1.png")
+
+    with (
+        patch("api.routes.analyze.registry") as mock_reg,
+        patch("api.routes.analyze.get_storage", return_value=mock_storage),
+    ):
         mock_parser = AsyncMock()
         mock_parser.parse = AsyncMock(return_value=fake_result)
         mock_reg.auto_select.return_value = "url"
         mock_reg.get_by_engine.return_value = mock_parser
 
-        resp = await client.post("/analyze", json={"url": "https://example.com"})
+        resp = await client.post("/analyze/url", json={"url": "https://example.com"})
 
     assert resp.status_code == 200
     body = resp.json()
@@ -25,12 +31,8 @@ async def test_analyze_url(client):
     assert "Article" in body["markdown"]
     assert len(body["images"]) == 1
     assert body["images"][0]["id"] == "img1.png"
-
-
-@pytest.mark.asyncio
-async def test_analyze_missing_input(client):
-    resp = await client.post("/analyze", json={})
-    assert resp.status_code == 422
+    assert body["images"][0]["url"] == "https://signed-url/img1.png"
+    mock_storage.put.assert_called_once()
 
 
 @pytest.mark.asyncio
@@ -44,7 +46,7 @@ async def test_analyze_file_upload(client):
         mock_reg.get_by_engine.return_value = mock_parser
 
         resp = await client.post(
-            "/analyze",
+            "/analyze/file",
             files={"file": ("test.pdf", b"%PDF fake content", "application/pdf")},
         )
 

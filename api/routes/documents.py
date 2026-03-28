@@ -47,6 +47,14 @@ async def _process_document(doc_id: str, kb_id: str, raw: bytes | str, filename:
         parser = registry.get_by_engine(selected_engine)
         parse_result = await parser.parse(raw, filename=filename)
 
+        # Store extracted images to object storage
+        if parse_result.images:
+            from api.routes.analyze import _build_images
+            await _build_images(
+                parse_result, extract_images=True,
+                prefix=f"images/{kb_id}/{doc_id}",
+            )
+
         splitter = Splitter(chunk_size=512, chunk_overlap=64, parent_chunk_size=1024)
         chunks = splitter.split(parse_result.content)
 

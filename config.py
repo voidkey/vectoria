@@ -31,9 +31,6 @@ class Settings(BaseSettings):
     vector_store: Literal["pgvector", "chroma"] = "pgvector"
     database_url: SecretStr = SecretStr("postgresql+asyncpg://postgres:postgres@localhost/vectoria")
 
-    # File storage (parsed images)
-    storage_path: str = "./data/files"
-
     # Object storage
     storage_type: str = "s3"
     s3_endpoint: str = "http://localhost:9000"
