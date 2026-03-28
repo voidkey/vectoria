@@ -49,6 +49,11 @@ class Settings(BaseSettings):
     mineru_backend: str = "pipeline"
     mineru_language: str = "ch"
 
+    # Vision LLM (for image description)
+    vision_base_url: str = ""
+    vision_api_key: SecretStr = SecretStr("")
+    vision_model: str = "gpt-4o"
+
     # RAG pipeline toggles
     enable_query_rewrite: bool = True
     enable_reranker: bool = False
