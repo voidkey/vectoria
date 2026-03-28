@@ -25,6 +25,18 @@ def _is_wechat_url(url: str) -> bool:
     return urlparse(url).hostname in _WECHAT_HOSTS
 
 
+def _extract_image_urls(html: str, base_url: str) -> list[str]:
+    """Extract image URLs from HTML, resolve relative URLs, cap at 20."""
+    urls: list[str] = []
+    for src in _IMG_TAG.findall(html):
+        abs_url = urljoin(base_url, src)
+        if not abs_url.startswith("data:"):
+            urls.append(abs_url)
+        if len(urls) >= 20:
+            break
+    return urls
+
+
 class UrlParser(BaseParser):
     engine_name = "url"
     supported_types = ["url"]
@@ -115,29 +127,28 @@ class UrlParser(BaseParser):
             output_format="markdown",
         ) or ""
 
-        # Extract title
         title_match = re.search(r"<title[^>]*>([^<]+)</title>", downloaded, re.IGNORECASE)
         title = title_match.group(1).strip() if title_match else urlparse(url).netloc
 
-        # Download referenced images
-        images = self._download_images(downloaded, url)
+        img_urls = _extract_image_urls(downloaded, url)
+        return ParseResult(content=text, images={}, title=title, image_urls=img_urls)
 
-        return ParseResult(content=text, images=images, title=title)
 
-    def _download_images(self, html: str, base_url: str) -> dict[str, bytes]:
-        images: dict[str, bytes] = {}
-        src_list = _IMG_TAG.findall(html)
-        for src in src_list[:20]:  # cap at 20 images
-            try:
-                abs_url = urljoin(base_url, src)
-                resp = httpx.get(abs_url, timeout=10, follow_redirects=True)
-                if resp.status_code == 200:
-                    fname = abs_url.rsplit("/", 1)[-1].split("?")[0] or "image.jpg"
-                    # deduplicate filename
-                    if fname in images:
-                        stem, _, ext = fname.rpartition(".")
-                        fname = f"{stem}_{len(images)}.{ext}" if ext else f"{fname}_{len(images)}"
-                    images[fname] = resp.content
-            except Exception:
-                continue
-        return images
+def download_images(
+    urls: list[str],
+    headers: dict[str, str] | None = None,
+) -> dict[str, bytes]:
+    """Download images from URL list (sync). Returns {filename: bytes}."""
+    images: dict[str, bytes] = {}
+    for src in urls[:20]:
+        try:
+            resp = httpx.get(src, timeout=10, follow_redirects=True, headers=headers or {})
+            if resp.status_code == 200 and resp.content:
+                fname = src.rsplit("/", 1)[-1].split("?")[0] or "image.jpg"
+                if fname in images:
+                    stem, _, ext = fname.rpartition(".")
+                    fname = f"{stem}_{len(images)}.{ext}" if ext else f"{fname}_{len(images)}"
+                images[fname] = resp.content
+        except Exception:
+            continue
+    return images
