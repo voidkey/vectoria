@@ -10,6 +10,7 @@ from api.schemas import DocumentResponse
 from db.base import get_session
 from db.models import Document, KnowledgeBase
 from parsers.registry import registry
+from storage import get_storage
 from splitter.splitter import Splitter
 from rag.embedder import Embedder
 from vectorstore.pgvector import PgVectorStore
@@ -25,6 +26,7 @@ def _doc_to_response(doc: Document) -> DocumentResponse:
         id=doc.id, kb_id=doc.kb_id, title=doc.title, source=doc.source,
         engine=doc.parse_engine, chunk_count=doc.chunk_count,
         status=doc.status, error_msg=doc.error_msg,
+        storage_key=doc.storage_key,
         created_at=doc.created_at.isoformat(),
     )
 
@@ -89,6 +91,9 @@ async def ingest_document(
     if not url and not file:
         raise HTTPException(status_code=422, detail="Provide either 'url' or 'file'")
 
+    doc_id = str(uuid.uuid4())
+    storage_key = None
+
     if url:
         selected_engine = engine if engine != "auto" else registry.auto_select(url=url)
         raw: bytes | str = url
@@ -100,12 +105,16 @@ async def ingest_document(
         raw = await file.read()
         source = filename
 
-    doc_id = str(uuid.uuid4())
+        # Save original file to object storage
+        obj_storage = await get_storage()
+        storage_key = f"upload_files/{kb_id}/{doc_id}/{filename}"
+        await obj_storage.put(storage_key, raw, content_type=file.content_type or "")
+
     async with get_session() as session:
         doc = Document(
             id=doc_id, kb_id=kb_id, title=source,
             source=source, parse_engine=selected_engine,
-            status="processing",
+            status="processing", storage_key=storage_key,
         )
         session.add(doc)
         await session.commit()
