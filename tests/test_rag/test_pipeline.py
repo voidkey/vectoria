@@ -2,7 +2,7 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 from rag.pipeline import Pipeline, build_default_pipeline
 from rag.steps.base import PipelineContext, PipelineStep
-from store.base import SearchResult
+from vectorstore.base import SearchResult
 
 
 class EchoStep(PipelineStep):

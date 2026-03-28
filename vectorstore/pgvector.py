@@ -1,7 +1,7 @@
 from __future__ import annotations
 import json
 import asyncpg
-from store.base import VectorStore, ChunkData, SearchResult
+from vectorstore.base import VectorStore, ChunkData, SearchResult
 from config import get_settings
 
 

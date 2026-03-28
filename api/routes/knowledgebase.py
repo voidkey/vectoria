@@ -4,7 +4,7 @@ from sqlalchemy import select
 from api.schemas import KnowledgeBaseCreate, KnowledgeBaseResponse
 from db.base import get_session
 from db.models import KnowledgeBase
-from store.pgvector import PgVectorStore
+from vectorstore.pgvector import PgVectorStore
 
 router = APIRouter(prefix="/knowledgebases")
 

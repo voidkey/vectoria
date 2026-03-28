@@ -7,7 +7,7 @@ from rag.embedder import Embedder
 from rag.pipeline import build_default_pipeline
 from rag.steps.query_rewrite import QueryRewriteStep
 from rag.steps.rerank import RerankStep
-from store.pgvector import PgVectorStore
+from vectorstore.pgvector import PgVectorStore
 
 router = APIRouter(prefix="/knowledgebases")
 
