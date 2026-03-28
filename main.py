@@ -4,6 +4,7 @@ from api.routes.knowledgebase import router as kb_router
 from api.routes.documents import router as docs_router
 from api.routes.query import router as query_router
 from api.routes.health import router as health_router
+from api.routes.images import router as images_router
 
 app = FastAPI(title="Vectoria", version="0.1.0")
 
@@ -12,6 +13,7 @@ app.include_router(kb_router)
 app.include_router(docs_router)
 app.include_router(query_router)
 app.include_router(health_router)
+app.include_router(images_router)
 
 
 @app.get("/")
