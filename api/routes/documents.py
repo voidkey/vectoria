@@ -127,6 +127,45 @@ async def _analyze_images_with_vision(kb_id: str, doc_id: str):
     await asyncio.gather(*(_describe_one(img) for img in pending))
 
 
+async def _download_and_store_images(
+    image_urls: list[str], kb_id: str, doc_id: str, source_url: str,
+):
+    """Background task: download images from URLs, upload to S3, store records, trigger vision."""
+    try:
+        from parsers.url_parser import download_images, _is_wechat_url, _WECHAT_UA
+
+        headers = None
+        if _is_wechat_url(source_url):
+            headers = {
+                "Referer": "https://mp.weixin.qq.com/",
+                "User-Agent": _WECHAT_UA,
+            }
+
+        images = await asyncio.get_running_loop().run_in_executor(
+            None, download_images, image_urls, headers,
+        )
+        if not images:
+            return
+
+        image_metas = extract_image_metadata("", images)
+
+        cfg = get_settings()
+        vision_configured = bool(cfg.vision_base_url)
+
+        from api.image_utils import upload_and_store_images
+        await upload_and_store_images(
+            images=images,
+            image_metas=image_metas,
+            kb_id=kb_id,
+            doc_id=doc_id,
+            vision_configured=vision_configured,
+        )
+
+        await _analyze_images_with_vision(kb_id, doc_id)
+    except Exception:
+        logger.exception("Background image processing failed for doc %s", doc_id)
+
+
 async def _ingest(
     kb_id: str, raw: bytes | str, *, filename: str, source: str,
     selected_engine: str, storage_key: str | None, doc_id: str | None = None,
@@ -146,20 +185,23 @@ async def _ingest(
     title = parse_result.title or (filename or source)
     outline = extract_outline(content)
 
-    # Extract image metadata and upload to S3
-    image_metas = extract_image_metadata(content, parse_result.images)
+    # Image handling: background for URL sources, sync for file sources
+    has_image_urls = bool(parse_result.image_urls)
+    image_count = 0
 
-    cfg = get_settings()
-    vision_configured = bool(cfg.vision_base_url)
-
-    from api.image_utils import upload_and_store_images
-    image_count = await upload_and_store_images(
-        images=parse_result.images,
-        image_metas=image_metas,
-        kb_id=kb_id,
-        doc_id=doc_id,
-        vision_configured=vision_configured,
-    )
+    if not has_image_urls and parse_result.images:
+        # File-based parsers: images already in memory, upload synchronously
+        image_metas = extract_image_metadata(content, parse_result.images)
+        cfg = get_settings()
+        vision_configured = bool(cfg.vision_base_url)
+        from api.image_utils import upload_and_store_images
+        image_count = await upload_and_store_images(
+            images=parse_result.images,
+            image_metas=image_metas,
+            kb_id=kb_id,
+            doc_id=doc_id,
+            vision_configured=vision_configured,
+        )
 
     # Create document record
     async with get_session() as session:
@@ -172,9 +214,18 @@ async def _ingest(
         await session.commit()
         await session.refresh(doc)
 
-    # --- Async phase: index + vision in background ---
+    # --- Async phase: index in background ---
     asyncio.create_task(_index_document(doc_id, kb_id, content))
-    asyncio.create_task(_analyze_images_with_vision(kb_id, doc_id))
+
+    if has_image_urls:
+        # URL sources: download + upload + vision all in background
+        asyncio.create_task(_download_and_store_images(
+            parse_result.image_urls, kb_id, doc_id, source,
+        ))
+        image_count = len(parse_result.image_urls)
+    elif parse_result.images:
+        # File sources: images already uploaded, just run vision
+        asyncio.create_task(_analyze_images_with_vision(kb_id, doc_id))
 
     return DocumentIngestResponse(
         id=doc.id, kb_id=doc.kb_id, title=doc.title, source=doc.source,
