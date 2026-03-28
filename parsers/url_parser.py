@@ -147,9 +147,15 @@ class UrlParser(BaseParser):
 def download_images(
     urls: list[str],
     headers: dict[str, str] | None = None,
-) -> dict[str, bytes]:
-    """Download images from URL list (sync). Returns {filename: bytes}."""
+) -> tuple[dict[str, bytes], dict[str, str]]:
+    """Download images from URL list (sync).
+
+    Returns:
+        (images, url_to_filename) where images is {filename: bytes}
+        and url_to_filename maps original URL to the stored filename.
+    """
     images: dict[str, bytes] = {}
+    url_to_filename: dict[str, str] = {}
     for src in urls[:20]:
         try:
             resp = httpx.get(src, timeout=10, follow_redirects=True, headers=headers or {})
@@ -159,6 +165,7 @@ def download_images(
                     stem, _, ext = fname.rpartition(".")
                     fname = f"{stem}_{len(images)}.{ext}" if ext else f"{fname}_{len(images)}"
                 images[fname] = resp.content
+                url_to_filename[src] = fname
         except Exception:
             continue
-    return images
+    return images, url_to_filename

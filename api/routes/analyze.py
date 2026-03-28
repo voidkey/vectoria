@@ -51,7 +51,7 @@ async def analyze_url(body: AnalyzeURLRequest):
         from parsers.url_parser import download_images, get_wechat_headers
 
         headers = get_wechat_headers(body.url)
-        result.images = await asyncio.get_running_loop().run_in_executor(
+        result.images, _ = await asyncio.get_running_loop().run_in_executor(
             None, download_images, result.image_urls, headers,
         )
 
