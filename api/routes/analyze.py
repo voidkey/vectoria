@@ -6,6 +6,7 @@ from api.schemas import AnalyzeResponse, AnalyzeURLRequest
 from api.image_utils import upload_images
 from parsers.registry import registry
 from parsers.outline import extract_outline
+from parsers.image_metadata import extract_image_metadata
 
 router = APIRouter()
 
@@ -25,13 +26,14 @@ async def analyze_file(
 
     images = await upload_images(result, extract_images)
     outline = extract_outline(result.content)
+    filtered_count = len(extract_image_metadata(result.content, result.images)) if result.images else 0
 
     return AnalyzeResponse(
         title=result.title or Path(filename).stem,
         source=filename,
         content=result.content,
         outline=outline,
-        image_count=len(images),
+        image_count=filtered_count,
         images=images,
     )
 
@@ -45,12 +47,13 @@ async def analyze_url(body: AnalyzeURLRequest):
 
     images = await upload_images(result, body.extract_images)
     outline = extract_outline(result.content)
+    filtered_count = len(extract_image_metadata(result.content, result.images)) if result.images else 0
 
     return AnalyzeResponse(
         title=result.title or body.url,
         source=body.url,
         content=result.content,
         outline=outline,
-        image_count=len(images),
+        image_count=filtered_count,
         images=images,
     )

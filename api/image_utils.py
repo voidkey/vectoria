@@ -90,7 +90,10 @@ async def upload_and_store_images(
     async with get_session() as session:
         for meta in image_metas:
             min_vision_dim = 200
-            if vision_configured and (meta.width is None or (meta.width >= min_vision_dim and meta.height >= min_vision_dim)):
+            if vision_configured and (
+                (meta.width is None or meta.height is None)
+                or (meta.width >= min_vision_dim and meta.height >= min_vision_dim)
+            ):
                 vs = "pending"
             else:
                 vs = "skipped"
