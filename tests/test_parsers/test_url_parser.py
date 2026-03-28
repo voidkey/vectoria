@@ -1,6 +1,6 @@
 import pytest
 from unittest.mock import patch, AsyncMock
-from parsers.url_parser import UrlParser, download_images
+from parsers.url_parser import UrlParser, download_images, get_wechat_headers, _extract_image_urls
 from parsers.base import ParseResult
 
 
@@ -98,6 +98,42 @@ async def test_parse_non_wechat_returns_image_urls():
         "https://example.com/banner.png",
     ]
     assert result.images == {}
+
+
+def test_get_wechat_headers_wechat_url():
+    headers = get_wechat_headers("https://mp.weixin.qq.com/s/abc123")
+    assert headers is not None
+    assert headers["Referer"] == "https://mp.weixin.qq.com/"
+    assert "MicroMessenger" in headers["User-Agent"]
+
+
+def test_get_wechat_headers_non_wechat_url():
+    assert get_wechat_headers("https://example.com/article") is None
+
+
+def test_extract_image_urls_resolves_relative():
+    html = '<img src="/img/a.jpg" /><img src="https://cdn.example.com/b.png" />'
+    urls = _extract_image_urls(html, "https://example.com/page")
+    assert urls == ["https://example.com/img/a.jpg", "https://cdn.example.com/b.png"]
+
+
+def test_extract_image_urls_filters_data_uris():
+    html = '<img src="data:image/png;base64,abc" /><img src="https://example.com/real.jpg" />'
+    urls = _extract_image_urls(html, "https://example.com")
+    assert urls == ["https://example.com/real.jpg"]
+
+
+def test_extract_image_urls_caps_at_20():
+    html = "".join(f'<img src="https://example.com/img{i}.jpg" />' for i in range(30))
+    urls = _extract_image_urls(html, "https://example.com")
+    assert len(urls) == 20
+
+
+def test_extract_image_urls_matches_data_src():
+    """data-src should be matched (WeChat lazy loading pattern)."""
+    html = '<img data-src="https://mmbiz.qpic.cn/img1.jpg" src="" />'
+    urls = _extract_image_urls(html, "https://mp.weixin.qq.com/s/abc")
+    assert urls == ["https://mmbiz.qpic.cn/img1.jpg"]
 
 
 def test_download_images_with_headers():

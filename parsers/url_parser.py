@@ -12,17 +12,27 @@ except ImportError:
 
 from parsers.base import BaseParser, ParseResult
 
-_IMG_TAG = re.compile(r'<img[^>]+src=["\']([^"\']+)["\']', re.IGNORECASE)
+_IMG_TAG = re.compile(r'<img[^>]+(?:data-src|src)=["\']([^"\']+)["\']', re.IGNORECASE)
 _WECHAT_HOSTS = {"mp.weixin.qq.com"}
-_WECHAT_UA = (
+WECHAT_UA = (
     "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
     "AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 "
     "MicroMessenger/8.0.43 NetType/WIFI Language/zh_CN"
 )
 
 
-def _is_wechat_url(url: str) -> bool:
+def is_wechat_url(url: str) -> bool:
     return urlparse(url).hostname in _WECHAT_HOSTS
+
+
+def get_wechat_headers(url: str) -> dict[str, str] | None:
+    """Return download headers for WeChat CDN, or None for non-WeChat URLs."""
+    if not is_wechat_url(url):
+        return None
+    return {
+        "Referer": "https://mp.weixin.qq.com/",
+        "User-Agent": WECHAT_UA,
+    }
 
 
 def _extract_image_urls(html: str, base_url: str) -> list[str]:
@@ -43,7 +53,7 @@ class UrlParser(BaseParser):
 
     async def parse(self, source: bytes | str, filename: str = "", **kwargs) -> ParseResult:
         url = source.decode() if isinstance(source, bytes) else source
-        if _is_wechat_url(url):
+        if is_wechat_url(url):
             return await self._parse_with_playwright(url)
         return await asyncio.get_running_loop().run_in_executor(None, self._parse_sync, url)
 
@@ -57,7 +67,7 @@ class UrlParser(BaseParser):
                 args=["--no-sandbox", "--disable-setuid-sandbox"],
             )
             page = await browser.new_page(
-                user_agent=_WECHAT_UA,
+                user_agent=WECHAT_UA,
             )
             await page.goto(url, wait_until="networkidle", timeout=30000)
 
@@ -104,7 +114,7 @@ class UrlParser(BaseParser):
             await browser.close()
 
         text = trafilatura.extract(
-            content_html,
+            f"<html><body>{content_html}</body></html>",
             include_images=True,
             include_links=False,
             output_format="markdown",
