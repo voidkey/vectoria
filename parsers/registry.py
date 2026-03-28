@@ -62,6 +62,14 @@ class ParserRegistry:
         # fallback: return first regardless of availability
         return engines[0]
 
+    def supported_types(self) -> list[str]:
+        """Return deduplicated list of supported file extensions and 'url'."""
+        types: set[str] = set()
+        for cls in self._engines.values():
+            if cls.is_available():
+                types.update(cls.supported_types)
+        return sorted(types)
+
     def list_engines(self) -> list[dict]:
         return [
             {
