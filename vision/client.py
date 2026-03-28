@@ -6,9 +6,9 @@ from openai import AsyncOpenAI
 logger = logging.getLogger(__name__)
 
 _SYSTEM_PROMPT = (
-    "Describe this image in 1-2 sentences. Include: what it shows, "
-    "its type (photo, chart, diagram, screenshot, illustration), "
-    "and what context it might be useful for. Be concise."
+    "请用中文描述这张图片，1-2句话。包括：图片展示了什么内容，"
+    "图片类型（照片、图表、示意图、截图、插画等），"
+    "以及它可能在什么场景下有用。请简洁。"
 )
 
 
