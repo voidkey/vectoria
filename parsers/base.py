@@ -8,6 +8,7 @@ class ParseResult:
     content: str          # Markdown text
     images: dict[str, bytes]  # {filename: raw bytes}
     title: str = ""
+    image_urls: list[str] | None = None  # URLs for deferred download
 
 
 class BaseParser(ABC):
