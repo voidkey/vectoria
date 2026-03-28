@@ -1,5 +1,14 @@
 from pydantic import BaseModel
-from typing import Optional
+
+
+class AnalyzeURLRequest(BaseModel):
+    url: str
+    extract_images: bool = True
+
+
+class OutlineItem(BaseModel):
+    level: int
+    title: str
 
 
 class ImageInfo(BaseModel):
@@ -9,16 +18,12 @@ class ImageInfo(BaseModel):
     type: str = "unknown"
 
 
-class AnalyzeURLRequest(BaseModel):
-    url: str
-    engine: str = "auto"
-    extract_images: bool = True
-
-
 class AnalyzeResponse(BaseModel):
     title: str
     source: str
-    markdown: str
+    content: str
+    outline: list[OutlineItem] = []
+    image_count: int = 0
     images: list[ImageInfo] = []
 
 
@@ -39,12 +44,37 @@ class DocumentResponse(BaseModel):
     kb_id: str
     title: str
     source: str
-    engine: str
     chunk_count: int
     status: str
     error_msg: str = ""
-    storage_key: str | None = None
     created_at: str
+
+
+class DocumentIngestResponse(DocumentResponse):
+    """Extended response for document upload -- includes parsed content."""
+    content: str = ""
+    outline: list[OutlineItem] = []
+    image_count: int = 0
+
+
+class DocumentImageResponse(BaseModel):
+    id: str
+    url: str
+    filename: str
+    index: int
+    width: int | None = None
+    height: int | None = None
+    aspect_ratio: str = ""
+    description: str = ""
+    vision_status: str = "pending"
+    alt: str = ""
+    context: str = ""
+    section_title: str = ""
+
+
+class DocumentImagesListResponse(BaseModel):
+    doc_id: str
+    images: list[DocumentImageResponse] = []
 
 
 class QueryRequest(BaseModel):
