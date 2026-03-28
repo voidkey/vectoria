@@ -34,6 +34,16 @@ class Settings(BaseSettings):
     # File storage (parsed images)
     storage_path: str = "./data/files"
 
+    # Object storage
+    storage_type: str = "s3"
+    s3_endpoint: str = "http://localhost:9000"
+    s3_region: str = ""
+    s3_access_key: str = "minioadmin"
+    s3_secret_key: SecretStr = SecretStr("minioadmin")
+    s3_bucket: str = "vectoria"
+    s3_addressing_style: str = "auto"  # auto|virtual|path
+    s3_presign_expires: int = 3600
+
     # Parse engine
     default_parse_engine: str = "auto"
 
