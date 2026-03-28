@@ -32,6 +32,7 @@ class Document(Base):
     )
     title: Mapped[str] = mapped_column(String(500), default="", server_default="")
     source: Mapped[str] = mapped_column(Text, default="", server_default="")
+    storage_key: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
     parse_engine: Mapped[str] = mapped_column(String(50), default="", server_default="")
     chunk_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     status: Mapped[str] = mapped_column(
