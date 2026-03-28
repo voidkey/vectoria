@@ -6,7 +6,7 @@ A lightweight RAG (Retrieval-Augmented Generation) backend service built with Fa
 
 - **Multi-format document ingestion** — PDF, DOCX, PPTX, XLSX, CSV, Markdown, plain text, images, and URLs
 - **Async document processing** — documents are ingested asynchronously with status tracking (processing → completed / failed)
-- **Image extraction** — automatically extracts and serves images from parsed documents
+- **Image extraction** — automatically extracts images from documents and stores them in S3-compatible object storage
 - **Hybrid search** — combines vector similarity search with BM25 keyword search via Reciprocal Rank Fusion
 - **Modular RAG pipeline** — Query Rewrite → Retrieve → Fusion → Rerank → Context Expand → Generate
 - **OpenAI-compatible** — works with any OpenAI-compatible LLM/embedding endpoint (OpenAI, DeepSeek, Ollama, etc.)
@@ -17,6 +17,7 @@ A lightweight RAG (Retrieval-Augmented Generation) backend service built with Fa
 
 - Python 3.11+
 - PostgreSQL with [pgvector](https://github.com/pgvector/pgvector) extension
+- S3-compatible object storage (MinIO, Volcengine TOS, AWS S3, etc.)
 - An OpenAI-compatible API key
 
 ## Quick Start
@@ -30,14 +31,14 @@ cp .env.example .env
 docker compose up -d
 ```
 
-That's it. The API is available at `http://localhost:8000`, interactive docs at `http://localhost:8000/docs`.
+That's it. The API is available at `http://localhost:8000`, interactive docs at `http://localhost:8000/docs`. MinIO console is at `http://localhost:9001` (minioadmin/minioadmin).
 
 ### Local development
 
-**1. Start the database**
+**1. Start the database and MinIO**
 
 ```bash
-docker compose up -d db
+docker compose up -d db minio minio-init
 ```
 
 **2. Install dependencies**
@@ -129,7 +130,14 @@ All settings are configured via environment variables (see [`.env.example`](.env
 | `EMBEDDING_DIMENSIONS` | `1536` | Embedding vector dimensions |
 | `VECTOR_STORE` | `pgvector` | Vector store backend (`pgvector` or `chroma`) |
 | `DATABASE_URL` | `postgresql+asyncpg://...` | PostgreSQL connection string |
-| `STORAGE_PATH` | `./data/files` | Directory for extracted images |
+| `STORAGE_TYPE` | `s3` | Object storage backend type |
+| `S3_ENDPOINT` | `http://localhost:9000` | S3-compatible endpoint URL |
+| `S3_REGION` | — | Region (required for TOS, e.g. `cn-beijing`) |
+| `S3_ACCESS_KEY` | `minioadmin` | Access key |
+| `S3_SECRET_KEY` | `minioadmin` | Secret key |
+| `S3_BUCKET` | `vectoria` | Bucket name |
+| `S3_ADDRESSING_STYLE` | `auto` | `auto`, `virtual`, or `path` |
+| `S3_PRESIGN_EXPIRES` | `3600` | Presigned URL expiry (seconds) |
 | `DEFAULT_PARSE_ENGINE` | `auto` | Parser engine (`auto`, `docling`, `markitdown`, `mineru`) |
 | `ENABLE_QUERY_REWRITE` | `true` | Rewrite queries with LLM before retrieval |
 | `ENABLE_RERANKER` | `false` | Enable cross-encoder reranking |
