@@ -5158,9 +5158,6 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
-browser = [
-    { name = "playwright" },
-]
 chroma = [
     { name = "chromadb" },
 ]
@@ -5194,7 +5191,6 @@ requires-dist = [
     { name = "paddlepaddle", marker = "extra == 'ocr'", specifier = ">=3.0" },
     { name = "pgvector", specifier = ">=0.3" },
     { name = "playwright", specifier = ">=1.58.0" },
-    { name = "playwright", marker = "extra == 'browser'", specifier = ">=1.50" },
     { name = "pydantic-settings", specifier = ">=2.0" },
     { name = "python-multipart", specifier = ">=0.0.9" },
     { name = "rank-bm25", specifier = ">=0.2" },
@@ -5205,7 +5201,7 @@ requires-dist = [
     { name = "trafilatura", specifier = ">=2.0" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.30" },
 ]
-provides-extras = ["ocr", "browser", "chroma"]
+provides-extras = ["ocr", "chroma"]
 
 [package.metadata.requires-dev]
 dev = [
