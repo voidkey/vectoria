@@ -36,9 +36,37 @@ class Document(Base):
     parse_engine: Mapped[str] = mapped_column(String(50), default="", server_default="")
     chunk_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     status: Mapped[str] = mapped_column(
-        String(20), default="processing", server_default="processing", nullable=False
+        String(20), default="indexing", server_default="indexing", nullable=False
     )
     error_msg: Mapped[str] = mapped_column(Text, default="", server_default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     knowledge_base: Mapped["KnowledgeBase"] = relationship(back_populates="documents")
+    images: Mapped[list["DocumentImage"]] = relationship(
+        back_populates="document", cascade="all, delete-orphan"
+    )
+
+
+class DocumentImage(Base):
+    __tablename__ = "document_images"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    doc_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("documents.id", ondelete="CASCADE"), nullable=False
+    )
+    kb_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    storage_key: Mapped[str] = mapped_column(Text, nullable=False)
+    filename: Mapped[str] = mapped_column(String(500), nullable=False)
+    width: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    height: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    alt: Mapped[str] = mapped_column(Text, default="", server_default="")
+    context: Mapped[str] = mapped_column(Text, default="", server_default="")
+    section_title: Mapped[str] = mapped_column(Text, default="", server_default="")
+    description: Mapped[str] = mapped_column(Text, default="", server_default="")
+    vision_status: Mapped[str] = mapped_column(
+        String(20), default="pending", server_default="pending", nullable=False
+    )
+    image_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    document: Mapped["Document"] = relationship(back_populates="images")
