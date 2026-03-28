@@ -5,10 +5,20 @@ from urllib.parse import urljoin, urlparse
 import httpx
 import trafilatura
 
+try:
+    from playwright.async_api import async_playwright
+except ImportError:
+    async_playwright = None
+
 from parsers.base import BaseParser, ParseResult
 
 _IMG_TAG = re.compile(r'<img[^>]+src=["\']([^"\']+)["\']', re.IGNORECASE)
 _WECHAT_HOSTS = {"mp.weixin.qq.com"}
+_WECHAT_UA = (
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
+    "AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 "
+    "MicroMessenger/8.0.43 NetType/WIFI Language/zh_CN"
+)
 
 
 def _is_wechat_url(url: str) -> bool:
@@ -26,41 +36,72 @@ class UrlParser(BaseParser):
         return await asyncio.get_running_loop().run_in_executor(None, self._parse_sync, url)
 
     async def _parse_with_playwright(self, url: str) -> ParseResult:
-        try:
-            from playwright.async_api import async_playwright
-        except ImportError:
-            # Playwright not installed, fall back to trafilatura
+        if async_playwright is None:
             return await asyncio.get_running_loop().run_in_executor(None, self._parse_sync, url)
 
         async with async_playwright() as p:
-            # --no-sandbox is required when running as root (e.g. inside Docker)
             browser = await p.chromium.launch(
                 headless=True,
                 args=["--no-sandbox", "--disable-setuid-sandbox"],
             )
             page = await browser.new_page(
-                user_agent=(
-                    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
-                    "AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 "
-                    "MicroMessenger/8.0.43 NetType/WIFI Language/zh_CN"
-                ),
+                user_agent=_WECHAT_UA,
             )
             await page.goto(url, wait_until="networkidle", timeout=30000)
-            html = await page.content()
+
+            # Scroll to trigger lazy-loaded images
+            await page.evaluate("""
+                async () => {
+                    const delay = ms => new Promise(r => setTimeout(r, ms));
+                    for (let y = 0; y < document.body.scrollHeight; y += 400) {
+                        window.scrollTo(0, y);
+                        await delay(200);
+                    }
+                }
+            """)
+            await page.wait_for_timeout(1000)
+
+            # Extract title: prefer #activity-name over <title>
+            title = await page.evaluate("""
+                () => {
+                    const el = document.querySelector('#activity-name');
+                    return el ? el.textContent.trim() : '';
+                }
+            """) or ""
+
+            # Extract content HTML: prefer #js_content over full body
+            content_html = await page.evaluate("""
+                () => {
+                    const el = document.querySelector('#js_content');
+                    return el ? el.innerHTML : document.body.innerHTML;
+                }
+            """)
+
+            # Extract image URLs from article body
+            img_urls = await page.evaluate("""
+                () => Array.from(document.querySelectorAll('#js_content img'))
+                    .map(img => img.getAttribute('data-src') || img.src)
+                    .filter(src => src && !src.startsWith('data:'))
+            """)
+
+            if not title:
+                html = await page.content()
+                title_match = re.search(r"<title[^>]*>([^<]+)</title>", html, re.IGNORECASE)
+                title = title_match.group(1).strip() if title_match else urlparse(url).netloc
+
             await browser.close()
 
         text = trafilatura.extract(
-            html,
+            content_html,
             include_images=True,
             include_links=False,
             output_format="markdown",
         ) or ""
 
-        title_match = re.search(r"<title[^>]*>([^<]+)</title>", html, re.IGNORECASE)
-        title = title_match.group(1).strip() if title_match else urlparse(url).netloc
-
-        images = self._download_images(html, url)
-        return ParseResult(content=text, images=images, title=title)
+        return ParseResult(
+            content=text, images={}, title=title,
+            image_urls=img_urls[:20],
+        )
 
     def _parse_sync(self, url: str) -> ParseResult:
         downloaded = trafilatura.fetch_url(url)
