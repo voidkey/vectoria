@@ -16,7 +16,7 @@ async def test_analyze_url(client):
 
     with (
         patch("api.routes.analyze.registry") as mock_reg,
-        patch("api.routes.analyze.get_storage", return_value=mock_storage),
+        patch("api.image_utils.get_storage", return_value=mock_storage),
     ):
         mock_parser = AsyncMock()
         mock_parser.parse = AsyncMock(return_value=fake_result)
