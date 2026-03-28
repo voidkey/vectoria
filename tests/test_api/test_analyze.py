@@ -28,10 +28,12 @@ async def test_analyze_url(client):
     assert resp.status_code == 200
     body = resp.json()
     assert body["title"] == "My Article"
-    assert "Article" in body["markdown"]
+    assert "Article" in body["content"]
+    assert body["image_count"] == 1
     assert len(body["images"]) == 1
     assert body["images"][0]["id"] == "img1.png"
     assert body["images"][0]["url"] == "https://signed-url/img1.png"
+    assert body["outline"] == [{"level": 1, "title": "Article"}]
     mock_storage.put.assert_called_once()
 
 
@@ -51,4 +53,27 @@ async def test_analyze_file_upload(client):
         )
 
     assert resp.status_code == 200
-    assert "PDF Content" in resp.json()["markdown"]
+    body = resp.json()
+    assert "PDF Content" in body["content"]
+    assert body["outline"] == [{"level": 1, "title": "PDF Content"}]
+    assert body["image_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_analyze_url_no_engine_param(client):
+    """Verify the engine parameter is no longer accepted."""
+    fake_result = ParseResult(content="# Test", images={}, title="Test")
+
+    with patch("api.routes.analyze.registry") as mock_reg:
+        mock_parser = AsyncMock()
+        mock_parser.parse = AsyncMock(return_value=fake_result)
+        mock_reg.auto_select.return_value = "url"
+        mock_reg.get_by_engine.return_value = mock_parser
+
+        resp = await client.post(
+            "/analyze/url",
+            json={"url": "https://example.com", "engine": "docling"},
+        )
+
+    assert resp.status_code == 200
+    mock_reg.auto_select.assert_called_once_with(url="https://example.com")
