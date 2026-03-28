@@ -1,5 +1,5 @@
 from rag.steps.base import PipelineStep, PipelineContext
-from store.base import VectorStore, SearchResult
+from vectorstore.base import VectorStore, SearchResult
 
 
 class ExpandStep(PipelineStep):

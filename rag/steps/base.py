@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from store.base import SearchResult
+from vectorstore.base import SearchResult
 
 
 @dataclass

@@ -1,7 +1,7 @@
 import pytest
 from unittest.mock import patch, AsyncMock, MagicMock
 from rag.steps.base import PipelineContext
-from store.base import SearchResult
+from vectorstore.base import SearchResult
 
 
 def _make_ctx(answer: str, sources: list) -> PipelineContext:

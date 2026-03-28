@@ -12,8 +12,8 @@ from db.models import Document, KnowledgeBase
 from parsers.registry import registry
 from splitter.splitter import Splitter
 from rag.embedder import Embedder
-from store.pgvector import PgVectorStore
-from store.base import ChunkData
+from vectorstore.pgvector import PgVectorStore
+from vectorstore.base import ChunkData
 
 logger = logging.getLogger(__name__)
 

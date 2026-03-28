@@ -1,6 +1,6 @@
 import asyncio
 from rag.steps.base import PipelineStep, PipelineContext
-from store.base import VectorStore
+from vectorstore.base import VectorStore
 from rag.embedder import Embedder
 
 
