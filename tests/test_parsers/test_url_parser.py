@@ -78,3 +78,23 @@ async def test_parse_wechat_extracts_image_urls():
     assert result.image_urls == ["https://mmbiz.qpic.cn/img1.jpg", "https://mmbiz.qpic.cn/img2.jpg"]
     assert result.images == {}
     assert "正文内容" in result.content
+
+
+@pytest.mark.asyncio
+async def test_parse_non_wechat_returns_image_urls():
+    """Non-WeChat URLs should also return image_urls instead of downloading images."""
+    html_with_images = '<html><head><title>Test Page</title></head><body>' \
+        '<img src="https://example.com/photo.jpg" />' \
+        '<img src="https://example.com/banner.png" />' \
+        '<p>Hello world</p></body></html>'
+
+    with patch("parsers.url_parser.trafilatura.fetch_url", return_value=html_with_images), \
+         patch("parsers.url_parser.trafilatura.extract", return_value="Hello world"):
+        parser = UrlParser()
+        result = await parser.parse("https://example.com/article")
+
+    assert result.image_urls == [
+        "https://example.com/photo.jpg",
+        "https://example.com/banner.png",
+    ]
+    assert result.images == {}
