@@ -137,16 +137,18 @@ def test_extract_image_urls_matches_data_src():
 
 
 def test_download_images_with_headers():
-    """download_images should pass headers to httpx and return image bytes."""
+    """download_images should pass headers to httpx and return image bytes + url mapping."""
     fake_response = type("R", (), {"status_code": 200, "content": b"\x89PNG fake"})()
 
     with patch("parsers.url_parser.httpx.get", return_value=fake_response) as mock_get:
-        result = download_images(
+        images, url_to_filename = download_images(
             ["https://mmbiz.qpic.cn/img1.jpg"],
             headers={"Referer": "https://mp.weixin.qq.com/"},
         )
 
-    assert len(result) == 1
+    assert len(images) == 1
+    assert "https://mmbiz.qpic.cn/img1.jpg" in url_to_filename
+    assert url_to_filename["https://mmbiz.qpic.cn/img1.jpg"] in images
     mock_get.assert_called_once()
     call_kwargs = mock_get.call_args
     assert call_kwargs.kwargs["headers"]["Referer"] == "https://mp.weixin.qq.com/"

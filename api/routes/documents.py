@@ -137,13 +137,19 @@ async def _download_and_store_images(
 
         headers = get_wechat_headers(source_url)
 
-        images = await asyncio.get_running_loop().run_in_executor(
+        images, url_to_filename = await asyncio.get_running_loop().run_in_executor(
             None, download_images, image_urls, headers,
         )
         if not images:
             return
 
-        image_metas = extract_image_metadata(content, images)
+        # Build URL-keyed dict for metadata matching (markdown contains URLs, not filenames)
+        url_keyed = {url: images[fname] for url, fname in url_to_filename.items()}
+        url_metas = extract_image_metadata(content, url_keyed)
+        # Map back to storage filenames
+        for meta in url_metas:
+            meta.filename = url_to_filename.get(meta.filename, meta.filename)
+        image_metas = url_metas
 
         cfg = get_settings()
         vision_configured = bool(cfg.vision_base_url)
