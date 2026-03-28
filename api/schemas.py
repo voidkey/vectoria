@@ -43,6 +43,7 @@ class DocumentResponse(BaseModel):
     chunk_count: int
     status: str
     error_msg: str = ""
+    storage_key: str | None = None
     created_at: str
 
 
