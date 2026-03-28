@@ -45,6 +45,21 @@ async def analyze_url(body: AnalyzeURLRequest):
     parser = registry.get_by_engine(selected_engine)
     result = await parser.parse(body.url, filename="")
 
+    # URL parsers return image_urls; download them for the analyze response
+    if body.extract_images and result.image_urls and not result.images:
+        import asyncio
+        from parsers.url_parser import download_images, _is_wechat_url, _WECHAT_UA
+
+        headers = None
+        if _is_wechat_url(body.url):
+            headers = {
+                "Referer": "https://mp.weixin.qq.com/",
+                "User-Agent": _WECHAT_UA,
+            }
+        result.images = await asyncio.get_running_loop().run_in_executor(
+            None, download_images, result.image_urls, headers,
+        )
+
     images = await upload_images(result, body.extract_images)
     outline = extract_outline(result.content)
     filtered_count = len(extract_image_metadata(result.content, result.images)) if result.images else 0
