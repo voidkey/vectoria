@@ -2,7 +2,7 @@ from parsers.base import BaseParser
 
 # Extension -> preferred engine order (first available wins)
 _EXT_PREFERENCE: dict[str, list[str]] = {
-    ".pdf":  ["docling", "mineru", "markitdown"],
+    ".pdf":  ["mineru", "docling", "markitdown"],
     ".docx": ["docling", "markitdown"],
     ".pptx": ["docling", "markitdown"],
     ".xlsx": ["docling", "markitdown"],
