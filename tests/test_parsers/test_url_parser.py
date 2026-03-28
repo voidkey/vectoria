@@ -1,6 +1,6 @@
 import pytest
 from unittest.mock import patch, AsyncMock
-from parsers.url_parser import UrlParser
+from parsers.url_parser import UrlParser, download_images
 from parsers.base import ParseResult
 
 
@@ -98,3 +98,19 @@ async def test_parse_non_wechat_returns_image_urls():
         "https://example.com/banner.png",
     ]
     assert result.images == {}
+
+
+def test_download_images_with_headers():
+    """download_images should pass headers to httpx and return image bytes."""
+    fake_response = type("R", (), {"status_code": 200, "content": b"\x89PNG fake"})()
+
+    with patch("parsers.url_parser.httpx.get", return_value=fake_response) as mock_get:
+        result = download_images(
+            ["https://mmbiz.qpic.cn/img1.jpg"],
+            headers={"Referer": "https://mp.weixin.qq.com/"},
+        )
+
+    assert len(result) == 1
+    mock_get.assert_called_once()
+    call_kwargs = mock_get.call_args
+    assert call_kwargs.kwargs["headers"]["Referer"] == "https://mp.weixin.qq.com/"
