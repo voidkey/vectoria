@@ -29,9 +29,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-ocr     = ["paddleocr>=2.10", "paddlepaddle>=3.0"]
-browser = ["playwright>=1.50"]
-chroma  = ["chromadb>=0.6"]
+ocr    = ["paddleocr>=2.10", "paddlepaddle>=3.0"]
+chroma = ["chromadb>=0.6"]
 
 [build-system]
 requires = ["hatchling"]
