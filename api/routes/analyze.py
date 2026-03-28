@@ -1,3 +1,4 @@
+import asyncio
 from pathlib import Path
 
 from fastapi import APIRouter, UploadFile, File, Form
@@ -47,15 +48,9 @@ async def analyze_url(body: AnalyzeURLRequest):
 
     # URL parsers return image_urls; download them for the analyze response
     if body.extract_images and result.image_urls and not result.images:
-        import asyncio
-        from parsers.url_parser import download_images, _is_wechat_url, _WECHAT_UA
+        from parsers.url_parser import download_images, get_wechat_headers
 
-        headers = None
-        if _is_wechat_url(body.url):
-            headers = {
-                "Referer": "https://mp.weixin.qq.com/",
-                "User-Agent": _WECHAT_UA,
-            }
+        headers = get_wechat_headers(body.url)
         result.images = await asyncio.get_running_loop().run_in_executor(
             None, download_images, result.image_urls, headers,
         )

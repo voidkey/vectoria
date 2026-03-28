@@ -132,14 +132,9 @@ async def _download_and_store_images(
 ):
     """Background task: download images from URLs, upload to S3, store records, trigger vision."""
     try:
-        from parsers.url_parser import download_images, _is_wechat_url, _WECHAT_UA
+        from parsers.url_parser import download_images, get_wechat_headers
 
-        headers = None
-        if _is_wechat_url(source_url):
-            headers = {
-                "Referer": "https://mp.weixin.qq.com/",
-                "User-Agent": _WECHAT_UA,
-            }
+        headers = get_wechat_headers(source_url)
 
         images = await asyncio.get_running_loop().run_in_executor(
             None, download_images, image_urls, headers,
@@ -222,6 +217,7 @@ async def _ingest(
         asyncio.create_task(_download_and_store_images(
             parse_result.image_urls, kb_id, doc_id, source,
         ))
+        # Optimistic count; actual may be lower after background download
         image_count = len(parse_result.image_urls)
     elif parse_result.images:
         # File sources: images already uploaded, just run vision
