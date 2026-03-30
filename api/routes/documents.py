@@ -2,9 +2,10 @@ import asyncio
 import uuid
 import logging
 from fastapi import APIRouter, UploadFile, File, HTTPException
-from sqlalchemy import select
+from sqlalchemy import select, func as sa_func
+from sqlalchemy.orm import selectinload
 
-from api.schemas import DocumentResponse, DocumentIngestResponse, DocumentURLRequest
+from api.schemas import DocumentResponse, DocumentIngestResponse, DocumentURLRequest, OutlineItem
 from db.base import get_session
 from db.models import Document, KnowledgeBase
 from parsers.registry import registry
@@ -205,6 +206,7 @@ async def _ingest(
             id=doc_id, kb_id=kb_id, title=title,
             source=source, parse_engine=selected_engine,
             status="indexing", storage_key=storage_key,
+            content=content,
         )
         session.add(doc)
         await session.commit()
@@ -282,16 +284,28 @@ async def list_documents(kb_id: str):
         return [_doc_to_response(doc) for doc in docs]
 
 
-@router.get("/{kb_id}/documents/{doc_id}", response_model=DocumentResponse)
+@router.get("/{kb_id}/documents/{doc_id}", response_model=DocumentIngestResponse)
 async def get_document(kb_id: str, doc_id: str):
     async with get_session() as session:
         result = await session.execute(
-            select(Document).where(Document.id == doc_id, Document.kb_id == kb_id)
+            select(Document)
+            .options(selectinload(Document.images))
+            .where(Document.id == doc_id, Document.kb_id == kb_id)
         )
         doc = result.scalar_one_or_none()
         if not doc:
             raise HTTPException(status_code=404, detail="Document not found")
-        return _doc_to_response(doc)
+        outline = extract_outline(doc.content) if doc.content else []
+        image_count = len(doc.images)
+        return DocumentIngestResponse(
+            id=doc.id, kb_id=doc.kb_id, title=doc.title, source=doc.source,
+            chunk_count=doc.chunk_count,
+            status=doc.status, error_msg=doc.error_msg,
+            created_at=doc.created_at.isoformat(),
+            content=doc.content,
+            outline=[OutlineItem(**item) for item in outline],
+            image_count=image_count,
+        )
 
 
 @router.delete("/{kb_id}/documents/{doc_id}", status_code=204)

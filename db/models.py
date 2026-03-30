@@ -38,6 +38,7 @@ class Document(Base):
     status: Mapped[str] = mapped_column(
         String(20), default="indexing", server_default="indexing", nullable=False
     )
+    content: Mapped[str] = mapped_column(Text, default="", server_default="")
     error_msg: Mapped[str] = mapped_column(Text, default="", server_default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
