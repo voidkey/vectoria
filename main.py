@@ -13,7 +13,7 @@ from config import get_settings
 
 settings = get_settings()
 
-app = FastAPI(title="Vectoria", version="0.1.0")
+app = FastAPI(title="Vectoria", version="0.1.0", root_path="/vectoria")
 
 # --- CORS ---
 app.add_middleware(
@@ -23,17 +23,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- Public routes (no auth) ---
+# --- Public routes (no auth, no version prefix) ---
 app.include_router(health_router)
 
 # --- Protected routes (require API key when configured) ---
 _auth = [Depends(verify_api_key)]
 
-app.include_router(analyze_router, dependencies=_auth)
-app.include_router(kb_router, dependencies=_auth)
-app.include_router(docs_router, dependencies=_auth)
-app.include_router(query_router, dependencies=_auth)
-app.include_router(images_router, dependencies=_auth)
+app.include_router(analyze_router, prefix="/v1", dependencies=_auth)
+app.include_router(kb_router, prefix="/v1", dependencies=_auth)
+app.include_router(docs_router, prefix="/v1", dependencies=_auth)
+app.include_router(query_router, prefix="/v1", dependencies=_auth)
+app.include_router(images_router, prefix="/v1", dependencies=_auth)
 
 
 @app.get("/")
