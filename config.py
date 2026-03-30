@@ -54,6 +54,10 @@ class Settings(BaseSettings):
     vision_api_key: SecretStr = SecretStr("")
     vision_model: str = "gpt-4o"
 
+    # Security
+    api_key: SecretStr = SecretStr("")
+    cors_origins: list[str] = ["*"]
+
     # RAG pipeline toggles
     enable_query_rewrite: bool = True
     enable_reranker: bool = False
