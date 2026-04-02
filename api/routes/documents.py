@@ -182,6 +182,18 @@ async def _ingest(
     title = parse_result.title or (filename or source)
     outline = extract_outline(content)
 
+    # Create document record first (foreign key for document_images)
+    async with get_session() as session:
+        doc = Document(
+            id=doc_id, kb_id=kb_id, title=title,
+            source=source, parse_engine=selected_engine,
+            status="indexing", storage_key=storage_key,
+            content=content,
+        )
+        session.add(doc)
+        await session.commit()
+        await session.refresh(doc)
+
     # Image handling: background for URL sources, sync for file sources
     has_image_urls = bool(parse_result.image_urls)
     image_count = 0
@@ -199,18 +211,6 @@ async def _ingest(
             doc_id=doc_id,
             vision_configured=vision_configured,
         )
-
-    # Create document record
-    async with get_session() as session:
-        doc = Document(
-            id=doc_id, kb_id=kb_id, title=title,
-            source=source, parse_engine=selected_engine,
-            status="indexing", storage_key=storage_key,
-            content=content,
-        )
-        session.add(doc)
-        await session.commit()
-        await session.refresh(doc)
 
     # --- Async phase: index in background ---
     asyncio.create_task(_index_document(doc_id, kb_id, content))
