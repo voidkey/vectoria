@@ -120,6 +120,16 @@ class UrlParser(BaseParser):
             output_format="markdown",
         ) or ""
 
+        # Fallback: extract all visible text when trafilatura finds no article content
+        if not text.strip():
+            from trafilatura.utils import load_html
+            from trafilatura.core import baseline
+
+            tree = load_html(f"<html><body>{content_html}</body></html>")
+            if tree is not None:
+                _, raw_text, _ = baseline(tree)
+                text = raw_text or ""
+
         return ParseResult(
             content=text, images={}, title=title,
             image_urls=img_urls[:20],
@@ -136,6 +146,16 @@ class UrlParser(BaseParser):
             include_links=False,
             output_format="markdown",
         ) or ""
+
+        # Fallback: extract all visible text when trafilatura finds no article content
+        if not text.strip():
+            from trafilatura.utils import load_html
+            from trafilatura.core import baseline
+
+            tree = load_html(downloaded)
+            if tree is not None:
+                _, raw_text, _ = baseline(tree)
+                text = raw_text or ""
 
         title_match = re.search(r"<title[^>]*>([^<]+)</title>", downloaded, re.IGNORECASE)
         title = title_match.group(1).strip() if title_match else urlparse(url).netloc
