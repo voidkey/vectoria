@@ -27,6 +27,29 @@ class ImageMeta:
 _PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
 
+def detect_mime_type(data: bytes, fallback: str = "application/octet-stream") -> str:
+    """Detect image MIME type from magic bytes.
+
+    Returns the detected MIME type, or *fallback* when the format is
+    unrecognised (default ``application/octet-stream``).
+    """
+    if len(data) < 2:
+        return fallback
+    if data[:8] == _PNG_SIGNATURE:
+        return "image/png"
+    if data[:2] == b"\xff\xd8":
+        return "image/jpeg"
+    if data[:4] == b"GIF8":
+        return "image/gif"
+    if len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    if len(data) >= 4 and data[:2] in (b"II", b"MM") and data[2:4] in (b"\x2a\x00", b"\x00\x2a"):
+        return "image/tiff"
+    if data[:2] == b"BM":
+        return "image/bmp"
+    return fallback
+
+
 def _get_png_dimensions(img_bytes: bytes) -> tuple[int | None, int | None]:
     """Parse PNG IHDR chunk directly to extract width and height."""
     import struct

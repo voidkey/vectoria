@@ -6,7 +6,7 @@ from rag.embedder import Embedder
 @pytest.mark.asyncio
 async def test_embed_returns_floats():
     mock_response = MagicMock()
-    mock_response.data = [MagicMock(embedding=[0.1, 0.2, 0.3])]
+    mock_response.data = [MagicMock(embedding=[0.1, 0.2, 0.3], index=0)]
 
     with patch("rag.embedder.AsyncOpenAI") as MockOAI:
         instance = MockOAI.return_value
@@ -22,8 +22,8 @@ async def test_embed_returns_floats():
 async def test_embed_batch():
     mock_response = MagicMock()
     mock_response.data = [
-        MagicMock(embedding=[0.1, 0.2]),
-        MagicMock(embedding=[0.3, 0.4]),
+        MagicMock(embedding=[0.1, 0.2], index=0),
+        MagicMock(embedding=[0.3, 0.4], index=1),
     ]
 
     with patch("rag.embedder.AsyncOpenAI") as MockOAI:
