@@ -4,7 +4,9 @@ from parsers.base import BaseParser
 _EXT_PREFERENCE: dict[str, list[str]] = {
     ".pdf":  ["mineru", "docling", "markitdown"],
     ".docx": ["docling", "markitdown"],
+    ".doc":  ["docling", "markitdown"],
     ".pptx": ["docling", "markitdown"],
+    ".ppt":  ["docling", "markitdown"],
     ".xlsx": ["docling", "markitdown"],
     ".xls":  ["docling", "markitdown"],
     ".png":  ["docling"],
