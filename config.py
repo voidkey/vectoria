@@ -17,6 +17,7 @@ class Settings(BaseSettings):
     embedding_api_key: SecretStr = SecretStr("")
     embedding_model: str = "text-embedding-3-small"
     embedding_dimensions: int = 1536
+    embedding_batch_size: int = 4
 
     @property
     def effective_embedding_base_url(self) -> str:
