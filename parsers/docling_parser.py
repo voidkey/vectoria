@@ -1,9 +1,13 @@
 import asyncio
 import io
+import logging
 import tempfile
 from pathlib import Path
 
 from parsers.base import BaseParser, ParseResult
+from parsers.convert import LEGACY_FORMAT_MAP, convert_legacy_format
+
+logger = logging.getLogger(__name__)
 
 try:
     from docling.document_converter import DocumentConverter
@@ -15,7 +19,7 @@ except ImportError:
 
 class DoclingParser(BaseParser):
     engine_name = "docling"
-    supported_types = [".pdf", ".docx", ".pptx", ".xlsx", ".xls", ".png", ".jpg", ".jpeg", ".tiff", ".bmp"]
+    supported_types = [".pdf", ".docx", ".doc", ".pptx", ".ppt", ".xlsx", ".xls", ".png", ".jpg", ".jpeg", ".tiff", ".bmp"]
 
     @classmethod
     def is_available(cls) -> bool:
@@ -46,10 +50,16 @@ class DoclingParser(BaseParser):
                 tmp.write(source.encode())
             tmp_path = tmp.name
 
+        converted_path = None
         try:
-            result = converter.convert(tmp_path)
+            if suffix in LEGACY_FORMAT_MAP:
+                converted_path = convert_legacy_format(tmp_path, suffix)
+                logger.info("Converted %s → %s", suffix, converted_path)
+            result = converter.convert(converted_path or tmp_path)
         finally:
             Path(tmp_path).unlink(missing_ok=True)
+            if converted_path:
+                Path(converted_path).unlink(missing_ok=True)
 
         if result.status.name != "SUCCESS":
             return ParseResult(content="", images={}, title=Path(filename).stem)
