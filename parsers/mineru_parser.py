@@ -40,16 +40,18 @@ class MinerUParser(BaseParser):
             "lang_list": self._language,
             "response_format_zip": "false",
         }
-        files = {"files": (filename or "document.pdf", content, "application/octet-stream")}
+        files = {"files": ("document.pdf", content, "application/octet-stream")}
 
         async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
             resp = await client.post(f"{self._api_url}/file_parse", data=data, files=files)
             resp.raise_for_status()
             body = resp.json()
 
-        # Support both response schema variants (results.document / results.files)
+        # Support both response schema variants:
+        # - legacy: results.document / results.files
+        # - current: results.<filename_stem>
         results = body.get("results", {})
-        doc = results.get("document") or results.get("files") or {}
+        doc = results.get("document") or results.get("files") or next(iter(results.values()), {})
         md_content: str = doc.get("md_content", "")
         images_b64: dict[str, str] = doc.get("images", {})
 
