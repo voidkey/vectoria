@@ -136,7 +136,16 @@ class UrlParser(BaseParser):
         )
 
     def _parse_sync(self, url: str) -> ParseResult:
-        downloaded = trafilatura.fetch_url(url)
+        # Use httpx instead of trafilatura.fetch_url to follow HTTP redirects
+        # (trafilatura.fetch_url can't handle JS redirects like baidu.com)
+        try:
+            resp = httpx.get(url, timeout=15, follow_redirects=True)
+            resp.raise_for_status()
+            downloaded = resp.text
+            final_url = str(resp.url)
+        except Exception:
+            return ParseResult(content="", images={}, title="")
+
         if not downloaded:
             return ParseResult(content="", images={}, title="")
 
@@ -158,9 +167,9 @@ class UrlParser(BaseParser):
                 text = raw_text or ""
 
         title_match = re.search(r"<title[^>]*>([^<]+)</title>", downloaded, re.IGNORECASE)
-        title = title_match.group(1).strip() if title_match else urlparse(url).netloc
+        title = title_match.group(1).strip() if title_match else urlparse(final_url).netloc
 
-        img_urls = _extract_image_urls(downloaded, url)
+        img_urls = _extract_image_urls(downloaded, final_url)
         return ParseResult(content=text, images={}, title=title, image_urls=img_urls)
 
 
