@@ -1,6 +1,5 @@
 import asyncio
 import io
-import subprocess
 import tempfile
 from pathlib import Path
 
@@ -14,12 +13,9 @@ except ImportError:
     _DOCLING_AVAILABLE = False
 
 
-_LEGACY_FORMAT_MAP = {".doc": ".docx", ".ppt": ".pptx"}
-
-
 class DoclingParser(BaseParser):
     engine_name = "docling"
-    supported_types = [".pdf", ".docx", ".doc", ".pptx", ".ppt", ".xlsx", ".xls", ".png", ".jpg", ".jpeg", ".tiff", ".bmp"]
+    supported_types = [".pdf", ".docx", ".pptx", ".xlsx", ".xls", ".png", ".jpg", ".jpeg", ".tiff", ".bmp"]
 
     @classmethod
     def is_available(cls) -> bool:
@@ -50,17 +46,10 @@ class DoclingParser(BaseParser):
                 tmp.write(source.encode())
             tmp_path = tmp.name
 
-        converted_path = None
         try:
-            if suffix in _LEGACY_FORMAT_MAP:
-                converted_path = str(Path(tmp_path).with_suffix(_LEGACY_FORMAT_MAP[suffix]))
-                self._convert_legacy(tmp_path, suffix)
-            parse_path = converted_path or tmp_path
-            result = converter.convert(parse_path)
+            result = converter.convert(tmp_path)
         finally:
             Path(tmp_path).unlink(missing_ok=True)
-            if converted_path:
-                Path(converted_path).unlink(missing_ok=True)
 
         if result.status.name != "SUCCESS":
             return ParseResult(content="", images={}, title=Path(filename).stem)
@@ -70,23 +59,6 @@ class DoclingParser(BaseParser):
         title = Path(filename).stem
 
         return ParseResult(content=markdown, images=images, title=title)
-
-    @staticmethod
-    def _convert_legacy(src_path: str, suffix: str) -> None:
-        """Convert .doc/.ppt to .docx/.pptx via LibreOffice."""
-        target_fmt = _LEGACY_FORMAT_MAP[suffix]
-        out_dir = Path(src_path).parent
-        result = subprocess.run(
-            ["libreoffice", "--headless", "--convert-to",
-             target_fmt.lstrip("."), "--outdir", str(out_dir), src_path],
-            check=True, timeout=120, capture_output=True,
-        )
-        expected = Path(src_path).with_suffix(target_fmt)
-        if not expected.exists():
-            raise RuntimeError(
-                f"LibreOffice conversion produced no output: {expected}\n"
-                f"stderr: {result.stderr.decode(errors='replace')}"
-            )
 
     def _extract_images(self, result) -> dict[str, bytes]:
         """Extract embedded images from Docling result."""
