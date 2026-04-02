@@ -12,6 +12,23 @@ _SYSTEM_PROMPT = (
 )
 
 
+def _detect_mime_type(data: bytes) -> str:
+    """Detect image MIME type from magic bytes."""
+    if data[:8] == b"\x89PNG\r\n\x1a\n":
+        return "image/png"
+    if data[:2] == b"\xff\xd8":
+        return "image/jpeg"
+    if data[:4] == b"GIF8":
+        return "image/gif"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    if data[:2] in (b"II", b"MM"):
+        return "image/tiff"
+    if data[:2] == b"BM":
+        return "image/bmp"
+    return "image/png"
+
+
 class VisionClient:
     def __init__(self, base_url: str, api_key: str, model: str):
         self._model = model
@@ -29,6 +46,7 @@ class VisionClient:
         if not self._client:
             return ""
         try:
+            mime = _detect_mime_type(image_bytes)
             b64 = base64.b64encode(image_bytes).decode()
             resp = await self._client.chat.completions.create(
                 model=self._model,
@@ -39,7 +57,7 @@ class VisionClient:
                             {"type": "text", "text": _SYSTEM_PROMPT},
                             {
                                 "type": "image_url",
-                                "image_url": {"url": f"data:image/png;base64,{b64}"},
+                                "image_url": {"url": f"data:{mime};base64,{b64}"},
                             },
                         ],
                     }
