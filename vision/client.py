@@ -3,6 +3,8 @@ import logging
 
 from openai import AsyncOpenAI
 
+from parsers.image_metadata import detect_mime_type
+
 logger = logging.getLogger(__name__)
 
 _SYSTEM_PROMPT = (
@@ -10,23 +12,6 @@ _SYSTEM_PROMPT = (
     "图片类型（照片、图表、示意图、截图、插画等），"
     "以及它可能在什么场景下有用。请简洁。"
 )
-
-
-def _detect_mime_type(data: bytes) -> str:
-    """Detect image MIME type from magic bytes."""
-    if data[:8] == b"\x89PNG\r\n\x1a\n":
-        return "image/png"
-    if data[:2] == b"\xff\xd8":
-        return "image/jpeg"
-    if data[:4] == b"GIF8":
-        return "image/gif"
-    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
-        return "image/webp"
-    if data[:2] in (b"II", b"MM"):
-        return "image/tiff"
-    if data[:2] == b"BM":
-        return "image/bmp"
-    return "image/png"
 
 
 class VisionClient:
@@ -46,7 +31,7 @@ class VisionClient:
         if not self._client:
             return ""
         try:
-            mime = _detect_mime_type(image_bytes)
+            mime = detect_mime_type(image_bytes, fallback="image/png")
             b64 = base64.b64encode(image_bytes).decode()
             resp = await self._client.chat.completions.create(
                 model=self._model,

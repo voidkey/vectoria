@@ -1,10 +1,10 @@
 import asyncio
 import math
-import mimetypes
 import uuid
 from pathlib import Path
 
 from api.schemas import ImageInfo
+from parsers.image_metadata import detect_mime_type
 from storage import get_storage
 
 
@@ -53,7 +53,7 @@ async def upload_images(result, extract_images: bool, prefix: str = "") -> list[
         used_names.add(safe_name)
 
         key = f"{key_prefix}/{safe_name}"
-        content_type = mimetypes.guess_type(safe_name)[0] or "image/png"
+        content_type = detect_mime_type(img_bytes, fallback="image/png")
         await obj_storage.put(key, img_bytes, content_type=content_type)
         presigned = await obj_storage.presign_url(key)
         return ImageInfo(id=safe_name, url=presigned, context="", type="unknown")
@@ -110,8 +110,7 @@ async def upload_and_store_images(
         meta.filename = safe_name  # replace URL/raw key with safe filename
 
     async def _upload_one(original_key: str, s3_key: str) -> None:
-        safe_name = Path(s3_key).name
-        content_type = mimetypes.guess_type(safe_name)[0] or "image/png"
+        content_type = detect_mime_type(images[original_key], fallback="image/png")
         await obj_storage.put(s3_key, images[original_key], content_type=content_type)
 
     await asyncio.gather(*(_upload_one(ok, sk) for ok, _, sk in upload_plan))

@@ -3,7 +3,7 @@ from openai import AsyncOpenAI
 
 from api.schemas import QueryRequest, QueryResponse
 from config import get_settings
-from rag.embedder import Embedder
+from rag.embedder import get_embedder
 from rag.pipeline import build_default_pipeline
 from rag.steps.query_rewrite import QueryRewriteStep
 from rag.steps.rerank import RerankStep
@@ -11,21 +11,29 @@ from vectorstore.pgvector import PgVectorStore
 
 router = APIRouter(prefix="/knowledgebases")
 
+_llm_client: AsyncOpenAI | None = None
+
+
+def _get_llm_client() -> AsyncOpenAI:
+    global _llm_client  # noqa: PLW0603
+    if _llm_client is None:
+        cfg = get_settings()
+        _llm_client = AsyncOpenAI(
+            base_url=cfg.openai_base_url,
+            api_key=cfg.openai_api_key.get_secret_value(),
+        )
+    return _llm_client
+
 
 @router.post("/{kb_id}/query", response_model=QueryResponse)
 async def query_kb(kb_id: str, body: QueryRequest):
     if not body.query.strip():
         raise HTTPException(status_code=422, detail="query must not be empty")
 
-    cfg = get_settings()
-    llm = AsyncOpenAI(
-        base_url=cfg.openai_base_url,
-        api_key=cfg.openai_api_key.get_secret_value(),
-    )
     store = await PgVectorStore.create()
-    embedder = Embedder()
+    embedder = get_embedder()
 
-    pipeline = build_default_pipeline(store=store, embedder=embedder, llm_client=llm)
+    pipeline = build_default_pipeline(store=store, embedder=embedder, llm_client=_get_llm_client())
 
     # Apply per-request overrides
     if not body.query_rewrite:

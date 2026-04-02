@@ -13,7 +13,7 @@ from parsers.outline import extract_outline
 from parsers.image_metadata import extract_image_metadata
 from storage import get_storage
 from splitter.splitter import Splitter
-from rag.embedder import Embedder
+from rag.embedder import get_embedder
 from vectorstore.pgvector import PgVectorStore
 from vectorstore.base import ChunkData
 from config import get_settings
@@ -49,7 +49,7 @@ async def _index_document(doc_id: str, kb_id: str, content: str):
         chunks = splitter.split(content)
 
         indexable = [c for c in chunks if c.parent_id is None]
-        embedder = Embedder()
+        embedder = get_embedder()
         texts = [c.content for c in indexable]
         embeddings = await embedder.embed_batch(texts) if texts else []
 
