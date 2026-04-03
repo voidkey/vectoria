@@ -108,7 +108,12 @@ async def _analyze_images_with_vision(kb_id: str, doc_id: str):
         async with sem:
             try:
                 img_bytes = await obj_storage.get(img.storage_key)
-                description = await client.describe(img_bytes)
+                description = await client.describe(
+                    img_bytes,
+                    context=img.context,
+                    section_title=img.section_title,
+                    alt=img.alt,
+                )
                 status = "completed" if description else "failed"
             except Exception:
                 logger.exception("Vision analysis failed for image %s", img.id)
