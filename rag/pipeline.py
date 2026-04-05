@@ -14,7 +14,7 @@ class Pipeline:
         return ctx
 
 
-def build_default_pipeline(store, embedder, llm_client) -> Pipeline:
+def build_default_pipeline(store, embedder, llm_client, rerank_client) -> Pipeline:
     """Build the standard pipeline from configured steps."""
     from rag.steps.retrieve import RetrieveStep
     from rag.steps.fusion import FusionStep
@@ -28,7 +28,7 @@ def build_default_pipeline(store, embedder, llm_client) -> Pipeline:
         QueryRewriteStep(llm_client=llm_client, enabled=cfg.enable_query_rewrite),
         RetrieveStep(store=store, embedder=embedder),
         FusionStep(),
-        RerankStep(enabled=cfg.enable_reranker),
+        RerankStep(client=rerank_client, enabled=cfg.enable_reranker),
         ExpandStep(store=store),
         GenerateStep(llm_client=llm_client),
     ])

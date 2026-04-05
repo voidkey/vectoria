@@ -1,3 +1,4 @@
+import httpx
 from fastapi import APIRouter, HTTPException
 from openai import AsyncOpenAI
 
@@ -12,6 +13,7 @@ from vectorstore.pgvector import PgVectorStore
 router = APIRouter(prefix="/knowledgebases")
 
 _llm_client: AsyncOpenAI | None = None
+_rerank_client: httpx.AsyncClient | None = None
 
 
 def _get_llm_client() -> AsyncOpenAI:
@@ -25,6 +27,13 @@ def _get_llm_client() -> AsyncOpenAI:
     return _llm_client
 
 
+def _get_rerank_client() -> httpx.AsyncClient:
+    global _rerank_client  # noqa: PLW0603
+    if _rerank_client is None:
+        _rerank_client = httpx.AsyncClient(timeout=30.0)
+    return _rerank_client
+
+
 @router.post("/{kb_id}/query", response_model=QueryResponse)
 async def query_kb(kb_id: str, body: QueryRequest):
     if not body.query.strip():
@@ -33,7 +42,10 @@ async def query_kb(kb_id: str, body: QueryRequest):
     store = await PgVectorStore.create()
     embedder = get_embedder()
 
-    pipeline = build_default_pipeline(store=store, embedder=embedder, llm_client=_get_llm_client())
+    pipeline = build_default_pipeline(
+        store=store, embedder=embedder,
+        llm_client=_get_llm_client(), rerank_client=_get_rerank_client(),
+    )
 
     # Apply per-request overrides
     if not body.query_rewrite:
