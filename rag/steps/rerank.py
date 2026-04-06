@@ -11,7 +11,7 @@ class RerankStep(PipelineStep):
     """Calls an OpenAI-compatible reranker API."""
 
     def __init__(self, client: httpx.AsyncClient, enabled: bool = False):
-        self.enabled = enabled
+        super().__init__(enabled=enabled)
         self._client = client
 
     async def run(self, ctx: PipelineContext) -> PipelineContext:
@@ -33,14 +33,14 @@ class RerankStep(PipelineStep):
             )
             resp.raise_for_status()
             n_fused = len(ctx.fused_results)
-            ranked_indices = []
+            results = []
             for item in resp.json()["results"]:
                 idx = item["index"]
                 if 0 <= idx < n_fused:
-                    ranked_indices.append(idx)
+                    results.append(ctx.fused_results[idx])
                 else:
                     logger.warning("Reranker returned out-of-range index %d (n=%d)", idx, n_fused)
-            ctx.final_results = [ctx.fused_results[i] for i in ranked_indices]
+            ctx.final_results = results
         except Exception:
             logger.exception("Rerank failed, falling back to fused results")
             ctx.final_results = ctx.fused_results[: ctx.top_k]
