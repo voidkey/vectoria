@@ -54,7 +54,10 @@ class VisionClient:
         if not self._client:
             return ""
         try:
-            mime = detect_mime_type(image_bytes, fallback="image/png")
+            mime = detect_mime_type(image_bytes)
+            if not mime.startswith("image/"):
+                logger.warning("Skipping non-image data (detected %s)", mime)
+                return ""
             b64 = base64.b64encode(image_bytes).decode()
             user_text = _build_user_text(context, section_title, alt)
             resp = await self._client.chat.completions.create(
