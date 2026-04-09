@@ -22,9 +22,10 @@ git pull
 echo "Syncing dependencies..."
 uv sync --frozen
 
-# Install Playwright Chromium browser (if not already present)
+# Install Playwright system deps; skip browser download if already present
 echo "Ensuring Playwright Chromium is installed..."
-uv run playwright install --with-deps chromium
+uv run playwright install-deps chromium
+uv run playwright install chromium || true
 
 # Run DB migrations
 echo "Running database migrations..."
