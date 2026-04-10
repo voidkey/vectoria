@@ -16,6 +16,7 @@ settings = get_settings()
 app = FastAPI(title="Vectoria", version="0.1.0", root_path="/vectoria")
 
 # --- CORS ---
+# TODO: 部署生产环境前将 allow_origins 从 "*" 改为具体的域名列表
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
