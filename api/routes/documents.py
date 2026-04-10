@@ -5,7 +5,7 @@ from fastapi import APIRouter, UploadFile, File, HTTPException
 from sqlalchemy import select, func as sa_func
 from sqlalchemy.orm import selectinload
 
-from api.schemas import DocumentResponse, DocumentIngestResponse, DocumentURLRequest, OutlineItem
+from api.schemas import DocumentResponse, DocumentIngestResponse, DocumentURLRequest, DocumentSourceURLResponse, OutlineItem
 from db.base import get_session
 from db.models import Document, KnowledgeBase
 from parsers.registry import registry
@@ -311,6 +311,24 @@ async def get_document(kb_id: str, doc_id: str):
             outline=[OutlineItem(**item) for item in outline],
             image_count=image_count,
         )
+
+
+@router.get("/{kb_id}/documents/{doc_id}/source_url", response_model=DocumentSourceURLResponse)
+async def get_document_source_url(kb_id: str, doc_id: str):
+    async with get_session() as session:
+        result = await session.execute(
+            select(Document).where(Document.id == doc_id, Document.kb_id == kb_id)
+        )
+        doc = result.scalar_one_or_none()
+        if not doc:
+            raise HTTPException(status_code=404, detail="Document not found")
+
+    if doc.storage_key:
+        obj_storage = await get_storage()
+        url = await obj_storage.presign_url(doc.storage_key)
+        return DocumentSourceURLResponse(doc_id=doc.id, source_type="file", url=url)
+    else:
+        return DocumentSourceURLResponse(doc_id=doc.id, source_type="url", url=doc.source)
 
 
 @router.delete("/{kb_id}/documents/{doc_id}", status_code=204)

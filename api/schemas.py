@@ -81,6 +81,12 @@ class DocumentImagesListResponse(BaseModel):
     images: list[DocumentImageResponse] = []
 
 
+class DocumentSourceURLResponse(BaseModel):
+    doc_id: str
+    source_type: str  # "file" or "url"
+    url: str
+
+
 class QueryRequest(BaseModel):
     query: str
     top_k: int = 5
