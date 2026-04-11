@@ -29,6 +29,33 @@ def compute_aspect_ratio(w: int, h: int) -> str:
     return f"{rw}:{rh}"
 
 
+# MIME type -> file extension mapping (for S3 object key naming)
+_MIME_EXT = {
+    "image/png": ".png",
+    "image/jpeg": ".jpg",
+    "image/gif": ".gif",
+    "image/webp": ".webp",
+    "image/bmp": ".bmp",
+    "image/tiff": ".tiff",
+}
+
+
+def _ensure_ext(name: str, img_bytes: bytes) -> str:
+    """Ensure the filename has a proper image extension.
+
+    1. Try extracting extension from URL/path.
+    2. Fall back to magic bytes detection (MIME type).
+    """
+    base = Path(name.split("?")[0]).name
+    if base and "." in base:
+        return base  # already has extension
+
+    # Detect from content
+    mime = detect_mime_type(img_bytes, fallback="image/png")
+    ext = _MIME_EXT.get(mime, ".png")
+    return f"{base}{ext}" if base else f"image{ext}"
+
+
 async def upload_images(result, extract_images: bool, prefix: str = "") -> list[ImageInfo]:
     """Upload extracted images to object storage and return presigned URLs.
 
@@ -43,12 +70,12 @@ async def upload_images(result, extract_images: bool, prefix: str = "") -> list[
     used_names: set[str] = set()
 
     async def _upload_one(img_name: str, img_bytes: bytes) -> ImageInfo:
-        base = Path(img_name.split("?")[0]).name or "image.jpg"
-        safe_name = base
+        safe_name = _ensure_ext(img_name, img_bytes)
         i = 1
         while safe_name in used_names:
-            stem, _, ext = base.rpartition(".")
-            safe_name = f"{stem}_{i}.{ext}" if ext else f"{base}_{i}"
+            stem = Path(safe_name).stem
+            ext = Path(safe_name).suffix
+            safe_name = f"{stem}_{i}{ext}"
             i += 1
         used_names.add(safe_name)
 
