@@ -83,28 +83,53 @@ class UrlParser(BaseParser):
             """)
             await page.wait_for_timeout(1000)
 
-            # Extract title: prefer #activity-name over <title>
-            title = await page.evaluate("""
+            # Detect article type: image message has #js_image_content, regular article has #js_content
+            article_info = await page.evaluate("""
                 () => {
-                    const el = document.querySelector('#activity-name');
-                    return el ? el.textContent.trim() : '';
-                }
-            """) or ""
-
-            # Extract content HTML: prefer #js_content over full body
-            content_html = await page.evaluate("""
-                () => {
-                    const el = document.querySelector('#js_content');
-                    return el ? el.innerHTML : document.body.innerHTML;
+                    // Try image message (#js_image_content): title in h1, content in #js_image_desc
+                    const imgContent = document.querySelector('#js_image_content');
+                    if (imgContent) {
+                        const titleEl = imgContent.querySelector('h1.rich_media_title, .rich_media_title');
+                        const descEl = document.querySelector('#js_image_desc');
+                        return {
+                            type: 'image_msg',
+                            title: titleEl ? titleEl.textContent.trim() : '',
+                            contentHtml: descEl ? descEl.innerHTML : '',
+                        };
+                    }
+                    // Regular article: title in #activity-name, content in #js_content
+                    const titleEl = document.querySelector('#activity-name');
+                    const contentEl = document.querySelector('#js_content');
+                    return {
+                        type: 'article',
+                        title: titleEl ? titleEl.textContent.trim() : '',
+                        contentHtml: contentEl ? contentEl.innerHTML : document.body.innerHTML,
+                    };
                 }
             """)
 
-            # Extract image URLs from article body
-            img_urls = await page.evaluate("""
-                () => Array.from(document.querySelectorAll('#js_content img'))
+            title = article_info.get("title") or ""
+            content_html = article_info.get("contentHtml") or ""
+            article_type = article_info.get("type", "article")
+
+            # Extract image URLs: for image messages use #js_image_desc, for articles use #js_content
+            img_selector = "#js_image_desc img" if article_type == "image_msg" else "#js_content img"
+            img_urls = await page.evaluate(f"""
+                () => Array.from(document.querySelectorAll('{img_selector}'))
                     .map(img => img.getAttribute('data-src') || img.src)
                     .filter(src => src && !src.startsWith('data:'))
             """)
+
+            # For image messages, also capture the main card image (author avatar / cover)
+            if article_type == "image_msg":
+                avatar_img = await page.evaluate("""
+                    () => {
+                        const avatar = document.querySelector('.reward-avatar img, #js_image_desc + div img, #js_image_content img');
+                        return avatar ? (avatar.getAttribute('data-src') || avatar.src) : '';
+                    }
+                """)
+                if avatar_img and avatar_img not in img_urls and not avatar_img.startswith("data:"):
+                    img_urls = [avatar_img] + img_urls
 
             if not title:
                 html = await page.content()
