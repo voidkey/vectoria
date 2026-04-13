@@ -275,7 +275,7 @@ async def ingest_file(kb_id: str, file: UploadFile = File(...)):
 
 @router.post("/{kb_id}/documents/url", response_model=DocumentIngestResponse, status_code=201)
 async def ingest_url(kb_id: str, body: DocumentURLRequest):
-    url_error = validate_url(body.url)
+    url_error = await validate_url(body.url)
     if url_error:
         raise HTTPException(status_code=422, detail=url_error)
 
