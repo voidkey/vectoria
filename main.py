@@ -1,8 +1,13 @@
-from fastapi import Depends, FastAPI
+import logging
+
+from fastapi import Depends, FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
+from fastapi.responses import JSONResponse
 
 from api.deps import verify_api_key
+from api.errors import AppError, ErrorCode
 from api.routes.analyze import router as analyze_router
 from api.routes.documents import router as docs_router
 from api.routes.health import router as health_router
@@ -35,6 +40,34 @@ app.include_router(kb_router, prefix="/v1", dependencies=_auth)
 app.include_router(docs_router, prefix="/v1", dependencies=_auth)
 app.include_router(query_router, prefix="/v1", dependencies=_auth)
 app.include_router(images_router, prefix="/v1", dependencies=_auth)
+
+
+logger = logging.getLogger(__name__)
+
+
+@app.exception_handler(AppError)
+async def app_error_handler(request: Request, exc: AppError):
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"code": exc.code, "detail": exc.detail},
+    )
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_error_handler(request: Request, exc: RequestValidationError):
+    return JSONResponse(
+        status_code=422,
+        content={"code": ErrorCode.VALIDATION_ERROR, "detail": str(exc)},
+    )
+
+
+@app.exception_handler(Exception)
+async def unhandled_error_handler(request: Request, exc: Exception):
+    logger.exception("Unhandled error")
+    return JSONResponse(
+        status_code=500,
+        content={"code": ErrorCode.INTERNAL_ERROR, "detail": "Internal server error"},
+    )
 
 
 @app.get("/")
