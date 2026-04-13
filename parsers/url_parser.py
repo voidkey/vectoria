@@ -13,7 +13,7 @@ except ImportError:
 from parsers.base import BaseParser, ParseResult
 
 _IMG_TAG = re.compile(r'<img[^>]+(?:data-src|src)=["\']([^"\']+)["\']', re.IGNORECASE)
-_WECHAT_HOSTS = {"mp.weixin.qq.com"}
+_WECHAT_HOSTS = {"mp.weixin.qq.com", "weixin.qq.com", "channels.weixin.qq.com"}
 WECHAT_UA = (
     "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
     "AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 "
@@ -83,7 +83,7 @@ class UrlParser(BaseParser):
             """)
             await page.wait_for_timeout(1000)
 
-            # Detect article type: image message has #js_image_content, regular article has #js_content
+            # Detect article type and extract content from appropriate DOM selectors
             article_info = await page.evaluate("""
                 () => {
                     // Try image message (#js_image_content): title in h1, content in #js_image_desc
@@ -98,12 +98,22 @@ class UrlParser(BaseParser):
                         };
                     }
                     // Regular article: title in #activity-name, content in #js_content
-                    const titleEl = document.querySelector('#activity-name');
                     const contentEl = document.querySelector('#js_content');
+                    if (contentEl) {
+                        const titleEl = document.querySelector('#activity-name');
+                        return {
+                            type: 'article',
+                            title: titleEl ? titleEl.textContent.trim() : '',
+                            contentHtml: contentEl.innerHTML,
+                        };
+                    }
+                    // Fallback for other WeChat pages (e.g. 视频号 channels.weixin.qq.com):
+                    // extract all visible text from the rendered page
+                    const title = document.title || '';
                     return {
-                        type: 'article',
-                        title: titleEl ? titleEl.textContent.trim() : '',
-                        contentHtml: contentEl ? contentEl.innerHTML : document.body.innerHTML,
+                        type: 'generic',
+                        title: title,
+                        contentHtml: document.body.innerHTML,
                     };
                 }
             """)
@@ -112,8 +122,13 @@ class UrlParser(BaseParser):
             content_html = article_info.get("contentHtml") or ""
             article_type = article_info.get("type", "article")
 
-            # Extract image URLs: for image messages use #js_image_desc, for articles use #js_content
-            img_selector = "#js_image_desc img" if article_type == "image_msg" else "#js_content img"
+            # Extract image URLs based on article type
+            if article_type == "image_msg":
+                img_selector = "#js_image_desc img"
+            elif article_type == "article":
+                img_selector = "#js_content img"
+            else:
+                img_selector = "body img"
             img_urls = await page.evaluate(f"""
                 () => Array.from(document.querySelectorAll('{img_selector}'))
                     .map(img => img.getAttribute('data-src') || img.src)
