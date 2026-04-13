@@ -1,11 +1,12 @@
 import asyncio
 import uuid
 import logging
-from fastapi import APIRouter, UploadFile, File, HTTPException
+from fastapi import APIRouter, UploadFile, File
 from sqlalchemy import select, func as sa_func
 from sqlalchemy.orm import selectinload
 
 from api.schemas import DocumentResponse, DocumentIngestResponse, DocumentURLRequest, DocumentSourceURLResponse, OutlineItem
+from api.errors import AppError, ErrorCode
 from api.url_validation import validate_url
 from db.base import get_session
 from db.models import Document, KnowledgeBase
@@ -182,14 +183,14 @@ async def _ingest(
         parse_result = await parser.parse(raw, filename=filename)
     except Exception as e:
         logger.exception("Document parsing failed")
-        raise HTTPException(status_code=422, detail=f"Parsing failed: {e}")
+        raise AppError(422, ErrorCode.PARSE_ERROR, f"Parsing failed: {e}")
 
     content = parse_result.content
     title = parse_result.title or (filename or source)
 
     if not content or content.isspace():
         logger.warning("Parsed content is empty for source: %s", source)
-        raise HTTPException(status_code=422, detail="Parsing returned empty content")
+        raise AppError(422, ErrorCode.EMPTY_CONTENT, "Parsing returned empty content")
 
     outline = extract_outline(content)
 
@@ -251,7 +252,7 @@ async def _validate_kb(kb_id: str):
     async with get_session() as session:
         kb_result = await session.execute(select(KnowledgeBase).where(KnowledgeBase.id == kb_id))
         if not kb_result.scalar_one_or_none():
-            raise HTTPException(status_code=404, detail="KnowledgeBase not found")
+            raise AppError(404, ErrorCode.NOT_FOUND, "KnowledgeBase not found")
 
 
 @router.post("/{kb_id}/documents/file", response_model=DocumentIngestResponse, status_code=201)
@@ -275,10 +276,7 @@ async def ingest_file(kb_id: str, file: UploadFile = File(...)):
 
 @router.post("/{kb_id}/documents/url", response_model=DocumentIngestResponse, status_code=201)
 async def ingest_url(kb_id: str, body: DocumentURLRequest):
-    url_error = await validate_url(body.url)
-    if url_error:
-        raise HTTPException(status_code=422, detail=url_error)
-
+    await validate_url(body.url)
     await _validate_kb(kb_id)
 
     selected_engine = registry.auto_select(url=body.url)
@@ -309,7 +307,7 @@ async def get_document(kb_id: str, doc_id: str):
         )
         doc = result.scalar_one_or_none()
         if not doc:
-            raise HTTPException(status_code=404, detail="Document not found")
+            raise AppError(404, ErrorCode.NOT_FOUND, "Document not found")
         outline = extract_outline(doc.content) if doc.content else []
         image_count = len(doc.images)
         return DocumentIngestResponse(
@@ -331,7 +329,7 @@ async def get_document_source_url(kb_id: str, doc_id: str):
         )
         doc = result.scalar_one_or_none()
         if not doc:
-            raise HTTPException(status_code=404, detail="Document not found")
+            raise AppError(404, ErrorCode.NOT_FOUND, "Document not found")
 
     if doc.storage_key:
         obj_storage = await get_storage()
@@ -349,7 +347,7 @@ async def delete_document(kb_id: str, doc_id: str):
         )
         doc = result.scalar_one_or_none()
         if not doc:
-            raise HTTPException(status_code=404, detail="Document not found")
+            raise AppError(404, ErrorCode.NOT_FOUND, "Document not found")
 
         async with await PgVectorStore.create() as store:
             await store.delete_by_doc(doc_id)

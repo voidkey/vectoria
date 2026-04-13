@@ -1,5 +1,6 @@
-from fastapi import Depends, HTTPException, Security
+from fastapi import Depends, Security
 from fastapi.security import APIKeyHeader
+from api.errors import AppError, ErrorCode
 from config import get_settings
 
 _api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
@@ -18,5 +19,5 @@ async def verify_api_key(
     if not expected:
         return None
     if not key or key != expected:
-        raise HTTPException(status_code=401, detail="Invalid or missing API key")
+        raise AppError(401, ErrorCode.UNAUTHORIZED, "Invalid or missing API key")
     return key

@@ -1,7 +1,8 @@
 import httpx
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
 from openai import AsyncOpenAI
 
+from api.errors import AppError, ErrorCode
 from api.schemas import QueryRequest, QueryResponse
 from config import get_settings
 from rag.embedder import get_embedder
@@ -37,7 +38,7 @@ def _get_rerank_client() -> httpx.AsyncClient:
 @router.post("/{kb_id}/query", response_model=QueryResponse)
 async def query_kb(kb_id: str, body: QueryRequest):
     if not body.query.strip():
-        raise HTTPException(status_code=422, detail="query must not be empty")
+        raise AppError(422, ErrorCode.QUERY_ERROR, "query must not be empty")
 
     store = await PgVectorStore.create()
     embedder = get_embedder()

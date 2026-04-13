@@ -1,6 +1,7 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
 from sqlalchemy import select
 
+from api.errors import AppError, ErrorCode
 from api.schemas import KnowledgeBaseCreate, KnowledgeBaseResponse
 from db.base import get_session
 from db.models import KnowledgeBase
@@ -40,7 +41,7 @@ async def delete_kb(kb_id: str):
         result = await session.execute(select(KnowledgeBase).where(KnowledgeBase.id == kb_id))
         kb = result.scalar_one_or_none()
         if not kb:
-            raise HTTPException(status_code=404, detail="KnowledgeBase not found")
+            raise AppError(404, ErrorCode.NOT_FOUND, "KnowledgeBase not found")
 
         # Delete vectors
         async with await PgVectorStore.create() as store:

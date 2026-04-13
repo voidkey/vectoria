@@ -4,6 +4,8 @@ import socket
 import logging
 from urllib.parse import urlparse
 
+from api.errors import AppError, ErrorCode
+
 logger = logging.getLogger(__name__)
 
 _MAX_URL_LENGTH = 2048
@@ -26,32 +28,6 @@ _BLOCKED_EXTENSIONS = {
     ".ttf", ".otf", ".woff", ".woff2",
 }
 
-
-def _check_url_format(url: str) -> tuple[str | None, str | None]:
-    """Validate URL format synchronously. Returns (error, hostname) tuple."""
-    if not url or len(url) > _MAX_URL_LENGTH:
-        return f"URL must be between 1 and {_MAX_URL_LENGTH} characters", None
-
-    try:
-        parsed = urlparse(url)
-    except Exception:
-        return "Invalid URL format", None
-
-    if parsed.scheme not in _ALLOWED_SCHEMES:
-        return f"Only HTTP/HTTPS URLs are supported, got '{parsed.scheme}'", None
-
-    hostname = parsed.hostname
-    if not hostname:
-        return "URL must contain a valid hostname", None
-
-    path_lower = parsed.path.lower()
-    for ext in _BLOCKED_EXTENSIONS:
-        if path_lower.endswith(ext):
-            return f"URL points to a file type ({ext}) that cannot be parsed as text content", None
-
-    return None, hostname
-
-
 _SSRF_BLOCKED_NETWORKS = (
     ipaddress.ip_network("0.0.0.0/8"),
     ipaddress.ip_network("10.0.0.0/8"),
@@ -66,28 +42,54 @@ _SSRF_BLOCKED_NETWORKS = (
 )
 
 
-def _resolve_and_check_ssrf(hostname: str, url: str) -> str | None:
+def _check_url_format(url: str) -> str:
+    """Validate URL format. Returns hostname if valid, raises AppError otherwise."""
+    if not url or len(url) > _MAX_URL_LENGTH:
+        raise AppError(422, ErrorCode.INVALID_URL,
+                        f"URL must be between 1 and {_MAX_URL_LENGTH} characters")
+
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        raise AppError(422, ErrorCode.INVALID_URL, "Invalid URL format")
+
+    if parsed.scheme not in _ALLOWED_SCHEMES:
+        raise AppError(422, ErrorCode.INVALID_URL,
+                        f"Only HTTP/HTTPS URLs are supported, got '{parsed.scheme}'")
+
+    hostname = parsed.hostname
+    if not hostname:
+        raise AppError(422, ErrorCode.INVALID_URL, "URL must contain a valid hostname")
+
+    path_lower = parsed.path.lower()
+    for ext in _BLOCKED_EXTENSIONS:
+        if path_lower.endswith(ext):
+            raise AppError(422, ErrorCode.UNSUPPORTED_FILE_TYPE,
+                            f"URL points to a file type ({ext}) that cannot be parsed as text content")
+
+    return hostname
+
+
+def _resolve_and_check_ssrf(hostname: str, url: str) -> None:
     """Blocking DNS resolve + private IP check. Run in executor."""
     try:
         addr_infos = socket.getaddrinfo(hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
     except socket.gaierror:
-        return f"Cannot resolve hostname: {hostname}"
+        raise AppError(422, ErrorCode.DNS_RESOLVE_FAILED,
+                        f"Cannot resolve hostname: {hostname}")
 
     for _, _, _, _, sockaddr in addr_infos:
         ip = ipaddress.ip_address(sockaddr[0])
         if any(ip in net for net in _SSRF_BLOCKED_NETWORKS):
             logger.warning("SSRF blocked: %s resolves to private IP %s", url, ip)
-            return "URL points to a private/internal network address"
+            raise AppError(403, ErrorCode.BLOCKED_ADDRESS,
+                            "URL points to a private/internal network address")
 
-    return None
 
+async def validate_url(url: str) -> None:
+    """Validate a URL for ingestion. Raises AppError on failure."""
+    hostname = _check_url_format(url)
 
-async def validate_url(url: str) -> str | None:
-    """Validate a URL for ingestion. Returns an error message, or None if valid."""
-    error, hostname = _check_url_format(url)
-    if error:
-        return error
-
-    return await asyncio.get_running_loop().run_in_executor(
+    await asyncio.get_running_loop().run_in_executor(
         None, _resolve_and_check_ssrf, hostname, url,
     )

@@ -1,8 +1,9 @@
 import asyncio
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
 from sqlalchemy import select
 
+from api.errors import AppError, ErrorCode
 from api.schemas import DocumentImageResponse, DocumentImagesListResponse
 from api.image_utils import compute_aspect_ratio
 from db.base import get_session
@@ -23,7 +24,7 @@ async def get_document_images(kb_id: str, doc_id: str):
             select(Document).where(Document.id == doc_id, Document.kb_id == kb_id)
         )
         if not doc_result.scalar_one_or_none():
-            raise HTTPException(status_code=404, detail="Document not found")
+            raise AppError(404, ErrorCode.NOT_FOUND, "Document not found")
 
         # Fetch all images for this document
         img_result = await session.execute(
