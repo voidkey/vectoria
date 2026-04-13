@@ -6,6 +6,7 @@ from sqlalchemy import select, func as sa_func
 from sqlalchemy.orm import selectinload
 
 from api.schemas import DocumentResponse, DocumentIngestResponse, DocumentURLRequest, DocumentSourceURLResponse, OutlineItem
+from api.url_validation import validate_url
 from db.base import get_session
 from db.models import Document, KnowledgeBase
 from parsers.registry import registry
@@ -185,6 +186,11 @@ async def _ingest(
 
     content = parse_result.content
     title = parse_result.title or (filename or source)
+
+    if not content or content.isspace():
+        logger.warning("Parsed content is empty for source: %s", source)
+        raise HTTPException(status_code=422, detail="Parsing returned empty content")
+
     outline = extract_outline(content)
 
     # Create document record first (foreign key for document_images)
@@ -269,6 +275,10 @@ async def ingest_file(kb_id: str, file: UploadFile = File(...)):
 
 @router.post("/{kb_id}/documents/url", response_model=DocumentIngestResponse, status_code=201)
 async def ingest_url(kb_id: str, body: DocumentURLRequest):
+    url_error = validate_url(body.url)
+    if url_error:
+        raise HTTPException(status_code=422, detail=url_error)
+
     await _validate_kb(kb_id)
 
     selected_engine = registry.auto_select(url=body.url)
