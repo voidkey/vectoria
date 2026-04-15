@@ -1,3 +1,10 @@
+# Base stack: infrastructure only (postgres + minio).
+#
+# Local development:  docker compose up -d
+#                     uv run uvicorn main:app --reload   # app on host
+#
+# Production:         docker compose -f compose.yaml -f compose.prod.yaml up -d
+
 services:
   db:
     image: pgvector/pgvector:pg16
@@ -14,6 +21,7 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+    restart: unless-stopped
 
   minio:
     image: minio/minio:latest
@@ -31,6 +39,7 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+    restart: unless-stopped
 
   minio-init:
     image: minio/mc:latest
@@ -43,21 +52,6 @@ services:
       mc mb local/vectoria --ignore-existing;
       "
     restart: "no"
-
-  app:
-    build: .
-    ports:
-      - "8000:8000"
-    env_file: .env
-    environment:
-      DATABASE_URL: postgresql+asyncpg://postgres:postgres@db/vectoria
-      S3_ENDPOINT: http://minio:9000
-      S3_ADDRESSING_STYLE: path
-    depends_on:
-      db:
-        condition: service_healthy
-      minio:
-        condition: service_healthy
 
 volumes:
   vectoria_pgdata:

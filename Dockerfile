@@ -1,28 +1,71 @@
-FROM python:3.12-slim
+# syntax=docker/dockerfile:1.7
 
-# System deps for docling (libgl1, libglib2.0) and general build tools
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    libgl1 \
-    libglib2.0-0 \
-    libreoffice-writer \
-    libreoffice-impress \
-    && rm -rf /var/lib/apt/lists/*
+# --- Stage 1: builder ---
+FROM python:3.12.7-slim AS builder
 
-# Install uv
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
+COPY --from=ghcr.io/astral-sh/uv:0.5.4 /uv /uvx /usr/local/bin/
+
+ENV UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy \
+    UV_PYTHON_DOWNLOADS=never \
+    PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers
 
 WORKDIR /app
 
-# Install Python deps (cached layer)
-COPY pyproject.toml uv.lock ./
-RUN uv sync --frozen --no-dev
+RUN --mount=type=cache,target=/root/.cache/uv \
+    --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
+    --mount=type=bind,source=uv.lock,target=uv.lock \
+    uv sync --frozen --no-dev --no-install-project
 
-# Install Playwright Chromium + its system deps
-RUN uv run playwright install --with-deps chromium
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv run playwright install chromium
 
-# Copy application code
-COPY . .
+# Pre-download docling layout/OCR models so the first real request doesn't
+# balloon memory and latency while fetching weights from HuggingFace.
+# HF_HOME pins the cache into the image layer; docling reads from the same root.
+ENV HF_HOME=/opt/hf-cache
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv run python -c "from docling.utils.model_downloader import download_models; download_models()" \
+    || echo "docling model preload skipped"
+
+
+# --- Stage 2: runtime ---
+FROM python:3.12.7-slim AS runtime
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libgl1 \
+        libglib2.0-0 \
+        libreoffice-writer \
+        libreoffice-impress \
+        libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 libcups2 \
+        libxcomposite1 libxdamage1 libxrandr2 libgbm1 libxkbcommon0 \
+        libpango-1.0-0 libcairo2 libasound2 libatspi2.0-0 \
+        tini \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV PATH="/app/.venv/bin:$PATH" \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers \
+    HF_HOME=/opt/hf-cache
+
+RUN groupadd --system --gid 1000 app \
+    && useradd --system --uid 1000 --gid app --home-dir /app --shell /sbin/nologin app
+
+WORKDIR /app
+
+COPY --from=builder --chown=app:app /app/.venv /app/.venv
+COPY --from=builder --chown=app:app /opt/pw-browsers /opt/pw-browsers
+COPY --from=builder --chown=app:app /opt/hf-cache /opt/hf-cache
+
+COPY --chown=app:app . .
+
+USER app
 
 EXPOSE 8000
 
-CMD ["uv", "run", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=3 \
+    CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health',timeout=3).status==200 else 1)"
+
+ENTRYPOINT ["tini", "--"]
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
