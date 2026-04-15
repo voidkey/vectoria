@@ -44,6 +44,19 @@ _JS_CHALLENGE_MARKERS = (
     "javascript required",
 )
 
+# Domains that fingerprint bare httpx clients and then also flag subsequent
+# browser requests from the same IP. Must go straight to playwright.
+_BROWSER_ONLY_DOMAINS = {
+    "x.com", "twitter.com",
+    "threads.net",
+    "instagram.com",
+}
+
+
+def _browser_only(url: str) -> bool:
+    host = (urlparse(url).hostname or "").lower()
+    return any(host == d or host.endswith("." + d) for d in _BROWSER_ONLY_DOMAINS)
+
 
 def _needs_browser_fallback(result: "ParseResult") -> bool:
     """httpx returned nothing useful — likely a JS-challenge or pure SPA page."""
@@ -74,6 +87,8 @@ class UrlParser(BaseParser):
         url = source.decode() if isinstance(source, bytes) else source
         if is_wechat_url(url):
             return await self._parse_with_playwright(url)
+        if _browser_only(url):
+            return await self._parse_generic_with_playwright(url)
         result = await asyncio.get_running_loop().run_in_executor(None, self._parse_sync, url)
         # Sites behind Cloudflare/JS-challenge (e.g. Medium, Notion) return
         # empty or near-empty content via httpx. Fall back to a real browser.
