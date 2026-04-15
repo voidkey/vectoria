@@ -19,8 +19,8 @@ git pull --ff-only
 echo "Pulling app image from Docker Hub..."
 "${COMPOSE[@]}" pull app
 
-echo "Starting infra (db/minio)..."
-"${COMPOSE[@]}" up -d --wait db minio minio-init
+echo "Starting infra (db)..."
+"${COMPOSE[@]}" up -d --wait db
 
 # Run migrations BEFORE starting the app so it never serves requests on a
 # stale schema. `run --rm` spins up a one-shot container sharing compose

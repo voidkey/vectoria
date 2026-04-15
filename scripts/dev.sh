@@ -5,7 +5,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 echo "Starting postgres + minio..."
-docker compose up -d --wait db minio minio-init
+docker compose --profile local up -d --wait db minio minio-init
 
 echo "Syncing dependencies..."
 uv sync
