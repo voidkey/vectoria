@@ -1,0 +1,32 @@
+# Production overlay: adds the app service on top of compose.yaml.
+#
+# Normal prod:  ./scripts/deploy.sh       (pulls voidkey/vectoria:latest from Docker Hub)
+# Build locally: ./scripts/build-push.sh  (builds via buildx and pushes to Docker Hub)
+#
+# No `build:` key here on purpose — prod should never build. If you really
+# need to build on the host (emergency), run `docker build -t voidkey/vectoria:latest .`
+# first, then re-run deploy.sh.
+
+services:
+  app:
+    image: ${VECTORIA_IMAGE:-voidkey/vectoria:latest}
+    env_file: .env.prod
+    environment:
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@db/vectoria
+      S3_ENDPOINT: http://minio:9000
+      S3_ADDRESSING_STYLE: path
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    restart: unless-stopped
+    mem_limit: 1500m
+    memswap_limit: 2g
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"

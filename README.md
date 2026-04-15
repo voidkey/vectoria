@@ -22,53 +22,44 @@ A lightweight RAG (Retrieval-Augmented Generation) backend service built with Fa
 
 ## Quick Start
 
-### Docker (recommended)
+### Local development (uv on host, infra in Docker)
+
+`compose.yaml` ships only the infrastructure (postgres + minio). The app runs on the host via uv for fast reload.
 
 ```bash
-cp .env.example .env
-# Edit .env with your API key and settings
-
-docker compose up -d
+cp .env.example .env          # fill in your API key
+./scripts/dev.sh              # starts db/minio, migrates, runs uvicorn --reload
 ```
 
-That's it. The API is available at `http://localhost:8000`, interactive docs at `http://localhost:8000/docs`. MinIO console is at `http://localhost:9001` (minioadmin/minioadmin).
+API at `http://localhost:8000`, docs at `/docs`, MinIO console at `http://localhost:9001` (minioadmin/minioadmin).
 
-### Local development
+### Production — Docker (recommended)
 
-**1. Start the database and MinIO**
+Two-step workflow: **build locally**, **pull on prod**. The prod host never builds (no source, no docker build memory spikes).
+
+**Once per release** (local machine):
+```bash
+docker login                  # first time only
+./scripts/build-push.sh       # builds and pushes voidkey/vectoria:{sha,latest}
+```
+
+**On the production host:**
+```bash
+cp .env.example .env.prod     # first time only — fill in production values
+./scripts/deploy.sh           # git pull + docker pull + migrate + up -d
+```
+
+Uses `compose.yaml + compose.prod.yaml` with a 1.5 GB memory limit on the app container. Image defaults to `voidkey/vectoria:latest` but can be pinned: `VECTORIA_IMAGE=voidkey/vectoria:abc1234 ./scripts/deploy.sh`. Logs: `docker compose -f compose.yaml -f compose.prod.yaml logs -f app`.
+
+### Production — Host mode (alternative)
+
+If you prefer running the app directly on the host via uv (e.g. shared server with multiple services):
 
 ```bash
-docker compose up -d db minio minio-init
+./scripts/deploy-host.sh      # pulls, syncs deps, migrates, runs uvicorn in background
 ```
 
-**2. Install dependencies**
-
-```bash
-pip install uv
-uv sync
-playwright install --with-deps chromium
-```
-
-**3. Configure environment**
-
-```bash
-cp .env.example .env
-# Edit .env with your API key and settings
-```
-
-**4. Run migrations**
-
-```bash
-uv run alembic upgrade head
-```
-
-**5. Start the server**
-
-```bash
-uv run uvicorn main:app --reload
-```
-
-The API is now available at `http://localhost:8000`. Interactive docs at `http://localhost:8000/docs`.
+Logs: `logs/uvicorn-<timestamp>.log` (one file per deploy, never overwritten). Override the port via `PORT=8002 ./scripts/deploy-host.sh`.
 
 ## API Overview
 
