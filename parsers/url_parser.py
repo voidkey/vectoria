@@ -123,18 +123,23 @@ class UrlParser(BaseParser):
                 )
                 page = await ctx.new_page()
                 await page.goto(url, wait_until="domcontentloaded", timeout=30000)
-                # Always wait ~3s for client-side rendering (X, Notion, etc.).
-                # Then poll up to 12s more while title still looks like a
-                # Cloudflare challenge.
-                await page.wait_for_timeout(3000)
-                for _ in range(12):
-                    if "Just a moment" not in (await page.title()):
-                        break
+                # Poll up to 20s: wait for Cloudflare to clear AND for SPA
+                # content to render past the "enable JavaScript" stub.
+                html = ""
+                for _ in range(20):
                     await page.wait_for_timeout(1000)
+                    t = await page.title()
+                    html = await page.content()
+                    stub = (
+                        "Just a moment" in t
+                        or "javascript is disabled" in html.lower()[:5000]
+                        or "enable javascript" in html.lower()[:5000]
+                    )
+                    if not stub:
+                        break
 
                 final_url = page.url
                 title = await page.title() or urlparse(final_url).netloc
-                html = await page.content()
             finally:
                 await browser.close()
 
