@@ -35,6 +35,13 @@ def get_wechat_headers(url: str) -> dict[str, str] | None:
     }
 
 
+def _needs_browser_fallback(result: "ParseResult") -> bool:
+    """httpx returned nothing useful — likely a JS-challenge or pure SPA page."""
+    if not result.content or len(result.content.strip()) < 100:
+        return True
+    return False
+
+
 def _extract_image_urls(html: str, base_url: str) -> list[str]:
     """Extract image URLs from HTML, resolve relative URLs, cap at 20."""
     urls: list[str] = []
@@ -55,7 +62,65 @@ class UrlParser(BaseParser):
         url = source.decode() if isinstance(source, bytes) else source
         if is_wechat_url(url):
             return await self._parse_with_playwright(url)
-        return await asyncio.get_running_loop().run_in_executor(None, self._parse_sync, url)
+        result = await asyncio.get_running_loop().run_in_executor(None, self._parse_sync, url)
+        # Sites behind Cloudflare/JS-challenge (e.g. Medium, Notion) return
+        # empty or near-empty content via httpx. Fall back to a real browser.
+        if _needs_browser_fallback(result):
+            return await self._parse_generic_with_playwright(url)
+        return result
+
+    async def _parse_generic_with_playwright(self, url: str) -> ParseResult:
+        if async_playwright is None:
+            return ParseResult(content="", images={}, title="")
+
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(
+                headless=True,
+                args=[
+                    "--no-sandbox",
+                    "--disable-setuid-sandbox",
+                    "--disable-blink-features=AutomationControlled",
+                ],
+            )
+            try:
+                ctx = await browser.new_context(
+                    user_agent=(
+                        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+                    ),
+                    viewport={"width": 1280, "height": 800},
+                    locale="en-US",
+                )
+                await ctx.add_init_script(
+                    "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
+                )
+                page = await ctx.new_page()
+                await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                # Wait up to 15s for a Cloudflare challenge to clear itself.
+                for _ in range(15):
+                    await page.wait_for_timeout(1000)
+                    if "Just a moment" not in (await page.title()):
+                        break
+
+                final_url = page.url
+                title = await page.title() or urlparse(final_url).netloc
+                html = await page.content()
+            finally:
+                await browser.close()
+
+        text = trafilatura.extract(
+            html, include_images=True, include_links=False, output_format="markdown",
+        ) or ""
+        if not text.strip():
+            from trafilatura.utils import load_html
+            from trafilatura.core import baseline
+            tree = load_html(html)
+            if tree is not None:
+                _, raw_text, _ = baseline(tree)
+                text = raw_text or ""
+
+        img_urls = _extract_image_urls(html, final_url)
+        return ParseResult(content=text, images={}, title=title, image_urls=img_urls)
 
     async def _parse_with_playwright(self, url: str) -> ParseResult:
         if async_playwright is None:
