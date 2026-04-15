@@ -1,9 +1,10 @@
-# Base stack: infrastructure only (postgres + minio).
+# Base stack: postgres (always) + MinIO (local dev only, behind `local` profile).
 #
-# Local development:  docker compose up -d
+# Local development:  docker compose --profile local up -d
 #                     uv run uvicorn main:app --reload   # app on host
 #
 # Production:         docker compose -f compose.yaml -f compose.prod.yaml up -d
+#                     (prod uses external S3/TOS — no MinIO started)
 
 services:
   db:
@@ -25,6 +26,7 @@ services:
 
   minio:
     image: minio/minio:latest
+    profiles: ["local"]
     ports:
       - "9000:9000"
       - "9001:9001"
@@ -43,6 +45,7 @@ services:
 
   minio-init:
     image: minio/mc:latest
+    profiles: ["local"]
     depends_on:
       minio:
         condition: service_healthy
@@ -54,5 +57,9 @@ services:
     restart: "no"
 
 volumes:
+  # Pin literal volume names (no project prefix) so existing prod data under
+  # `vectoria_pgdata` is picked up, and the same names work on a fresh host.
   vectoria_pgdata:
+    name: vectoria_pgdata
   vectoria_minio:
+    name: vectoria_minio

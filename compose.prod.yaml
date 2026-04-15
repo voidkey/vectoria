@@ -10,17 +10,15 @@
 services:
   app:
     image: ${VECTORIA_IMAGE:-voidkey/vectoria:latest}
-    env_file: .env.prod
+    env_file: ${ENV_FILE:-.env.prod}
+    # Force the in-container DB URL to use the compose service name regardless
+    # of what .env.prod says; S3/TOS settings come entirely from .env.prod.
     environment:
       DATABASE_URL: postgresql+asyncpg://postgres:postgres@db/vectoria
-      S3_ENDPOINT: http://minio:9000
-      S3_ADDRESSING_STYLE: path
     ports:
       - "8000:8000"
     depends_on:
       db:
-        condition: service_healthy
-      minio:
         condition: service_healthy
     restart: unless-stopped
     mem_limit: 1500m
