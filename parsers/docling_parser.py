@@ -2,6 +2,7 @@ import asyncio
 import io
 import logging
 import tempfile
+import threading
 from pathlib import Path
 
 from parsers.base import BaseParser, ParseResult
@@ -15,6 +16,37 @@ try:
     _DOCLING_AVAILABLE = True
 except ImportError:
     _DOCLING_AVAILABLE = False
+
+
+_converter: "DocumentConverter | None" = None
+_converter_lock = threading.Lock()
+# Serializes convert() calls: docling's thread-safety isn't documented, and a
+# single parse can peak >1GB RAM — parallel parses would risk OOM on small hosts.
+_convert_lock = threading.Lock()
+
+
+def _get_converter() -> "DocumentConverter":
+    """Lazily build a single process-wide DocumentConverter.
+
+    Docling loads large layout/OCR models on first convert(); reusing one
+    instance avoids re-allocating them per request.
+    """
+    global _converter  # noqa: PLW0603
+    if _converter is not None:
+        return _converter
+    with _converter_lock:
+        if _converter is None:
+            from docling.datamodel.base_models import InputFormat
+            from docling.document_converter import ImageFormatOption, PdfFormatOption
+
+            pipeline_opts = PdfPipelineOptions(generate_picture_images=True)
+            _converter = DocumentConverter(
+                format_options={
+                    InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_opts),
+                    InputFormat.IMAGE: ImageFormatOption(pipeline_options=pipeline_opts),
+                },
+            )
+    return _converter
 
 
 class DoclingParser(BaseParser):
@@ -31,16 +63,7 @@ class DoclingParser(BaseParser):
         )
 
     def _parse_sync(self, source: bytes | str, filename: str) -> ParseResult:
-        from docling.datamodel.base_models import InputFormat
-        from docling.document_converter import ImageFormatOption, PdfFormatOption
-
-        pipeline_opts = PdfPipelineOptions(generate_picture_images=True)
-        converter = DocumentConverter(
-            format_options={
-                InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_opts),
-                InputFormat.IMAGE: ImageFormatOption(pipeline_options=pipeline_opts),
-            },
-        )
+        converter = _get_converter()
 
         suffix = Path(filename).suffix.lower() or ".pdf"
         with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
@@ -55,7 +78,8 @@ class DoclingParser(BaseParser):
             if suffix in LEGACY_FORMAT_MAP:
                 converted_path = convert_legacy_format(tmp_path, suffix)
                 logger.info("Converted %s → %s", suffix, converted_path)
-            result = converter.convert(converted_path or tmp_path)
+            with _convert_lock:
+                result = converter.convert(converted_path or tmp_path)
         finally:
             Path(tmp_path).unlink(missing_ok=True)
             if converted_path:
