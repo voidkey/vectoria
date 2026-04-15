@@ -47,7 +47,6 @@ _JS_CHALLENGE_MARKERS = (
 # Domains that fingerprint bare httpx clients and then also flag subsequent
 # browser requests from the same IP. Must go straight to playwright.
 _BROWSER_ONLY_DOMAINS = {
-    "x.com", "twitter.com",
     "threads.net",
     "instagram.com",
 }
@@ -56,6 +55,18 @@ _BROWSER_ONLY_DOMAINS = {
 def _browser_only(url: str) -> bool:
     host = (urlparse(url).hostname or "").lower()
     return any(host == d or host.endswith("." + d) for d in _BROWSER_ONLY_DOMAINS)
+
+
+_X_HOSTS = {"x.com", "twitter.com"}
+_X_STATUS_RE = re.compile(r"/status(?:es)?/(\d+)")
+
+
+def _extract_x_tweet_id(url: str) -> str | None:
+    host = (urlparse(url).hostname or "").lower()
+    if not any(host == d or host.endswith("." + d) for d in _X_HOSTS):
+        return None
+    m = _X_STATUS_RE.search(urlparse(url).path)
+    return m.group(1) if m else None
 
 
 def _needs_browser_fallback(result: "ParseResult") -> bool:
@@ -87,6 +98,9 @@ class UrlParser(BaseParser):
         url = source.decode() if isinstance(source, bytes) else source
         if is_wechat_url(url):
             return await self._parse_with_playwright(url)
+        tweet_id = _extract_x_tweet_id(url)
+        if tweet_id is not None:
+            return await self._parse_x_tweet(tweet_id, url)
         if _browser_only(url):
             return await self._parse_generic_with_playwright(url)
         result = await asyncio.get_running_loop().run_in_executor(None, self._parse_sync, url)
@@ -95,6 +109,59 @@ class UrlParser(BaseParser):
         if _needs_browser_fallback(result):
             return await self._parse_generic_with_playwright(url)
         return result
+
+    async def _parse_x_tweet(self, tweet_id: str, source_url: str) -> ParseResult:
+        """Fetch tweet content via X's public syndication API (used by embed widgets)."""
+        api = (
+            f"https://cdn.syndication.twimg.com/tweet-result"
+            f"?id={tweet_id}&lang=en&token=1"
+        )
+        try:
+            async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
+                resp = await client.get(api, headers={"User-Agent": "Mozilla/5.0"})
+                resp.raise_for_status()
+                data = resp.json()
+        except Exception:
+            return ParseResult(content="", images={}, title="")
+
+        user = data.get("user") or {}
+        user_name = user.get("name") or ""
+        handle = user.get("screen_name") or ""
+        text = (data.get("text") or "").strip()
+        article = data.get("article") or {}
+        article_title = (article.get("title") or "").strip()
+        article_preview = (article.get("preview_text") or "").strip()
+
+        parts: list[str] = []
+        header = f"# {user_name}".strip()
+        if handle:
+            header += f" (@{handle})"
+        if header != "#":
+            parts.append(header)
+        if text:
+            parts.append(text)
+        if article_title:
+            parts.append(f"## {article_title}")
+        if article_preview:
+            parts.append(article_preview)
+
+        img_urls: list[str] = []
+        cover = article.get("cover_media") or {}
+        cover_img = (cover.get("media_info") or {}).get("original_img_url")
+        if cover_img:
+            img_urls.append(cover_img)
+        for m in data.get("mediaDetails") or []:
+            u = m.get("media_url_https")
+            if u and u not in img_urls:
+                img_urls.append(u)
+
+        title = article_title or (text[:80] if text else f"Tweet by {user_name or handle}")
+        return ParseResult(
+            content="\n\n".join(parts),
+            images={},
+            title=title or source_url,
+            image_urls=img_urls[:20],
+        )
 
     async def _parse_generic_with_playwright(self, url: str) -> ParseResult:
         if async_playwright is None:
