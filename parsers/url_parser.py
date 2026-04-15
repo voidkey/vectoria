@@ -35,11 +35,23 @@ def get_wechat_headers(url: str) -> dict[str, str] | None:
     }
 
 
+_JS_CHALLENGE_MARKERS = (
+    "javascript is disabled",
+    "enable javascript",
+    "just a moment",
+    "please enable cookies",
+    "please turn on javascript",
+    "javascript required",
+)
+
+
 def _needs_browser_fallback(result: "ParseResult") -> bool:
     """httpx returned nothing useful — likely a JS-challenge or pure SPA page."""
-    if not result.content or len(result.content.strip()) < 100:
+    content = (result.content or "").strip()
+    if len(content) < 300:
         return True
-    return False
+    lower = content[:2000].lower()
+    return any(m in lower for m in _JS_CHALLENGE_MARKERS)
 
 
 def _extract_image_urls(html: str, base_url: str) -> list[str]:
