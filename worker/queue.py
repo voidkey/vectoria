@@ -123,6 +123,34 @@ async def complete(task_id: str) -> None:
     logger.info("Task %s completed", task_id)
 
 
+async def reap_dead_tasks() -> int:
+    """Reclaim stale running tasks whose locked_until has passed and attempts
+    are exhausted. Returns the number of tasks reaped.
+
+    This handles the case where a worker was OOM-killed mid-task: the row
+    stays ``status='running'`` with an expired lock. If attempts >= max_attempts,
+    we mark it ``dead`` so it stops blocking the queue.
+    """
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    async with get_session() as session:
+        result = await session.execute(
+            update(Task)
+            .where(
+                Task.status == "running",
+                Task.locked_until < now,
+                Task.attempts >= Task.max_attempts,
+            )
+            .values(status="dead", finished_at=now, error="Worker died (lock expired, retries exhausted)")
+            .returning(Task.id)
+        )
+        dead_ids = result.scalars().all()
+        if dead_ids:
+            await session.commit()
+            for tid in dead_ids:
+                logger.warning("Reaped dead task %s", tid)
+        return len(dead_ids)
+
+
 async def fail(task_id: str, error: str) -> None:
     """Mark a task as failed. If attempts < max_attempts, reset to pending
     for automatic retry; otherwise mark as 'dead'.

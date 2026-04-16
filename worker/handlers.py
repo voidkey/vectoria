@@ -187,4 +187,6 @@ async def handle_download_and_store_images(payload: dict) -> None:
         vision_configured=vision_configured,
     )
 
-    await handle_analyze_images({"kb_id": kb_id, "doc_id": doc_id})
+    if vision_configured:
+        from worker.queue import enqueue
+        await enqueue("analyze_images", {"kb_id": kb_id, "doc_id": doc_id})
