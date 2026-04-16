@@ -1,5 +1,5 @@
 from vectorstore.base import SearchResult
-from vectorstore.pgvector import rrf_fuse
+from rag.fusion import rrf_fuse
 
 
 def _r(chunk_id: str, score: float) -> SearchResult:

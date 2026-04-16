@@ -20,7 +20,7 @@ async def test_query_returns_answer(client):
 
     with patch("api.routes.query.build_default_pipeline") as mock_build, \
          patch("api.routes.query.PgVectorStore") as mock_store_cls, \
-         patch("api.routes.query.Embedder") as mock_emb_cls:
+         patch("api.routes.query.get_embedder") as mock_get_emb:
 
         mock_pipeline = AsyncMock()
         mock_pipeline.run = AsyncMock(return_value=ctx)
@@ -28,9 +28,9 @@ async def test_query_returns_answer(client):
 
         mock_store = AsyncMock()
         mock_store_cls.create = AsyncMock(return_value=mock_store)
-        mock_emb_cls.return_value = MagicMock()
+        mock_get_emb.return_value = MagicMock()
 
-        resp = await client.post("/knowledgebases/kb1/query", json={"query": "what is 42?"})
+        resp = await client.post("/v1/knowledgebases/kb1/query", json={"query": "what is 42?"})
 
     assert resp.status_code == 200
     body = resp.json()
@@ -40,11 +40,11 @@ async def test_query_returns_answer(client):
 
 @pytest.mark.asyncio
 async def test_query_empty_query(client):
-    resp = await client.post("/knowledgebases/kb1/query", json={"query": ""})
+    resp = await client.post("/v1/knowledgebases/kb1/query", json={"query": ""})
     assert resp.status_code == 422
 
 
 @pytest.mark.asyncio
 async def test_query_whitespace_only(client):
-    resp = await client.post("/knowledgebases/kb1/query", json={"query": "   "})
+    resp = await client.post("/v1/knowledgebases/kb1/query", json={"query": "   "})
     assert resp.status_code == 422

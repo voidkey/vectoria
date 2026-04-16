@@ -58,6 +58,7 @@ async def test_dequeue_returns_task_and_commits():
     fake_task = Task(
         id="t1", task_type="index_document",
         payload={"doc_id": "d1"}, status="running", attempts=1,
+        max_attempts=3,
     )
     session = AsyncMock()
     result = MagicMock()
