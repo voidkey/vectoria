@@ -59,6 +59,5 @@ services:
 volumes:
   vectoria_pgdata:
     name: vectoria_pgdata
-    external: true
   vectoria_minio:
     name: vectoria_minio
