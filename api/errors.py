@@ -14,6 +14,10 @@ class ErrorCode:
     # Parsing (1201-1299)
     PARSE_ERROR = 1201
     EMPTY_CONTENT = 1202
+    CONTENT_TOO_LARGE = 1203
+    UPLOAD_TOO_LARGE = 1204
+    PARSE_TIMEOUT = 1205
+    INGEST_BUSY = 1206
 
     # Resource not found (1301-1399)
     NOT_FOUND = 1301

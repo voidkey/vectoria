@@ -38,3 +38,32 @@ def test_empty_text():
     splitter = Splitter(chunk_size=100, chunk_overlap=10)
     chunks = splitter.split("")
     assert chunks == []
+
+
+def test_no_separator_does_not_explode_into_char_list():
+    """Text with no separators must not produce a piece list of per-char strings.
+
+    Why: a 45MB file with no usable separator previously hit `pieces = list(text)`
+    and allocated tens of millions of 1-char str objects (~50 bytes each) —
+    multi-GB RSS and OOM. The fallback must slice by chunk_size instead.
+    """
+    text = "a" * 10_000
+    splitter = Splitter(chunk_size=100, chunk_overlap=0)
+
+    original = splitter._recursive_split
+    max_intermediate = 0
+
+    def spy(text_arg, seps, chunk_size):
+        nonlocal max_intermediate
+        result = original(text_arg, seps, chunk_size)
+        max_intermediate = max(max_intermediate, len(result))
+        return result
+
+    splitter._recursive_split = spy
+    chunks = splitter.split(text)
+
+    assert max_intermediate < len(text) / 10, (
+        f"splitter produced {max_intermediate} pieces for a {len(text)}-char "
+        f"no-separator text; expected bounded by chunk_size"
+    )
+    assert sum(len(c.content) for c in chunks) >= len(text) * 0.9

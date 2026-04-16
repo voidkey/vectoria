@@ -5,8 +5,10 @@ import tempfile
 import threading
 from pathlib import Path
 
+from config import get_settings
 from parsers.base import BaseParser, ParseResult
 from parsers.convert import LEGACY_FORMAT_MAP, convert_legacy_format
+from parsers.isolation import run_isolated
 
 logger = logging.getLogger(__name__)
 
@@ -58,8 +60,13 @@ class DoclingParser(BaseParser):
         return _DOCLING_AVAILABLE
 
     async def parse(self, source: bytes | str, filename: str = "", **kwargs) -> ParseResult:
-        return await asyncio.get_running_loop().run_in_executor(
-            None, self._parse_sync, source, filename
+        cfg = get_settings()
+        if not cfg.parser_isolation:
+            return await asyncio.get_running_loop().run_in_executor(
+                None, self._parse_sync, source, filename,
+            )
+        return await run_isolated(
+            _docling_parse_worker, source, filename, timeout=cfg.parser_timeout,
         )
 
     def _parse_sync(self, source: bytes | str, filename: str) -> ParseResult:
@@ -109,3 +116,10 @@ class DoclingParser(BaseParser):
         except Exception:
             pass
         return images
+
+
+def _docling_parse_worker(source: bytes | str, filename: str) -> ParseResult:
+    """Subprocess entry for DoclingParser. Must be importable (module-level)
+    so ProcessPoolExecutor workers can pickle it.
+    """
+    return DoclingParser()._parse_sync(source, filename)

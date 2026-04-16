@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 from typing import Optional
-from sqlalchemy import String, Text, DateTime, Integer, ForeignKey, func
+from sqlalchemy import JSON, String, Text, DateTime, Integer, ForeignKey, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from db.base import Base
 
@@ -33,6 +33,9 @@ class Document(Base):
     title: Mapped[str] = mapped_column(String(500), default="", server_default="")
     source: Mapped[str] = mapped_column(Text, default="", server_default="")
     storage_key: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
+    file_hash: Mapped[str | None] = mapped_column(
+        String(32), nullable=True, default=None, index=True,
+    )
     parse_engine: Mapped[str] = mapped_column(String(50), default="", server_default="")
     chunk_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     status: Mapped[str] = mapped_column(
@@ -71,3 +74,28 @@ class DocumentImage(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     document: Mapped["Document"] = relationship(back_populates="images")
+
+
+class Task(Base):
+    """Persistent task queue backed by PG + FOR UPDATE SKIP LOCKED.
+
+    Replaces asyncio.create_task for background work (index, vision, etc.) so
+    tasks survive process restarts and crashes, and worker OOM doesn't lose
+    the job — it retries automatically.
+    """
+    __tablename__ = "tasks"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    task_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    status: Mapped[str] = mapped_column(
+        String(20), default="pending", server_default="pending", nullable=False,
+    )
+    priority: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    attempts: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    max_attempts: Mapped[int] = mapped_column(Integer, default=3, server_default="3")
+    error: Mapped[str] = mapped_column(Text, default="", server_default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    locked_until: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
