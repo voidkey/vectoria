@@ -58,9 +58,5 @@ async def query_kb(kb_id: str, body: QueryRequest):
             if isinstance(step, RerankStep):
                 step.enabled = True
 
-    try:
-        ctx = await pipeline.run(body.query, kb_id=kb_id, top_k=body.top_k)
-    finally:
-        await store.close()
-
+    ctx = await pipeline.run(body.query, kb_id=kb_id, top_k=body.top_k)
     return QueryResponse(answer=ctx.answer, sources=ctx.sources)
