@@ -57,9 +57,8 @@ services:
     restart: "no"
 
 volumes:
-  # Pin literal volume names (no project prefix) so existing prod data under
-  # `vectoria_pgdata` is picked up, and the same names work on a fresh host.
   vectoria_pgdata:
     name: vectoria_pgdata
+    external: true
   vectoria_minio:
     name: vectoria_minio
