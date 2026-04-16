@@ -45,6 +45,31 @@ class Settings(BaseSettings):
     # Parse engine
     default_parse_engine: str = "auto"
 
+    # Hard cap on parsed document content (characters). Anything larger is
+    # rejected with 413 before splitting/embedding to avoid OOM — the splitter
+    # and embedding pipeline hold the full content in memory and fan out into
+    # many intermediate copies.
+    max_content_chars: int = 5_000_000
+
+    # Hard cap on raw upload size (bytes). Rejected at the HTTP entry before
+    # the file is buffered in memory.
+    max_upload_bytes: int = 50 * 1024 * 1024
+
+    # Per-parse wall-clock timeout (seconds). Parsers run in a subprocess
+    # pool; after this timeout the worker is terminated so a stuck convert()
+    # can't block the API thread indefinitely.
+    parser_timeout: float = 120.0
+
+    # Whether heavy parsers run in a subprocess pool. Defaults on for prod
+    # isolation; tests that rely on in-process patching (mocking
+    # DocumentConverter etc.) flip this off via monkeypatch.
+    parser_isolation: bool = True
+
+    # Max concurrent ingestions (file + URL combined) in the API process.
+    # Each ingestion holds the uploaded file bytes + parsed content in memory;
+    # unbounded concurrency lets N × 50MB pile up and OOM the API.
+    max_concurrent_ingestions: int = 3
+
     # MinerU remote API
     mineru_api_url: str = ""
     mineru_backend: str = "pipeline"

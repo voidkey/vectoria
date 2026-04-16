@@ -3,8 +3,10 @@ import logging
 import tempfile
 from pathlib import Path
 
+from config import get_settings
 from parsers.base import BaseParser, ParseResult
 from parsers.convert import LEGACY_FORMAT_MAP, convert_legacy_format
+from parsers.isolation import run_isolated
 
 logger = logging.getLogger(__name__)
 
@@ -24,8 +26,13 @@ class MarkitdownParser(BaseParser):
         return _AVAILABLE
 
     async def parse(self, source: bytes | str, filename: str = "", **kwargs) -> ParseResult:
-        return await asyncio.get_running_loop().run_in_executor(
-            None, self._parse_sync, source, filename
+        cfg = get_settings()
+        if not cfg.parser_isolation:
+            return await asyncio.get_running_loop().run_in_executor(
+                None, self._parse_sync, source, filename,
+            )
+        return await run_isolated(
+            _markitdown_parse_worker, source, filename, timeout=cfg.parser_timeout,
         )
 
     def _parse_sync(self, source: bytes | str, filename: str) -> ParseResult:
@@ -55,3 +62,8 @@ class MarkitdownParser(BaseParser):
                 Path(converted_path).unlink(missing_ok=True)
 
         return ParseResult(content=content, images={}, title=Path(filename).stem)
+
+
+def _markitdown_parse_worker(source: bytes | str, filename: str) -> ParseResult:
+    """Subprocess entry for MarkitdownParser. Module-level so workers can pickle it."""
+    return MarkitdownParser()._parse_sync(source, filename)

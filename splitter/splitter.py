@@ -73,9 +73,12 @@ class Splitter:
                 remaining_seps = separators[i + 1 :]
                 break
 
-        # Split by the chosen separator
+        # Split by the chosen separator. When no separator works, slice by
+        # chunk_size rather than materializing one str per character — a
+        # multi-MB text with no separators otherwise allocates tens of millions
+        # of single-char str objects (~50 bytes each) and blows up memory.
         if sep == "":
-            pieces = list(text)
+            pieces = [text[i : i + chunk_size] for i in range(0, len(text), chunk_size)]
         else:
             pieces = _split_keeping_separator(text, sep)
 
