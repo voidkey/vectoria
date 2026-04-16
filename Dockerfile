@@ -50,7 +50,9 @@ ENV PATH="/app/.venv/bin:$PATH" \
     HF_HOME=/opt/hf-cache
 
 RUN groupadd --system --gid 1000 app \
-    && useradd --system --uid 1000 --gid app --home-dir /app --shell /sbin/nologin app
+    && useradd --system --uid 1000 --gid app --home-dir /app --shell /sbin/nologin app \
+    && mkdir -p /app/.config/libreoffice /app/.cache/dconf \
+    && chown -R app:app /app/.config /app/.cache
 
 WORKDIR /app
 
