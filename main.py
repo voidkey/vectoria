@@ -1,4 +1,6 @@
 import logging
+from contextlib import asynccontextmanager
+from importlib.metadata import version, PackageNotFoundError
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
@@ -8,6 +10,7 @@ from fastapi.responses import JSONResponse
 
 from api.deps import verify_api_key
 from api.errors import AppError, ErrorCode
+from api.middleware import RequestIdMiddleware, RequestIdFilter
 from api.routes.analyze import router as analyze_router
 from api.routes.documents import router as docs_router
 from api.routes.health import router as health_router
@@ -18,16 +21,39 @@ from config import get_settings
 
 settings = get_settings()
 
-app = FastAPI(title="Vectoria", version="0.1.0", root_path="/vectoria")
+try:
+    _VERSION = version("vectoria")
+except PackageNotFoundError:
+    _VERSION = "0.1.0"
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Manage shared resources: startup → yield → shutdown."""
+    yield
+    # Shutdown: close vectorstore connection pool
+    from vectorstore.pgvector import close_pool
+    await close_pool()
+
+
+# --- Structured logging ---
+_log_format = "%(asctime)s %(levelname)s [%(request_id)s] %(name)s: %(message)s"
+logging.basicConfig(level=logging.INFO, format=_log_format)
+logging.getLogger().handlers[0].addFilter(RequestIdFilter())
+
+app = FastAPI(title="Vectoria", version=_VERSION, root_path="/vectoria", lifespan=lifespan)
+
+# --- Middleware ---
+app.add_middleware(RequestIdMiddleware)
 
 # --- CORS ---
-# TODO: 部署生产环境前将 allow_origins 从 "*" 改为具体的域名列表
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=settings.cors_origins,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+if settings.cors_origins:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=settings.cors_origins,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
 # --- Public routes (no auth, no version prefix) ---
 app.include_router(health_router)
@@ -80,4 +106,4 @@ async def unhandled_error_handler(request: Request, exc: Exception):
 
 @app.get("/")
 async def root():
-    return {"service": "vectoria", "version": "0.1.0"}
+    return {"service": "vectoria", "version": _VERSION}
