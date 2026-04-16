@@ -8,11 +8,6 @@
 # first, then re-run deploy.sh.
 
 services:
-  # Override: lock PG port to localhost-only in prod (dev default is open).
-  db:
-    ports:
-      - "127.0.0.1:5433:5432"
-
   app:
     image: ${VECTORIA_IMAGE:-voidkey/vectoria:latest}
     env_file: ${ENV_FILE:-.env.prod}
