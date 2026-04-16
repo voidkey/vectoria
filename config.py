@@ -82,7 +82,7 @@ class Settings(BaseSettings):
 
     # Security
     api_key: SecretStr = SecretStr("")
-    cors_origins: list[str] = ["*"]
+    cors_origins: list[str] = []
 
     # RAG pipeline toggles
     enable_query_rewrite: bool = True
