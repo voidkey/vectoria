@@ -16,8 +16,8 @@ fi
 echo "Pulling latest code (for compose file updates)..."
 git pull --ff-only
 
-echo "Pulling app image from Docker Hub..."
-"${COMPOSE[@]}" pull app
+echo "Pulling image from Docker Hub..."
+"${COMPOSE[@]}" pull app worker
 
 echo "Starting infra (db)..."
 "${COMPOSE[@]}" up -d --wait db
@@ -28,7 +28,7 @@ echo "Starting infra (db)..."
 echo "Running database migrations..."
 "${COMPOSE[@]}" run --rm app alembic upgrade head
 
-echo "Rolling app container..."
-"${COMPOSE[@]}" up -d --wait app
+echo "Rolling app + worker containers..."
+"${COMPOSE[@]}" up -d --wait app worker
 
-echo "Deploy complete. Tail logs: ${COMPOSE[*]} logs -f app"
+echo "Deploy complete. Tail logs: ${COMPOSE[*]} logs -f app worker"

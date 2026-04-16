@@ -11,8 +11,6 @@ services:
   app:
     image: ${VECTORIA_IMAGE:-voidkey/vectoria:latest}
     env_file: ${ENV_FILE:-.env.prod}
-    # Force the in-container DB URL to use the compose service name regardless
-    # of what .env.prod says; S3/TOS settings come entirely from .env.prod.
     environment:
       DATABASE_URL: postgresql+asyncpg://postgres:postgres@db/vectoria
     ports:
@@ -23,6 +21,24 @@ services:
     restart: unless-stopped
     mem_limit: 1500m
     memswap_limit: 2g
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+  worker:
+    image: ${VECTORIA_IMAGE:-voidkey/vectoria:latest}
+    env_file: ${ENV_FILE:-.env.prod}
+    environment:
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@db/vectoria
+    command: ["python", "-m", "worker"]
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+    mem_limit: 4g
+    memswap_limit: 4g
     logging:
       driver: json-file
       options:
