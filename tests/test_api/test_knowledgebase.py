@@ -19,7 +19,7 @@ async def test_create_knowledgebase(client):
         mock_sess.return_value.__aenter__.return_value = session
 
         with patch("api.routes.knowledgebase.KnowledgeBase", return_value=mock_kb):
-            resp = await client.post("/knowledgebases", json={"name": "Test KB", "description": "desc"})
+            resp = await client.post("/v1/knowledgebases", json={"name": "Test KB", "description": "desc"})
 
     assert resp.status_code == 201
 
@@ -30,10 +30,15 @@ async def test_list_knowledgebases(client):
         session = AsyncMock()
         mock_result = MagicMock()
         mock_result.scalars.return_value.all.return_value = []
+        session.scalar = AsyncMock(return_value=0)
         session.execute = AsyncMock(return_value=mock_result)
         mock_sess.return_value.__aenter__.return_value = session
 
-        resp = await client.get("/knowledgebases")
+        resp = await client.get("/v1/knowledgebases")
 
     assert resp.status_code == 200
-    assert resp.json() == []
+    body = resp.json()
+    assert body["total"] == 0
+    assert body["offset"] == 0
+    assert body["limit"] == 50
+    assert body["items"] == []

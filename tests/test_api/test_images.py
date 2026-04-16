@@ -45,7 +45,7 @@ async def test_get_images_returns_list(client):
         mock_ctx.__aexit__ = AsyncMock(return_value=False)
         mock_get_session.return_value = mock_ctx
 
-        resp = await client.get("/knowledgebases/kb-uuid/documents/doc-uuid/images")
+        resp = await client.get("/v1/knowledgebases/kb-uuid/documents/doc-uuid/images")
 
     assert resp.status_code == 200
     body = resp.json()
@@ -73,6 +73,6 @@ async def test_get_images_doc_not_found(client):
         mock_ctx.__aexit__ = AsyncMock(return_value=False)
         mock_get_session.return_value = mock_ctx
 
-        resp = await client.get("/knowledgebases/kb-uuid/documents/doc-uuid/images")
+        resp = await client.get("/v1/knowledgebases/kb-uuid/documents/doc-uuid/images")
 
     assert resp.status_code == 404

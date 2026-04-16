@@ -23,7 +23,7 @@ async def test_analyze_url(client):
         mock_reg.auto_select.return_value = "url"
         mock_reg.get_by_engine.return_value = mock_parser
 
-        resp = await client.post("/analyze/url", json={"url": "https://example.com"})
+        resp = await client.post("/v1/analyze/url", json={"url": "https://example.com"})
 
     assert resp.status_code == 200
     body = resp.json()
@@ -48,7 +48,7 @@ async def test_analyze_file_upload(client):
         mock_reg.get_by_engine.return_value = mock_parser
 
         resp = await client.post(
-            "/analyze/file",
+            "/v1/analyze/file",
             files={"file": ("test.pdf", b"%PDF fake content", "application/pdf")},
         )
 
@@ -71,7 +71,7 @@ async def test_analyze_url_no_engine_param(client):
         mock_reg.get_by_engine.return_value = mock_parser
 
         resp = await client.post(
-            "/analyze/url",
+            "/v1/analyze/url",
             json={"url": "https://example.com", "engine": "docling"},
         )
 

@@ -13,7 +13,7 @@ async def test_describe_image_returns_description():
 
     with patch("vision.client.AsyncOpenAI", return_value=mock_client):
         client = VisionClient(base_url="http://test", api_key="test-key", model="gpt-4o")
-        result = await client.describe(b"\x89PNG fake image bytes")
+        result = await client.describe(b"\x89PNG\r\n\x1a\n" + b"\x00" * 20)
 
     assert result == "A flowchart showing system architecture"
     mock_client.chat.completions.create.assert_called_once()
@@ -26,7 +26,7 @@ async def test_describe_returns_empty_on_error():
 
     with patch("vision.client.AsyncOpenAI", return_value=mock_client):
         client = VisionClient(base_url="http://test", api_key="test-key", model="gpt-4o")
-        result = await client.describe(b"\x89PNG fake image bytes")
+        result = await client.describe(b"\x89PNG\r\n\x1a\n" + b"\x00" * 20)
 
     assert result == ""
 
