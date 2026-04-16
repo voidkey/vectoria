@@ -14,7 +14,7 @@ services:
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: vectoria
     ports:
-      - "${PG_PORT:-5433}:5432"
+      - "${PG_BIND:-0.0.0.0}:${PG_PORT:-5433}:5432"
     volumes:
       - vectoria_pgdata:/var/lib/postgresql/data
     healthcheck:
