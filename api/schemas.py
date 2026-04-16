@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class AnalyzeURLRequest(BaseModel):
@@ -32,8 +32,8 @@ class AnalyzeResponse(BaseModel):
 
 
 class KnowledgeBaseCreate(BaseModel):
-    name: str
-    description: str = ""
+    name: str = Field(..., min_length=1, max_length=255)
+    description: str = Field(default="", max_length=2000)
 
 
 class KnowledgeBaseResponse(BaseModel):
@@ -87,9 +87,24 @@ class DocumentSourceURLResponse(BaseModel):
     url: str
 
 
+class PaginatedResponse(BaseModel):
+    """Generic paginated wrapper."""
+    total: int
+    offset: int
+    limit: int
+
+
+class KnowledgeBaseListResponse(PaginatedResponse):
+    items: list[KnowledgeBaseResponse] = []
+
+
+class DocumentListResponse(PaginatedResponse):
+    items: list[DocumentResponse] = []
+
+
 class QueryRequest(BaseModel):
-    query: str
-    top_k: int = 5
+    query: str = Field(..., min_length=1, max_length=2000)
+    top_k: int = Field(default=5, ge=1, le=100)
     rerank: bool = False
     query_rewrite: bool = True
 

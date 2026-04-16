@@ -2,11 +2,11 @@ import asyncio
 import hashlib
 import uuid
 import logging
-from fastapi import APIRouter, UploadFile, File
-from sqlalchemy import select
+from fastapi import APIRouter, UploadFile, File, Query
+from sqlalchemy import select, func
 from sqlalchemy.orm import selectinload
 
-from api.schemas import DocumentResponse, DocumentIngestResponse, DocumentURLRequest, DocumentSourceURLResponse, OutlineItem
+from api.schemas import DocumentResponse, DocumentIngestResponse, DocumentURLRequest, DocumentSourceURLResponse, DocumentListResponse, OutlineItem
 from api.errors import AppError, ErrorCode
 from api.url_validation import validate_url
 from db.base import get_session
@@ -69,7 +69,8 @@ async def _ingest(
             429, ErrorCode.INGEST_BUSY,
             "Too many concurrent ingestions; try again shortly",
         )
-    async with sem:
+    await sem.acquire()
+    try:
         doc_id = doc_id or str(uuid.uuid4())
 
         try:
@@ -146,6 +147,8 @@ async def _ingest(
             outline=outline,
             image_count=image_count,
         )
+    finally:
+        sem.release()
 
 
 async def _validate_kb(kb_id: str):
@@ -244,15 +247,23 @@ async def ingest_url(kb_id: str, body: DocumentURLRequest):
     )
 
 
-@router.get("/{kb_id}/documents", response_model=list[DocumentResponse])
-async def list_documents(kb_id: str):
+@router.get("/{kb_id}/documents", response_model=DocumentListResponse)
+async def list_documents(kb_id: str, offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=200)):
     await _validate_kb(kb_id)
     async with get_session() as session:
+        total = await session.scalar(
+            select(func.count()).select_from(Document).where(Document.kb_id == kb_id)
+        )
         result = await session.execute(
-            select(Document).where(Document.kb_id == kb_id).order_by(Document.created_at.desc())
+            select(Document).where(Document.kb_id == kb_id)
+            .order_by(Document.created_at.desc())
+            .offset(offset).limit(limit)
         )
         docs = result.scalars().all()
-        return [_doc_to_response(doc) for doc in docs]
+        return DocumentListResponse(
+            total=total or 0, offset=offset, limit=limit,
+            items=[_doc_to_response(doc) for doc in docs],
+        )
 
 
 @router.get("/{kb_id}/documents/{doc_id}", response_model=DocumentIngestResponse)
@@ -309,6 +320,12 @@ async def delete_document(kb_id: str, doc_id: str):
 
         async with await PgVectorStore.create() as store:
             await store.delete_by_doc(doc_id)
+
+        # Clean up S3 files (uploaded doc + images)
+        obj_storage = await get_storage()
+        if doc.storage_key:
+            await obj_storage.delete(doc.storage_key)
+        await obj_storage.delete_prefix(f"images/{kb_id}/{doc_id}/")
 
         await session.delete(doc)
         await session.commit()
