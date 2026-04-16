@@ -11,8 +11,6 @@ services:
   app:
     image: ${VECTORIA_IMAGE:-voidkey/vectoria:latest}
     env_file: ${ENV_FILE:-.env.prod}
-    environment:
-      DATABASE_URL: postgresql+asyncpg://postgres:postgres@db/vectoria
     ports:
       - "8000:8000"
     depends_on:
@@ -30,18 +28,20 @@ services:
   worker:
     image: ${VECTORIA_IMAGE:-voidkey/vectoria:latest}
     env_file: ${ENV_FILE:-.env.prod}
-    environment:
-      DATABASE_URL: postgresql+asyncpg://postgres:postgres@db/vectoria
     command: ["python", "-m", "worker"]
     expose: []
     healthcheck:
-      disable: true
+      test: ["CMD-SHELL", "[ -f /tmp/worker-heartbeat ] && [ $$(( $$(date +%s) - $$(cat /tmp/worker-heartbeat) )) -lt 120 ]"]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
     depends_on:
       db:
         condition: service_healthy
     restart: unless-stopped
     mem_limit: 4g
-    memswap_limit: 4g
+    memswap_limit: 6g
     logging:
       driver: json-file
       options:
