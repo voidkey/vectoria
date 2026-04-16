@@ -1,5 +1,5 @@
 from rag.steps.base import PipelineStep, PipelineContext
-from vectorstore.pgvector import rrf_fuse
+from rag.fusion import rrf_fuse
 
 
 class FusionStep(PipelineStep):
