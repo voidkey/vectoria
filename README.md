@@ -5,12 +5,12 @@ A lightweight RAG (Retrieval-Augmented Generation) backend service built with Fa
 ## Features
 
 - **Multi-format document ingestion** — PDF, DOCX, PPTX, XLSX, CSV, Markdown, plain text, images, and URLs
-- **Async document processing** — documents are ingested asynchronously with status tracking (processing → completed / failed)
-- **Image extraction** — automatically extracts images from documents and stores them in S3-compatible object storage
+- **Async document processing** — persistent PG-backed task queue with status tracking, auto-retry, and separate worker process (no Redis needed)
+- **Image extraction & vision** — automatically extracts images from documents, stores them in S3-compatible object storage, and optionally describes them via vision LLM
 - **Hybrid search** — combines vector similarity search with BM25 keyword search via Reciprocal Rank Fusion
 - **Modular RAG pipeline** — Query Rewrite → Retrieve → Fusion → Rerank → Context Expand → Generate
 - **OpenAI-compatible** — works with any OpenAI-compatible LLM/embedding endpoint (OpenAI, DeepSeek, Ollama, etc.)
-- **Pluggable parsers** — [docling](https://github.com/DS4SD/docling), [markitdown](https://github.com/microsoft/markitdown), MinerU (optional GPU-based OCR)
+- **Pluggable parsers** — [docling](https://github.com/DS4SD/docling), [markitdown](https://github.com/microsoft/markitdown), MinerU (optional GPU-based OCR); heavy parsers run isolated in subprocesses to prevent OOM
 - **Multiple vector stores** — pgvector (default), ChromaDB (optional)
 
 ## Requirements
@@ -24,7 +24,7 @@ A lightweight RAG (Retrieval-Augmented Generation) backend service built with Fa
 
 ### Local development (uv on host, infra in Docker)
 
-`compose.yaml` ships only the infrastructure (postgres + minio). The app runs on the host via uv for fast reload.
+`compose.yaml` ships only the infrastructure — postgres is always started, MinIO only when using the `local` profile. The app runs on the host via uv for fast reload.
 
 ```bash
 cp .env.example .env          # fill in your API key
@@ -32,6 +32,15 @@ cp .env.example .env          # fill in your API key
 ```
 
 API at `http://localhost:8000`, docs at `/docs`, MinIO console at `http://localhost:9001` (minioadmin/minioadmin).
+
+To start infra manually without the convenience script:
+
+```bash
+docker compose --profile local up -d --wait   # postgres + minio
+uv sync
+uv run alembic upgrade head
+uv run uvicorn main:app --reload --host 0.0.0.0 --port 8000
+```
 
 ### Production — Docker (recommended)
 
@@ -49,7 +58,7 @@ cp .env.example .env.prod     # first time only — fill in production values
 ./scripts/deploy.sh           # git pull + docker pull + migrate + up -d
 ```
 
-Uses `compose.yaml + compose.prod.yaml` with a 1.5 GB memory limit on the app container. Image defaults to `voidkey/vectoria:latest` but can be pinned: `VECTORIA_IMAGE=voidkey/vectoria:abc1234 ./scripts/deploy.sh`. Logs: `docker compose -f compose.yaml -f compose.prod.yaml logs -f app`.
+Uses `compose.yaml + compose.prod.yaml` with two containers: **app** (API server, 1.5 GB limit) and **worker** (background task processing, 4 GB limit). Image defaults to `voidkey/vectoria:latest` but can be pinned: `VECTORIA_IMAGE=voidkey/vectoria:abc1234 ./scripts/deploy.sh`. Logs: `docker compose -f compose.yaml -f compose.prod.yaml logs -f app worker`.
 
 ### Production — Host mode (alternative)
 
@@ -66,8 +75,8 @@ Logs: `logs/uvicorn-<timestamp>.log` (one file per deploy, never overwritten). O
 ### Document Parsing
 
 ```
-POST /analyze/file   # upload a file (multipart/form-data)
-POST /analyze/url    # provide a URL (JSON body)
+POST /v1/analyze/file   # upload a file (multipart/form-data)
+POST /v1/analyze/url    # provide a URL (JSON body)
 ```
 
 Parse a file or URL into Markdown without storing it. Returns parsed Markdown along with extracted images.
@@ -75,26 +84,33 @@ Parse a file or URL into Markdown without storing it. Returns parsed Markdown al
 ### Knowledge Bases
 
 ```
-POST   /knowledgebases           # create
-GET    /knowledgebases           # list
-DELETE /knowledgebases/{kb_id}   # delete
+POST   /v1/knowledgebases           # create
+GET    /v1/knowledgebases           # list
+DELETE /v1/knowledgebases/{kb_id}   # delete
 ```
 
 ### Documents
 
 ```
-POST   /knowledgebases/{kb_id}/documents            # ingest file or URL
-GET    /knowledgebases/{kb_id}/documents            # list
-GET    /knowledgebases/{kb_id}/documents/{doc_id}   # get status
-DELETE /knowledgebases/{kb_id}/documents/{doc_id}   # delete
+POST   /v1/knowledgebases/{kb_id}/documents            # ingest file or URL
+GET    /v1/knowledgebases/{kb_id}/documents            # list
+GET    /v1/knowledgebases/{kb_id}/documents/{doc_id}   # get status
+DELETE /v1/knowledgebases/{kb_id}/documents/{doc_id}   # delete
 ```
 
 Document ingestion is asynchronous — the API returns immediately with `status: "processing"`. Poll the single-document endpoint to check progress (`completed` or `failed`).
 
+### Images
+
+```
+GET /v1/knowledgebases/{kb_id}/documents/{doc_id}/images                          # list images
+GET /v1/knowledgebases/{kb_id}/documents/{doc_id}/images/{img_id}/presigned-url   # get presigned URL
+```
+
 ### Query
 
 ```
-POST /knowledgebases/{kb_id}/query
+POST /v1/knowledgebases/{kb_id}/query
 ```
 
 ```json
@@ -133,9 +149,14 @@ All settings are configured via environment variables (see [`.env.example`](.env
 | `ENABLE_QUERY_REWRITE` | `true` | Rewrite queries with LLM before retrieval |
 | `ENABLE_RERANKER` | `false` | Enable cross-encoder reranking |
 | `RERANKER_BASE_URL` | — | Reranker API URL |
+| `VISION_BASE_URL` | — | Vision LLM API URL (optional, for image description) |
+| `VISION_API_KEY` | — | Vision LLM API key |
+| `VISION_MODEL` | `gpt-4o` | Vision model |
 | `MINERU_API_URL` | — | MinerU remote API URL (optional, for GPU-based PDF OCR) |
 | `MINERU_BACKEND` | `pipeline` | MinerU backend mode |
 | `MINERU_LANGUAGE` | `ch` | MinerU OCR language |
+| `API_KEY` | *(blank = public)* | API key for client authentication (`X-API-Key` header) |
+| `CORS_ORIGINS` | `["*"]` | Allowed CORS origins |
 
 ## Optional: OCR with PaddleOCR
 
