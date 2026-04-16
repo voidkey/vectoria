@@ -8,6 +8,11 @@
 # first, then re-run deploy.sh.
 
 services:
+  # Override: lock PG port to localhost-only in prod (dev default is open).
+  db:
+    ports:
+      - "127.0.0.1:5433:5432"
+
   app:
     image: ${VECTORIA_IMAGE:-voidkey/vectoria:latest}
     env_file: ${ENV_FILE:-.env.prod}
@@ -33,8 +38,7 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://postgres:postgres@db/vectoria
     command: ["python", "-m", "worker"]
-    # Worker is a poll loop, not an HTTP server — override the image's
-    # HTTP-based HEALTHCHECK with a simple process-alive check.
+    expose: []
     healthcheck:
       disable: true
     depends_on:
