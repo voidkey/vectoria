@@ -59,6 +59,7 @@ class DocumentIngestResponse(DocumentResponse):
     content: str = ""
     outline: list[OutlineItem] = []
     image_count: int = 0
+    image_status: str = "none"
 
 
 class DocumentImageResponse(BaseModel):

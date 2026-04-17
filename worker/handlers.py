@@ -171,6 +171,7 @@ async def handle_download_and_store_images(payload: dict) -> None:
         None, download_images, image_urls, headers,
     )
     if not images:
+        await update_doc(doc_id, image_status="completed")
         return
 
     image_metas = extract_image_metadata(content, images)
@@ -186,6 +187,8 @@ async def handle_download_and_store_images(payload: dict) -> None:
         doc_id=doc_id,
         vision_configured=vision_configured,
     )
+
+    await update_doc(doc_id, image_status="completed")
 
     if vision_configured:
         from worker.queue import enqueue
