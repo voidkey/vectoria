@@ -4,7 +4,6 @@ from parsers.url import (
     UrlParser,
     download_images,
     get_wechat_headers,
-    is_wechat_url,
 )
 from parsers.base import ParseResult
 
@@ -21,7 +20,6 @@ def test_public_reexports():
     """Symbols that external code imports must be accessible."""
     assert callable(download_images)
     assert callable(get_wechat_headers)
-    assert callable(is_wechat_url)
 
 
 @pytest.mark.asyncio

@@ -55,8 +55,10 @@ async def test_handler_falls_back_to_playwright_on_js_challenge():
 
 @pytest.mark.asyncio
 async def test_handler_returns_empty_on_total_failure():
+    # httpx fails → empty result → needs_browser_fallback → playwright fallback
+    # Playwright import raises → returns empty
     with patch("parsers.url._generic.httpx.get", side_effect=Exception("connection failed")), \
-         patch("parsers.url._generic.async_playwright", None):
+         patch.dict("sys.modules", {"playwright.async_api": None}):
         h = GenericHandler()
         result = await h.parse("https://bad-url.example")
 

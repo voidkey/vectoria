@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from typing import Protocol, runtime_checkable
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
 import httpx
 import trafilatura
@@ -72,6 +72,12 @@ def extract_with_trafilatura(html: str) -> str:
             text = raw_text or ""
 
     return text
+
+
+def extract_html_title(html: str, fallback_url: str) -> str:
+    """Extract <title> from HTML, falling back to the URL's hostname."""
+    m = re.search(r"<title[^>]*>([^<]+)</title>", html, re.IGNORECASE)
+    return m.group(1).strip() if m else urlparse(fallback_url).netloc
 
 
 def needs_browser_fallback(result: ParseResult) -> bool:

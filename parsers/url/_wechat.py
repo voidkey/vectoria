@@ -10,14 +10,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import re
 from urllib.parse import urlparse
 
 import httpx
 import lxml.html
 
 from parsers.base import ParseResult
-from parsers.url._handlers import extract_with_trafilatura
+from parsers.url._handlers import extract_html_title, extract_with_trafilatura
 
 log = logging.getLogger(__name__)
 
@@ -131,8 +130,7 @@ class WechatHandler:
         text = extract_with_trafilatura(wrapped)
 
         if not title:
-            title_match = re.search(r"<title[^>]*>([^<]+)</title>", html, re.IGNORECASE)
-            title = title_match.group(1).strip() if title_match else urlparse(url).netloc
+            title = extract_html_title(html, url)
 
         return ParseResult(
             content=text, images={}, title=title,
@@ -221,8 +219,7 @@ class WechatHandler:
 
             if not title:
                 html = await page.content()
-                title_match = re.search(r"<title[^>]*>([^<]+)</title>", html, re.IGNORECASE)
-                title = title_match.group(1).strip() if title_match else urlparse(url).netloc
+                title = extract_html_title(html, url)
 
             await browser.close()
 
