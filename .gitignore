@@ -7,3 +7,4 @@ data/
 dist/
 *.egg-info/
 .pytest_cache/
+docs/superpowers/
