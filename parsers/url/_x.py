@@ -17,10 +17,11 @@ _X_STATUS_RE = re.compile(r"/status(?:es)?/(\d+)")
 
 
 def _extract_tweet_id(url: str) -> str | None:
-    host = (urlparse(url).hostname or "").lower()
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower()
     if not any(host == d or host.endswith("." + d) for d in _X_HOSTS):
         return None
-    m = _X_STATUS_RE.search(urlparse(url).path)
+    m = _X_STATUS_RE.search(parsed.path)
     return m.group(1) if m else None
 
 

@@ -17,7 +17,7 @@ from parsers.url._handlers import (
 )
 
 # --- Register site handlers (order = priority) ---
-from parsers.url._wechat import WechatHandler, get_wechat_headers, is_wechat_url
+from parsers.url._wechat import WechatHandler, get_wechat_headers
 register_handler(WechatHandler())
 
 from parsers.url._x import XHandler
@@ -43,5 +43,4 @@ __all__ = [
     "UrlParser",
     "download_images",
     "get_wechat_headers",
-    "is_wechat_url",
 ]
