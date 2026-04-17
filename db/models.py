@@ -43,6 +43,9 @@ class Document(Base):
     )
     content: Mapped[str] = mapped_column(Text, default="", server_default="")
     error_msg: Mapped[str] = mapped_column(Text, default="", server_default="")
+    image_status: Mapped[str] = mapped_column(
+        String(20), default="none", server_default="none", nullable=False,
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     knowledge_base: Mapped["KnowledgeBase"] = relationship(back_populates="documents")

@@ -10,6 +10,7 @@ from api.schemas import DocumentResponse, DocumentIngestResponse, DocumentURLReq
 from api.errors import AppError, ErrorCode
 from api.url_validation import validate_url
 from db.base import get_session
+from db.helpers import update_doc
 from db.models import Document, KnowledgeBase
 from parsers.registry import registry
 from parsers.outline import extract_outline
@@ -100,6 +101,10 @@ async def _ingest(
 
         outline = extract_outline(content)
 
+        has_image_urls = bool(parse_result.image_urls)
+        has_inline_images = bool(parse_result.images)
+        image_status = "pending" if (has_image_urls or has_inline_images) else "none"
+
         async with get_session() as session:
             doc = Document(
                 id=doc_id, kb_id=kb_id, title=title,
@@ -107,15 +112,16 @@ async def _ingest(
                 status="indexing", storage_key=storage_key,
                 file_hash=file_hash,
                 content=content,
+                image_status=image_status,
             )
             session.add(doc)
             await session.commit()
             await session.refresh(doc)
 
-        has_image_urls = bool(parse_result.image_urls)
+
         image_count = 0
 
-        if not has_image_urls and parse_result.images:
+        if not has_image_urls and has_inline_images:
             image_metas = extract_image_metadata(content, parse_result.images)
             vision_configured = bool(get_settings().vision_base_url)
             from api.image_utils import upload_and_store_images
@@ -126,6 +132,7 @@ async def _ingest(
                 doc_id=doc_id,
                 vision_configured=vision_configured,
             )
+            await update_doc(doc_id, image_status="completed")
 
         from worker.queue import enqueue
         await enqueue("index_document", {"doc_id": doc_id, "kb_id": kb_id})
@@ -146,6 +153,7 @@ async def _ingest(
             content=content,
             outline=outline,
             image_count=image_count,
+            image_status=image_status,
         )
     finally:
         sem.release()
@@ -287,6 +295,7 @@ async def get_document(kb_id: str, doc_id: str):
             content=doc.content,
             outline=[OutlineItem(**item) for item in outline],
             image_count=image_count,
+            image_status=doc.image_status,
         )
 
 
