@@ -164,7 +164,7 @@ async def handle_download_and_store_images(payload: dict) -> None:
     doc = await load_doc(doc_id)
     content = doc.content
 
-    from parsers.url_parser import download_images, get_wechat_headers
+    from parsers.url import download_images, get_wechat_headers
 
     headers = get_wechat_headers(source_url)
     images = await asyncio.get_running_loop().run_in_executor(

@@ -25,16 +25,22 @@ class FakeHandler:
 
 
 def test_register_and_find_handler():
-    handler = FakeHandler()
-    register_handler(handler)
-    found = find_handler("https://example.com/page")
-    assert found is handler
     from parsers.url._handlers import _handlers
-    _handlers.remove(handler)
+    handler = FakeHandler()
+    # Insert before GenericHandler (catch-all) so our handler matches first
+    _handlers.insert(0, handler)
+    try:
+        found = find_handler("https://example.com/page")
+        assert found is handler
+    finally:
+        _handlers.remove(handler)
 
 
-def test_find_handler_returns_none_for_unknown():
-    assert find_handler("https://unknown-domain.test/page") is None
+def test_find_handler_generic_is_catchall():
+    """GenericHandler matches everything, so find_handler never returns None."""
+    from parsers.url._generic import GenericHandler
+    found = find_handler("https://unknown-domain.test/page")
+    assert isinstance(found, GenericHandler)
 
 
 def test_extract_image_urls_resolves_relative():

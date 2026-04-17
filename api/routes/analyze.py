@@ -48,7 +48,7 @@ async def analyze_url(body: AnalyzeURLRequest):
 
     # URL parsers return image_urls; download them for the analyze response
     if body.extract_images and result.image_urls and not result.images:
-        from parsers.url_parser import download_images, get_wechat_headers
+        from parsers.url import download_images, get_wechat_headers
 
         headers = get_wechat_headers(body.url)
         result.images = await asyncio.get_running_loop().run_in_executor(
