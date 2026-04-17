@@ -90,7 +90,7 @@ from parsers.docling_parser import DoclingParser  # noqa: E402
 registry.register(DoclingParser)
 from parsers.mineru_parser import MinerUParser  # noqa: E402
 registry.register(MinerUParser)
-from parsers.url_parser import UrlParser  # noqa: E402
+from parsers.url import UrlParser  # noqa: E402
 registry.register(UrlParser)
 from parsers.markitdown_parser import MarkitdownParser  # noqa: E402
 registry.register(MarkitdownParser)
