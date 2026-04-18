@@ -84,8 +84,9 @@ class Settings(BaseSettings):
     api_key: SecretStr = SecretStr("")
     cors_origins: list[str] = []
 
-    # JWT auth (optional; enables X-Authorization-Token alongside X-API-Key).
-    # Must match the signing secret/algorithm of the issuing service (e.g. go-account).
+    # JWT auth (optional; enables X-Authorization-Token and Authorization: Bearer
+    # alongside X-API-Key). Must match the signing secret/algorithm of whatever
+    # service issues the tokens.
     jwt_secret: SecretStr = SecretStr("")
     # Restricted to go-atlas's supported set; rejects `none` and other algos at load time.
     jwt_algorithm: Literal["HS256", "HS384", "HS512"] = "HS256"

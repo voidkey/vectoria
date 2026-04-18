@@ -224,6 +224,52 @@ async def test_invalid_jwt_rejected_even_with_valid_api_key(monkeypatch, setting
     assert exc.value.status_code == 401
 
 
+# --- Authorization: Bearer (OAuth2/OIDC standard) ---
+
+@pytest.mark.asyncio
+async def test_jwt_via_bearer_header(monkeypatch, settings):
+    """`Authorization: Bearer <token>` works — standard OAuth2/OIDC scheme."""
+    _set_jwt_secret(monkeypatch, settings, "a-jwt-secret-at-least-32-bytes-long!")
+    token = _make_jwt("a-jwt-secret-at-least-32-bytes-long!", uid="alice")
+    req = _make_request({"Authorization": f"Bearer {token}"})
+    result = await verify_auth(req)
+    assert result["uid"] == "alice"
+
+
+@pytest.mark.asyncio
+async def test_bearer_scheme_case_insensitive(monkeypatch, settings):
+    """RFC 7235: auth scheme is case-insensitive."""
+    _set_jwt_secret(monkeypatch, settings, "a-jwt-secret-at-least-32-bytes-long!")
+    token = _make_jwt("a-jwt-secret-at-least-32-bytes-long!", uid="alice")
+    req = _make_request({"Authorization": f"bearer {token}"})
+    result = await verify_auth(req)
+    assert result["uid"] == "alice"
+
+
+@pytest.mark.asyncio
+async def test_non_bearer_authorization_ignored(monkeypatch, settings):
+    """`Authorization: Basic/Digest/...` must not be parsed as a JWT."""
+    _set_jwt_secret(monkeypatch, settings, "a-jwt-secret-at-least-32-bytes-long!")
+    req = _make_request({"Authorization": "Basic dXNlcjpwYXNz"})
+    with pytest.raises(AppError) as exc:
+        await verify_auth(req)
+    assert exc.value.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_x_auth_token_preferred_over_bearer(monkeypatch, settings):
+    """When both present, X-Authorization-Token wins (go-atlas convention)."""
+    _set_jwt_secret(monkeypatch, settings, "a-jwt-secret-at-least-32-bytes-long!")
+    primary = _make_jwt("a-jwt-secret-at-least-32-bytes-long!", uid="primary")
+    secondary = _make_jwt("a-jwt-secret-at-least-32-bytes-long!", uid="secondary")
+    req = _make_request({
+        "X-Authorization-Token": primary,
+        "Authorization": f"Bearer {secondary}",
+    })
+    result = await verify_auth(req)
+    assert result["uid"] == "primary"
+
+
 # --- Integration: dep actually wired onto protected routes ---
 
 @pytest.mark.asyncio
