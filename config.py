@@ -84,6 +84,15 @@ class Settings(BaseSettings):
     api_key: SecretStr = SecretStr("")
     cors_origins: list[str] = []
 
+    # JWT auth (optional; enables X-Authorization-Token alongside X-API-Key).
+    # Must match the signing secret/algorithm of the issuing service (e.g. go-account).
+    jwt_secret: SecretStr = SecretStr("")
+    # Restricted to go-atlas's supported set; rejects `none` and other algos at load time.
+    jwt_algorithm: Literal["HS256", "HS384", "HS512"] = "HS256"
+    # When set, tokens must carry a matching `iss` claim. When empty, issuer is not
+    # verified — tokens with any (or no) issuer are accepted.
+    jwt_issuer: str = ""
+
     # RAG pipeline toggles
     enable_query_rewrite: bool = True
     enable_reranker: bool = False

@@ -26,6 +26,7 @@ dependencies = [
     "torch>=2.0",        # explicit: force CPU-only build via [tool.uv.sources]
     "torchvision>=0.15", # explicit: force CPU-only build via [tool.uv.sources]
     "aioboto3>=13.0",
+    "pyjwt>=2.8",
 ]
 
 [project.optional-dependencies]
