@@ -22,6 +22,22 @@ JWT_HEADER = "X-Authorization-Token"
 API_KEY_HEADER = "X-API-Key"
 
 
+def _extract_jwt(request: Request) -> str | None:
+    """Pull a JWT from the request.
+
+    Checks ``X-Authorization-Token`` first (alternative custom header) and
+    falls back to the standard ``Authorization: Bearer <token>`` scheme so
+    OAuth2/OIDC clients work out of the box.
+    """
+    token = request.headers.get(JWT_HEADER)
+    if token:
+        return token
+    scheme, _, value = request.headers.get("Authorization", "").partition(" ")
+    if scheme.lower() == "bearer" and value:
+        return value
+    return None
+
+
 async def verify_auth(request: Request) -> dict[str, Any] | None:
     """Validate the request and return JWT claims (if any).
 
@@ -35,7 +51,7 @@ async def verify_auth(request: Request) -> dict[str, Any] | None:
     if not jwt_secret and not api_key:
         return None
 
-    token = request.headers.get(JWT_HEADER)
+    token = _extract_jwt(request)
     key = request.headers.get(API_KEY_HEADER)
 
     if token and jwt_secret:
