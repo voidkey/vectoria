@@ -8,7 +8,10 @@ from config import get_settings
 from parsers.base import BaseParser, ParseResult
 
 _B64_DATA_URI = re.compile(r"^data:image/(\w+);base64,(.+)$")
-_TIMEOUT = 600.0  # large PDFs take time
+# Timeouts chosen to keep a hung mineru from pinning the ingest semaphore
+# slot for 10 minutes. 120 s read/write covers realistic PDFs; connect is
+# snug because mineru runs in the same DC.
+_TIMEOUT = httpx.Timeout(120.0, connect=10.0)
 
 
 class MinerUParser(BaseParser):
