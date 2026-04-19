@@ -11,6 +11,13 @@ services:
   app:
     image: ${VECTORIA_IMAGE:-voidkey/vectoria:latest}
     env_file: ${ENV_FILE:-.env.prod}
+    # --limit-max-requests recycles each uvicorn worker after N requests to
+    # bound pseudo-leak accumulation (glibc arena fragmentation, Python arena
+    # retention). Supervisor brings it back automatically; restart cost is low
+    # because heavy imports are already warmed in the image's model cache.
+    command:
+      ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000",
+       "--limit-max-requests", "1000"]
     ports:
       - "8000:8000"
     depends_on:

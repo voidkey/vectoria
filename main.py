@@ -12,6 +12,7 @@ from api.auth import verify_auth
 from api.errors import AppError, ErrorCode
 from api.middleware import RequestIdMiddleware, RequestIdFilter
 from api.routes.analyze import router as analyze_router
+from api.routes.debug import router as debug_router
 from api.routes.documents import router as docs_router
 from api.routes.health import router as health_router
 from api.routes.images import router as images_router
@@ -66,6 +67,7 @@ app.include_router(kb_router, prefix="/v1", dependencies=_auth)
 app.include_router(docs_router, prefix="/v1", dependencies=_auth)
 app.include_router(query_router, prefix="/v1", dependencies=_auth)
 app.include_router(images_router, prefix="/v1", dependencies=_auth)
+app.include_router(debug_router, prefix="/v1", dependencies=_auth)
 
 
 logger = logging.getLogger(__name__)
