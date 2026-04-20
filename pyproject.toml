@@ -35,7 +35,13 @@ dependencies = [
     # raises ConfigurationError at first acquire(). The sync ``redis``
     # is still pulled for any future code that touches Redis directly
     # outside the limiter.
-    "coredis>=4.17",
+    # Upper bound at 6.0 — coredis 6.x requires callers to use an
+    # ``async with`` context manager on the connection pool, but the
+    # ``limits`` library (as of 5.8) still instantiates the client
+    # bare. Using coredis 6 yields "Connection pool is not initialized"
+    # on every acquire. Drop the upper bound once ``limits`` updates
+    # (tracked upstream).
+    "coredis>=4.17,<6",
     "limits>=3.7",
     "imagehash>=4.3",
 ]
