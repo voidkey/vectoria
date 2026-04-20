@@ -1,14 +1,29 @@
 import pytest
 from unittest.mock import patch, AsyncMock
 from parsers.base import ParseResult
+from parsers.image_ref import ImageRef
+
+
+def _png_bytes() -> bytes:
+    # Stub payload; the dim-filter gate is bypassed by pre-setting
+    # width/height on the ref (as real parsers do). Content just needs
+    # to round-trip unchanged through the upload.
+    return b"\x89PNG\r\n\x1a\n" + b"\x00" * 16
 
 
 @pytest.mark.asyncio
 async def test_analyze_url(client):
+    img = _png_bytes()
     fake_result = ParseResult(
         content="# Article\n\nSome content.",
-        images={"img1.png": b"\x89PNG\r\n" + b"\x00" * 10},
         title="My Article",
+        image_refs=[
+            ImageRef(
+                name="img1.png", mime="image/png",
+                width=300, height=300,
+                _factory=lambda d=img: d,
+            ),
+        ],
     )
 
     mock_storage = AsyncMock()
@@ -16,7 +31,7 @@ async def test_analyze_url(client):
 
     with (
         patch("api.routes.analyze.registry") as mock_reg,
-        patch("api.image_utils.get_storage", return_value=mock_storage),
+        patch("api.image_stream.get_storage", return_value=mock_storage),
     ):
         mock_parser = AsyncMock()
         mock_parser.parse = AsyncMock(return_value=fake_result)

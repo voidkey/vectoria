@@ -96,35 +96,34 @@ async def test_duplicate_file_in_same_kb_returns_existing_doc(client):
 
 @pytest.mark.asyncio
 async def test_different_content_does_not_dedup(client):
-    """Different bytes → different hash → fresh ingest (no false-positive dedup)."""
-    fake_parser = MagicMock()
-    fake_parser.parse = AsyncMock(
-        return_value=ParseResult(content="parsed text", images={}, title="fresh")
-    )
+    """Different bytes → different hash → fresh enqueue (no false-positive dedup).
+
+    As of W1 Task 4 the API doesn't parse in-process any more, so this
+    only asserts that a ``parse_document`` Task row was staged alongside
+    the new Document (atomic insert — see enqueue_in_session).
+    """
+    from db.models import Task
+    added = []
 
     with (
         patch("api.routes.documents._validate_kb", new=AsyncMock()),
         patch("api.routes.documents.get_storage") as mock_storage,
         patch("api.routes.documents.registry") as mock_registry,
         patch("api.routes.documents.get_session") as mock_sess,
-        patch("api.routes.documents.extract_outline", return_value=[]),
-        patch("worker.queue.enqueue", new=AsyncMock()),
     ):
         mock_storage.return_value = AsyncMock()
         mock_registry.auto_select.return_value = "markitdown"
-        mock_registry.get_by_engine.return_value = fake_parser
 
         session = AsyncMock()
-        # Dedup lookup misses, then later refresh works.
+        # Dedup lookup misses.
         miss_result = MagicMock()
         miss_result.scalar_one_or_none.return_value = None
         session.execute = AsyncMock(return_value=miss_result)
 
         def _refresh(obj):
-            obj.id = "doc-new"
             obj.created_at = datetime(2026, 4, 15, 21, 0, 0)
 
-        session.add = MagicMock()
+        session.add = MagicMock(side_effect=lambda obj: added.append(obj))
         session.commit = AsyncMock()
         session.refresh = AsyncMock(side_effect=_refresh)
         mock_sess.return_value.__aenter__.return_value = session
@@ -135,5 +134,11 @@ async def test_different_content_does_not_dedup(client):
         )
 
     assert resp.status_code == 201, resp.text
-    assert resp.json()["id"] == "doc-new"
-    fake_parser.parse.assert_called_once()
+    body = resp.json()
+    # New-flow response: queued status, content not yet populated.
+    assert body["status"] == "queued"
+    assert body["content"] == ""
+    # A parse_document Task row was staged in the same transaction as
+    # the Document — atomicity fix for show-stopper #1 in code review.
+    parse_tasks = [o for o in added if isinstance(o, Task) and o.task_type == "parse_document"]
+    assert len(parse_tasks) == 1

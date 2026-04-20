@@ -16,11 +16,12 @@ import uuid
 import logging
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import select, update, text
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.base import get_session
 from db.models import Task
+from infra.metrics import QUEUE_DEPTH, QUEUE_OLDEST_AGE_SECONDS
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +37,13 @@ async def enqueue(
     priority: int = 0,
     max_attempts: int = 3,
 ) -> str:
-    """Insert a new pending task. Returns the task id."""
+    """Insert a new pending task. Returns the task id.
+
+    Prefer ``enqueue_in_session`` when the enqueue must be atomic with
+    another insert in the caller's transaction (e.g. Document + its
+    parse task) — otherwise a DB blip between the two commits can leave
+    an orphan row that no worker picks up.
+    """
     task_id = str(uuid.uuid4())
     async with get_session() as session:
         task = Task(
@@ -53,7 +60,42 @@ async def enqueue(
     return task_id
 
 
-async def dequeue(session: AsyncSession) -> Task | None:
+def enqueue_in_session(
+    session: AsyncSession,
+    task_type: str,
+    payload: dict,
+    *,
+    priority: int = 0,
+    max_attempts: int = 3,
+) -> str:
+    """Stage a task row in the caller's session without committing.
+
+    Intended for atomicity with a sibling insert — the caller commits
+    once, and either both rows land or neither does. A DB blip between
+    two separate commits (``Document.commit()`` then ``enqueue()``) would
+    otherwise leave a ``queued`` Document with no worker task, and the
+    per-hash dedup lookup would then match that orphan on every retry.
+
+    Does not log (no task_id yet committed); the runner logs on dequeue.
+    """
+    task_id = str(uuid.uuid4())
+    task = Task(
+        id=task_id,
+        task_type=task_type,
+        payload=payload,
+        status="pending",
+        priority=priority,
+        max_attempts=max_attempts,
+    )
+    session.add(task)
+    return task_id
+
+
+async def dequeue(
+    session: AsyncSession,
+    *,
+    task_types: list[str] | None = None,
+) -> Task | None:
     """Atomically claim the next pending task (or a stale running task).
 
     Returns the Task with status already set to 'running', or None if the
@@ -62,24 +104,29 @@ async def dequeue(session: AsyncSession) -> Task | None:
 
     Uses FOR UPDATE SKIP LOCKED so multiple workers can poll concurrently
     without blocking each other.
+
+    ``task_types`` filters to only specific task_type values. Drives
+    multi-deployment sharding: a ``url_render`` worker passes
+    ``["url_render"]`` and never claims parse tasks even though both sit
+    in the same table. ``None`` (default) accepts all task types.
     """
     now = datetime.now(timezone.utc).replace(tzinfo=None)
+
+    # Eligibility: pending-and-ready OR running-and-stale
+    eligibility_expr = (
+        (Task.status == "pending")
+        & ((Task.locked_until.is_(None)) | (Task.locked_until < now))
+    ) | (
+        (Task.status == "running")
+        & (Task.locked_until < now)
+    )
+    if task_types:
+        eligibility_expr = eligibility_expr & Task.task_type.in_(task_types)
 
     # Subquery: pick the best candidate.
     subq = (
         select(Task.id)
-        .where(
-            # Pending tasks whose backoff (if any) has elapsed, OR
-            # running tasks whose lock expired (stale worker).
-            (
-                (Task.status == "pending")
-                & ((Task.locked_until.is_(None)) | (Task.locked_until < now))
-            )
-            | (
-                (Task.status == "running")
-                & (Task.locked_until < now)
-            )
-        )
+        .where(eligibility_expr)
         .order_by(Task.priority.desc(), Task.created_at)
         .limit(1)
         .with_for_update(skip_locked=True)
@@ -149,6 +196,31 @@ async def reap_dead_tasks() -> int:
             for tid in dead_ids:
                 logger.warning("Reaped dead task %s", tid)
         return len(dead_ids)
+
+
+async def sample_queue_metrics() -> None:
+    """Update ``QUEUE_DEPTH`` and ``QUEUE_OLDEST_AGE_SECONDS`` gauges.
+
+    One aggregated SELECT per call per worker. Cheap enough to run every
+    few polling iterations in the worker loop — not on every 1 s tick.
+    Operators rely on these for queue-backlog alerts; leaving them
+    unobserved is the single biggest gap in the W1 observability story.
+    """
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    async with get_session() as session:
+        result = await session.execute(
+            select(
+                Task.task_type,
+                func.count(Task.id),
+                func.min(Task.created_at),
+            )
+            .where(Task.status == "pending")
+            .group_by(Task.task_type)
+        )
+        for task_type, count, oldest in result.all():
+            QUEUE_DEPTH.labels(task_type=task_type).set(count)
+            age = (now - oldest).total_seconds() if oldest else 0
+            QUEUE_OLDEST_AGE_SECONDS.labels(task_type=task_type).set(max(age, 0))
 
 
 async def fail(task_id: str, error: str) -> None:
