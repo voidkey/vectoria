@@ -16,6 +16,13 @@ services:
     mem_limit: 2g
     memswap_limit: 3g
 
+  redis:
+    # Rate-limit token buckets and shared state are O(keys × tokens),
+    # tiny compared with app/worker memory. 512 MB leaves comfortable
+    # headroom even if we start caching parse results here later.
+    mem_limit: 512m
+    memswap_limit: 1g
+
   app:
     image: ${VECTORIA_IMAGE:-voidkey/vectoria:latest}
     env_file: ${ENV_FILE:-.env.prod}

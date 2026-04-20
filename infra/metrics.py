@@ -109,6 +109,17 @@ PARSE_DURATION_SECONDS = Histogram(
 )
 
 # ---------------------------------------------------------------------------
+# Rate limiting (infra/ratelimit.py)
+# ---------------------------------------------------------------------------
+
+RATELIMIT_CHECKS_TOTAL = Counter(
+    "vectoria_ratelimit_checks_total",
+    "Distributed rate-limit decisions labelled by outcome. "
+    "error = Redis unreachable and caller received fail-closed False.",
+    labelnames=("key", "result"),  # result ∈ {allowed, blocked, error}
+)
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 

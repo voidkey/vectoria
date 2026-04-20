@@ -31,6 +31,28 @@ services:
       retries: 10
     restart: unless-stopped
 
+  redis:
+    image: redis:7-alpine
+    # Shared state across workers (distributed rate limits today; shared
+    # circuit-breaker state / dedupe cache as future W3+ use cases).
+    # --appendonly yes turns on AOF so a Redis restart doesn't lose
+    # in-flight token-bucket counters — matters during long-running
+    # rate-limited crawls.
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      # Loopback by default to mirror the db hardening. Override via
+      # REDIS_BIND=0.0.0.0 (behind your firewall) when another host
+      # needs direct access.
+      - "${REDIS_BIND:-127.0.0.1}:${REDIS_PORT:-6379}:6379"
+    volumes:
+      - vectoria_redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
   minio:
     image: minio/minio:latest
     profiles: ["local"]
@@ -66,5 +88,7 @@ services:
 volumes:
   vectoria_pgdata:
     name: vectoria_pgdata
+  vectoria_redis:
+    name: vectoria_redis
   vectoria_minio:
     name: vectoria_minio
