@@ -125,26 +125,25 @@ class XhsHandler:
         lets the upstream caller decide next steps.
         """
         try:
-            from playwright.async_api import async_playwright
+            from parsers.url._browser import parse_session
         except ImportError:
             log.warning("playwright not installed; xhs parse returning empty")
             return ParseResult(content="", title="")
 
         try:
-            async with async_playwright() as p:
-                browser = await p.chromium.launch(
-                    headless=True,
-                    args=["--no-sandbox", "--disable-setuid-sandbox"],
-                )
-                try:
-                    page = await browser.new_page(user_agent=XHS_UA)
-                    # networkidle is brittle on SPAs; 30 s cap then
-                    # proceed regardless — selectors below tolerate a
-                    # partially-hydrated page.
-                    await page.goto(url, wait_until="domcontentloaded", timeout=30000)
-                    await page.wait_for_timeout(2000)  # soft hydration wait
+            # Browser pool: single Chromium per worker, fresh context
+            # per URL. block_heavy drops image / font / media requests
+            # at the network layer — we only need DOM for extraction,
+            # and xhs feeds dozens of image assets to each note.
+            async with parse_session(user_agent=XHS_UA, block_heavy=True) as ctx:
+                page = await ctx.new_page()
+                # networkidle is brittle on SPAs; 30 s cap then
+                # proceed regardless — selectors below tolerate a
+                # partially-hydrated page.
+                await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                await page.wait_for_timeout(2000)  # soft hydration wait
 
-                    extract = await page.evaluate(
+                extract = await page.evaluate(
                         """
                         () => {
                             const pickText = sels => {
@@ -187,9 +186,8 @@ class XhsHandler:
                             return { title, body, imgs: uniq };
                         }
                         """,
-                    )
-                finally:
-                    await browser.close()
+                )
+                # Context closes at async-with exit.
         except Exception:
             log.exception("xhs playwright parse failed for %s", url)
             return ParseResult(content="", title="")
