@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlunparse, parse_qsl, urlencode
 
 import httpx
 import lxml.html
@@ -21,6 +21,9 @@ from parsers.url._handlers import extract_html_title, extract_with_trafilatura
 log = logging.getLogger(__name__)
 
 _WECHAT_HOSTS = {"mp.weixin.qq.com", "weixin.qq.com", "channels.weixin.qq.com"}
+# WeChat's article image CDN. Not identical to the article host —
+# article comes from mp.weixin.qq.com, its images from mmbiz.qpic.cn.
+_WECHAT_IMG_HOST = "mmbiz.qpic.cn"
 WECHAT_UA = (
     "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
     "AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 "
@@ -65,12 +68,41 @@ def extract_wechat_title(doc: lxml.html.HtmlElement) -> str:
     return (activity.text_content() or "").strip()
 
 
+def canonicalize_wechat_image_url(url: str) -> str:
+    """Rewrite a WeChat image URL to force the JPEG rendering variant.
+
+    Without this, mmbiz.qpic.cn may return WebP to callers that advertise
+    support for it (many libraries do by default via Accept headers);
+    downstream tools like PIL, the vision LLM, and some browser image
+    tags prefer JPEG. ``wx_fmt=jpeg`` is the stable knob the CDN honors.
+
+    No-op for non-WeChat image hosts, or URLs that already pinned a
+    format. The original string is returned on any parse failure — this
+    runs inline in the image-download loop and must never raise.
+    """
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return url
+    if (parsed.hostname or "").lower() != _WECHAT_IMG_HOST:
+        return url
+
+    q = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    if "wx_fmt" in q:
+        return url
+    q["wx_fmt"] = "jpeg"
+    return urlunparse(parsed._replace(query=urlencode(q)))
+
+
 class WechatHandler:
     def match(self, url: str) -> bool:
         return is_wechat_url(url)
 
     def download_headers(self, url: str) -> dict[str, str] | None:
         return get_wechat_headers(url)
+
+    def canonicalize_image_url(self, url: str) -> str:
+        return canonicalize_wechat_image_url(url)
 
     async def parse(self, url: str) -> ParseResult:
         result = await asyncio.get_running_loop().run_in_executor(
