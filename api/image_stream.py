@@ -18,6 +18,7 @@ Two public entry points:
 from __future__ import annotations
 
 import asyncio
+import io
 import logging
 import math
 import uuid
@@ -30,6 +31,26 @@ from storage import get_storage
 logger = logging.getLogger(__name__)
 
 _DEFAULT_CONCURRENCY = 3
+
+
+def _compute_phash(data: bytes) -> str | None:
+    """Return the 64-bit perceptual hash of an image as a 16-char hex
+    string, or None if PIL couldn't decode the bytes (not an image,
+    truncated file, unsupported format, ...).
+
+    Cheap — pHash runs in ~1-5 ms per image on a single core. Runs
+    inside ``asyncio.to_thread`` in the hot path to avoid blocking
+    the event loop during PIL decode.
+    """
+    try:
+        import imagehash  # type: ignore[import-untyped]
+        from PIL import Image
+
+        with Image.open(io.BytesIO(data)) as img:
+            return str(imagehash.phash(img))
+    except Exception:
+        logger.debug("phash compute failed (not a valid image?)", exc_info=True)
+        return None
 # Vision LLM's minimum useful image dimension. Anything smaller is
 # marked ``skipped`` so the vision worker doesn't spend calls on favicons
 # and separator decorations.
@@ -143,6 +164,13 @@ async def stream_upload_and_store_refs(
                 ref.release()
                 return None
 
+            # Compute perceptual hash alongside upload. Runs off the
+            # event loop because PIL decode is CPU-bound. A None
+            # result just means "couldn't decode" — we still store
+            # the row so subsequent operations work; dedup lookups
+            # simply skip these rows.
+            phash = await asyncio.to_thread(_compute_phash, data)
+
             try:
                 safe_name = name_picker(ref, data)
                 s3_key = f"{key_prefix}/{safe_name}"
@@ -170,6 +198,7 @@ async def stream_upload_and_store_refs(
                 description="",
                 vision_status=_vision_status_for(ref, vision_configured),
                 image_index=image_index,
+                phash=phash,
             )
 
     # return_exceptions=True so a single failure doesn't cancel the

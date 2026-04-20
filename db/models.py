@@ -74,6 +74,14 @@ class DocumentImage(Base):
         String(20), default="pending", server_default="pending", nullable=False
     )
     image_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    # Perceptual hash (phash) of the image bytes. 16-hex-char string =
+    # 64-bit hash. Populated at upload time when possible; nullable so
+    # rows that predate W3-f (or where PIL couldn't decode the bytes)
+    # don't block inserts. Dedup lookup uses indexed equality now,
+    # Hamming-distance LSH later once we have real-traffic phash data.
+    phash: Mapped[str | None] = mapped_column(
+        String(16), nullable=True, index=True, default=None,
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     document: Mapped["Document"] = relationship(back_populates="images")
