@@ -297,10 +297,12 @@ async def handle_download_and_store_images(payload: dict) -> None:
 
     from api.image_stream import refs_from_dict, stream_upload_and_store_refs
     from parsers.image_metadata import extract_metadata_into_refs
-    from parsers.url import download_images, get_wechat_headers
+    from parsers.url import download_images_for_url
 
-    headers = get_wechat_headers(source_url)
-    images = await download_images(image_urls, headers=headers)
+    # ``download_images_for_url`` threads the source URL's handler:
+    # platform-specific Referer/UA headers + image URL canonicalisation
+    # (WeChat forces wx_fmt=jpeg, future handlers swap size variants).
+    images = await download_images_for_url(source_url, image_urls)
     if not images:
         await update_doc(doc_id, image_status="completed")
         return

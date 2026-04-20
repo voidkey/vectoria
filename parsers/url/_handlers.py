@@ -84,6 +84,32 @@ class SiteHandler(Protocol):
     def match(self, url: str) -> bool: ...
     async def parse(self, url: str) -> ParseResult: ...
     def download_headers(self, url: str) -> dict[str, str] | None: ...
+    # ``canonicalize_image_url`` is **optional**. Handlers that want
+    # tighter control over the exact URL we fetch (force best-quality
+    # variant, strip watermark params, swap a thumbnail prefix for the
+    # original, etc.) implement it; callers use ``canonicalize_via``
+    # below which tolerates its absence. Keeping it off the Protocol
+    # means handlers that don't care don't need to carry a no-op.
+
+
+def canonicalize_via(handler: SiteHandler | None, url: str) -> str:
+    """Apply a handler's image-URL canonicalization if it declared one.
+
+    Returns the original URL unchanged when the handler has no
+    ``canonicalize_image_url`` method or when no handler is supplied.
+    """
+    if handler is None:
+        return url
+    fn = getattr(handler, "canonicalize_image_url", None)
+    if fn is None:
+        return url
+    try:
+        return fn(url)
+    except Exception:
+        # Canonicalization is opportunistic — never let a handler bug
+        # bring down the whole image-download batch.
+        logger.exception("canonicalize_image_url raised for %s; using original", url)
+        return url
 
 
 _handlers: list[SiteHandler] = []
@@ -150,6 +176,7 @@ def needs_browser_fallback(result: ParseResult) -> bool:
 async def download_images(
     urls: list[str],
     headers: dict[str, str] | None = None,
+    canonicalize: "callable | None" = None,
 ) -> dict[str, bytes]:
     """Async download with per-domain distributed rate limiting.
 
@@ -159,21 +186,28 @@ async def download_images(
     across all workers connecting to the same Redis — one flat rate
     per CDN domain no matter how many pods are running.
 
-    Returns ``{url: bytes}`` only for URLs that both passed the
-    rate-limit gate and returned 200.
+    ``canonicalize`` is an optional ``(url) -> url`` hook that runs
+    before the rate gate and fetch. Handlers use it to force a higher-
+    quality variant (e.g. WeChat ``wx_fmt=jpeg``, Twitter
+    ``?name=orig``). The returned dict is keyed by the *original* URL
+    the caller passed in, so downstream markdown-position matching
+    still works even when the fetch URL was rewritten.
     """
     images: dict[str, bytes] = {}
     async with httpx.AsyncClient(
         timeout=10, follow_redirects=True, headers=headers or {},
     ) as client:
-        for src in urls[:20]:
-            if not await _gate(src):
+        for original in urls[:20]:
+            fetch_url = canonicalize(original) if canonicalize else original
+            if not await _gate(fetch_url):
                 continue
             try:
-                resp = await client.get(src)
+                resp = await client.get(fetch_url)
                 if resp.status_code == 200 and resp.content:
-                    images[src] = resp.content
+                    # Key by the URL as it appeared in markdown so
+                    # ``extract_metadata_into_refs`` can still match.
+                    images[original] = resp.content
             except Exception:
-                logger.debug("image fetch failed for %s", src, exc_info=True)
+                logger.debug("image fetch failed for %s", fetch_url, exc_info=True)
                 continue
     return images

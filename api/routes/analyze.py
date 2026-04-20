@@ -68,10 +68,9 @@ async def analyze_url(body: AnalyzeURLRequest):
     # URLs. The download is adapted into the same ImageRef pipeline to
     # share streaming/release semantics.
     if body.extract_images and result.image_urls and not result.image_refs:
-        from parsers.url import download_images, get_wechat_headers
+        from parsers.url import download_images_for_url
 
-        headers = get_wechat_headers(body.url)
-        downloaded = await download_images(result.image_urls, headers=headers)
+        downloaded = await download_images_for_url(body.url, result.image_urls)
         result.image_refs = refs_from_dict(downloaded)
         # drop strong refs so only ImageRef closures hold bytes.
         downloaded = None  # noqa: F841
