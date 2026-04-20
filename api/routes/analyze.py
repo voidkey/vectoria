@@ -71,9 +71,7 @@ async def analyze_url(body: AnalyzeURLRequest):
         from parsers.url import download_images, get_wechat_headers
 
         headers = get_wechat_headers(body.url)
-        downloaded = await asyncio.get_running_loop().run_in_executor(
-            None, download_images, result.image_urls, headers,
-        )
+        downloaded = await download_images(result.image_urls, headers=headers)
         result.image_refs = refs_from_dict(downloaded)
         # drop strong refs so only ImageRef closures hold bytes.
         downloaded = None  # noqa: F841
