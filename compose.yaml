@@ -10,15 +10,22 @@ services:
   db:
     image: pgvector/pgvector:pg16
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: vectoria
+      # Credentials come from .env / .env.prod. Defaults below are for
+      # local dev only — set strong values in any deploy that exposes
+      # the port or runs on a shared host.
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-vectoria}
     ports:
-      - "${PG_BIND:-0.0.0.0}:${PG_PORT:-5433}:5432"
+      # Default bind to loopback so the DB port is not reachable from
+      # outside the host even if a weak password slipped in. Explicitly
+      # override to 0.0.0.0 (behind your own firewall) when another host
+      # needs direct access.
+      - "${PG_BIND:-127.0.0.1}:${PG_PORT:-5433}:5432"
     volumes:
       - vectoria_pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres}"]
       interval: 5s
       timeout: 5s
       retries: 10
