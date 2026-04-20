@@ -73,18 +73,34 @@ def test_extract_with_trafilatura_returns_markdown():
     assert "Hello" in text or text == ""
 
 
-def test_download_images_with_headers():
-    from unittest.mock import patch
-    fake_response = type("R", (), {"status_code": 200, "content": b"\x89PNG fake"})()
+async def test_download_images_with_headers():
+    """Happy path: respects provided Referer header and returns bytes."""
+    from unittest.mock import AsyncMock, MagicMock, patch
+    from limits.aio.storage import MemoryStorage
+    from infra import ratelimit
 
-    with patch("parsers.url._handlers.httpx.get", return_value=fake_response) as mock_get:
-        result = download_images(
-            ["https://mmbiz.qpic.cn/img1.jpg"],
-            headers={"Referer": "https://mp.weixin.qq.com/"},
-        )
+    ratelimit._reset_for_tests()
+    ratelimit._set_storage_for_tests(MemoryStorage())
+    try:
+        fake_resp = MagicMock(status_code=200, content=b"\x89PNG fake")
+        mock_client = MagicMock()
+        mock_client.get = AsyncMock(return_value=fake_resp)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
 
-    assert "https://mmbiz.qpic.cn/img1.jpg" in result
-    assert result["https://mmbiz.qpic.cn/img1.jpg"] == b"\x89PNG fake"
-    mock_get.assert_called_once()
-    call_kwargs = mock_get.call_args
-    assert call_kwargs.kwargs["headers"]["Referer"] == "https://mp.weixin.qq.com/"
+        with patch(
+            "parsers.url._handlers.httpx.AsyncClient",
+            return_value=mock_client,
+        ) as ctor:
+            result = await download_images(
+                ["https://mmbiz.qpic.cn/img1.jpg"],
+                headers={"Referer": "https://mp.weixin.qq.com/"},
+            )
+
+        assert "https://mmbiz.qpic.cn/img1.jpg" in result
+        assert result["https://mmbiz.qpic.cn/img1.jpg"] == b"\x89PNG fake"
+        # Referer flows into the AsyncClient constructor (per-session).
+        sent_headers = ctor.call_args.kwargs.get("headers") or {}
+        assert sent_headers.get("Referer") == "https://mp.weixin.qq.com/"
+    finally:
+        ratelimit._reset_for_tests()

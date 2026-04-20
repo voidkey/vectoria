@@ -300,9 +300,7 @@ async def handle_download_and_store_images(payload: dict) -> None:
     from parsers.url import download_images, get_wechat_headers
 
     headers = get_wechat_headers(source_url)
-    images = await asyncio.get_running_loop().run_in_executor(
-        None, download_images, image_urls, headers,
-    )
+    images = await download_images(image_urls, headers=headers)
     if not images:
         await update_doc(doc_id, image_status="completed")
         return
