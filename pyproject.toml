@@ -30,6 +30,12 @@ dependencies = [
     "prometheus-client>=0.20",
     "prometheus-fastapi-instrumentator>=7.0",
     "redis[hiredis]>=5.0",
+    # ``coredis`` is what ``limits.aio.storage.RedisStorage`` speaks
+    # (not the sync ``redis`` package). Without it the async limiter
+    # raises ConfigurationError at first acquire(). The sync ``redis``
+    # is still pulled for any future code that touches Redis directly
+    # outside the limiter.
+    "coredis>=4.17",
     "limits>=3.7",
     "imagehash>=4.3",
 ]
