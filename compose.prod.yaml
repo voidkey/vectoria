@@ -8,6 +8,14 @@
 # first, then re-run deploy.sh.
 
 services:
+  db:
+    # Guard against a runaway query or autovacuum spike eating enough
+    # host memory that the neighbouring app/worker containers also OOM.
+    # 2 GB fits comfortably for low-hundreds-of-thousands docs with
+    # pgvector indexes; bump when the dataset grows.
+    mem_limit: 2g
+    memswap_limit: 3g
+
   app:
     image: ${VECTORIA_IMAGE:-voidkey/vectoria:latest}
     env_file: ${ENV_FILE:-.env.prod}
