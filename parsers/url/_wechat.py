@@ -171,16 +171,17 @@ class WechatHandler:
 
     async def _parse_with_playwright(self, url: str) -> ParseResult:
         try:
-            from playwright.async_api import async_playwright
+            from parsers.url._browser import parse_session
         except ImportError:
             return ParseResult(content="", images={}, title="")
 
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(
-                headless=True,
-                args=["--no-sandbox", "--disable-setuid-sandbox"],
-            )
-            page = await browser.new_page(user_agent=WECHAT_UA)
+        # Browser pool: one Chromium per worker process, fresh context
+        # per call. ``block_heavy=False`` — WeChat pages sometimes
+        # delay #js_content hydration until stylesheet / image assets
+        # resolve, and the raw-HTML fast path is what we save Chromium
+        # for anyway (this slow path is the edge case).
+        async with parse_session(user_agent=WECHAT_UA, block_heavy=False) as ctx:
+            page = await ctx.new_page()
             await page.goto(url, wait_until="networkidle", timeout=30000)
 
             await page.evaluate("""
@@ -253,7 +254,7 @@ class WechatHandler:
                 html = await page.content()
                 title = extract_html_title(html, url)
 
-            await browser.close()
+            # Context closes automatically at async-with exit.
 
         wrapped = f"<html><body>{content_html}</body></html>"
         text = extract_with_trafilatura(wrapped)
