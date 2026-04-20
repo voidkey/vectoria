@@ -21,6 +21,9 @@ from parsers.url._handlers import (
 from parsers.url._wechat import WechatHandler, get_wechat_headers
 register_handler(WechatHandler())
 
+from parsers.url._xhs import XhsHandler
+register_handler(XhsHandler())
+
 from parsers.url._x import XHandler
 register_handler(XHandler())
 
