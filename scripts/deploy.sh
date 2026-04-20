@@ -19,8 +19,8 @@ git pull --ff-only
 echo "Pulling image from Docker Hub..."
 "${COMPOSE[@]}" pull app worker
 
-echo "Starting infra (db)..."
-"${COMPOSE[@]}" up -d --wait db
+echo "Starting infra (db, redis)..."
+"${COMPOSE[@]}" up -d --wait db redis
 
 # Run migrations BEFORE starting the app so it never serves requests on a
 # stale schema. `run --rm` spins up a one-shot container sharing compose
