@@ -4,6 +4,8 @@ import logging
 from dataclasses import dataclass
 from PIL import Image
 
+from parsers.image_ref import ImageRef
+
 logger = logging.getLogger(__name__)
 
 _IMG_REF_RE = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
@@ -101,6 +103,12 @@ def extract_image_metadata(
 
     Filters out images smaller than MIN_DIMENSION (100px) on either axis.
     Returns a list of ImageMeta sorted by document order.
+
+    Legacy dict-based interface. New code should use
+    ``extract_metadata_into_refs`` which fills fields directly on
+    ``ImageRef`` objects — bytes stay under the streaming pipeline's
+    lifetime control instead of being held in an eagerly-materialised
+    dict for the entire ingest.
     """
     refs: list[tuple[str, int, int, str]] = []  # (filename, start, end, alt)
     for m in _IMG_REF_RE.finditer(markdown):
@@ -142,3 +150,69 @@ def extract_image_metadata(
         idx += 1
 
     return result
+
+
+def extract_metadata_into_refs(
+    markdown: str, refs: list[ImageRef],
+) -> list[ImageRef]:
+    """Fill ``alt``, ``context``, ``section_title``, ``markdown_pos`` on
+    each ref by matching its ``name`` against markdown ``![](path)``
+    references. Also fills missing ``width``/``height`` by materialising
+    bytes once (PIL decode), so small images can be filtered out *before*
+    the upload pipeline spends S3 bandwidth.
+
+    Returns the surviving refs sorted by position in the markdown. Refs
+    smaller than ``MIN_DIMENSION`` on either axis are dropped (same
+    threshold as the legacy dict-based extractor).
+
+    Refs are mutated in place — they are the same objects returned, not
+    copies — so downstream can keep the list reference stable.
+    """
+    by_name = {r.name: r for r in refs}
+    positioned: list[tuple[ImageRef, int, int, str]] = []
+    matched: set[str] = set()
+
+    for m in _IMG_REF_RE.finditer(markdown):
+        alt = m.group(1)
+        ref_path = m.group(2)
+        for name, ref in by_name.items():
+            if name in matched:
+                continue
+            if name in ref_path or ref_path in name or name == ref_path:
+                positioned.append((ref, m.start(), m.end(), alt))
+                matched.add(name)
+                break
+
+    doc_len = len(markdown)
+    for name, ref in by_name.items():
+        if name not in matched:
+            positioned.append((ref, doc_len, doc_len, ""))
+
+    out: list[ImageRef] = []
+    for ref, start, end, alt in positioned:
+        # Lazy dimension resolution: parsers that already know dims
+        # (docling) skip this cost; parsers that don't (mineru) pay a
+        # single materialize+decode here rather than at upload time.
+        if ref.width is None or ref.height is None:
+            try:
+                data = ref.materialize()
+                w, h = _get_dimensions(data)
+                ref.width = w
+                ref.height = h
+            except Exception:
+                logger.exception("dimension read failed for %s", ref.name)
+
+        if (ref.width is not None and ref.height is not None
+                and (ref.width < MIN_DIMENSION or ref.height < MIN_DIMENSION)):
+            # Filtered out — release so the factory's captured state
+            # (base64 string / PIL.Image / docling doc) can be GC'd.
+            ref.release()
+            continue
+
+        ref.alt = alt
+        ref.context = _extract_context(markdown, start, end)
+        ref.section_title = _find_section_title(markdown, start)
+        ref.markdown_pos = start
+        out.append(ref)
+
+    return out

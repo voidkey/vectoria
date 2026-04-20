@@ -8,6 +8,7 @@ from pathlib import Path
 from config import get_settings
 from parsers.base import BaseParser, ParseResult
 from parsers.convert import LEGACY_FORMAT_MAP, convert_legacy_format
+from parsers.image_ref import ImageRef
 from parsers.isolation import run_isolated
 
 logger = logging.getLogger(__name__)
@@ -93,29 +94,47 @@ class DoclingParser(BaseParser):
                 Path(converted_path).unlink(missing_ok=True)
 
         if result.status.name != "SUCCESS":
-            return ParseResult(content="", images={}, title=Path(filename).stem)
+            return ParseResult(content="", title=Path(filename).stem)
 
         markdown = result.document.export_to_markdown()
-        images = self._extract_images(result)
+        image_refs = self._extract_image_refs(result)
         title = Path(filename).stem
 
-        return ParseResult(content=markdown, images=images, title=title)
+        return ParseResult(content=markdown, title=title, image_refs=image_refs)
 
-    def _extract_images(self, result) -> dict[str, bytes]:
-        """Extract embedded images from Docling result."""
-        images: dict[str, bytes] = {}
+    def _extract_image_refs(self, result) -> list[ImageRef]:
+        """Build lazy ImageRef list from Docling pictures.
+
+        The factory captures the docling ``picture`` + ``document`` by
+        default-arg; ``materialize()`` re-encodes to PNG on demand. This
+        keeps PNG bytes out of the heap until the upload pipeline asks
+        for them, and lets ``release()`` drop the capture afterwards.
+        Widths/heights are read eagerly (PIL.Image.size is cheap — the
+        image is already decoded in docling's internals) so metadata
+        extraction doesn't need to materialize bytes just for dims.
+        """
+        refs: list[ImageRef] = []
         try:
             for idx, picture in enumerate(result.document.pictures):
                 pil_img = picture.get_image(doc=result.document)
                 if pil_img is None:
                     continue
-                buf = io.BytesIO()
-                pil_img.save(buf, format="PNG")
-                fname = f"image_{idx:04d}.png"
-                images[fname] = buf.getvalue()
+                w, h = pil_img.size
+                name = f"image_{idx:04d}.png"
+
+                def _factory(pic=picture, doc=result.document) -> bytes:
+                    img = pic.get_image(doc=doc)
+                    buf = io.BytesIO()
+                    img.save(buf, format="PNG")
+                    return buf.getvalue()
+
+                refs.append(ImageRef(
+                    name=name, mime="image/png",
+                    width=w, height=h, _factory=_factory,
+                ))
         except Exception:
-            pass
-        return images
+            logger.exception("docling image extraction failed")
+        return refs
 
 
 def _docling_parse_worker(source: bytes | str, filename: str) -> ParseResult:

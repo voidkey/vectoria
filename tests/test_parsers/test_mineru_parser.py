@@ -29,11 +29,15 @@ async def test_parse_returns_markdown():
         result = await parser.parse(b"%PDF fake", filename="test.pdf")
 
     assert "Doc" in result.content
-    assert result.images == {}
+    assert result.image_refs == []
 
 
 @pytest.mark.asyncio
-async def test_parse_decodes_images():
+async def test_parse_yields_lazy_image_refs():
+    """Images are surfaced as ``ImageRef`` with a factory that decodes
+    base64 on demand — not as a pre-decoded dict. materialize() must
+    return the original decoded bytes.
+    """
     png_bytes = b"\x89PNG\r\n\x1a\n" + b"\x00" * 20
     b64 = "data:image/png;base64," + base64.b64encode(png_bytes).decode()
     fake_resp = _make_response("![img](images/fig1.png)", {"fig1.png": b64})
@@ -52,8 +56,20 @@ async def test_parse_decodes_images():
         parser = MinerUParser(api_url="http://gpu:8000")
         result = await parser.parse(b"%PDF fake", filename="test.pdf")
 
-    assert "fig1.png" in result.images
-    assert result.images["fig1.png"] == png_bytes
+    # Dict field is empty (legacy shape unused); payload lives in refs.
+    assert result.images == {}
+    assert len(result.image_refs) == 1
+    ref = result.image_refs[0]
+    assert ref.name == "fig1.png"
+    assert ref.mime == "image/png"
+    # Factory decodes on demand — repeated calls return the same bytes.
+    assert ref.materialize() == png_bytes
+    assert ref.materialize() == png_bytes
+    # release() drops the factory; subsequent materialize() must raise so
+    # accidental use-after-release is loud rather than silent.
+    ref.release()
+    with pytest.raises(RuntimeError):
+        ref.materialize()
 
 
 @pytest.mark.asyncio
