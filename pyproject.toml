@@ -31,6 +31,7 @@ dependencies = [
     "prometheus-fastapi-instrumentator>=7.0",
     "redis[hiredis]>=5.0",
     "limits>=3.7",
+    "imagehash>=4.3",
 ]
 
 [project.optional-dependencies]
