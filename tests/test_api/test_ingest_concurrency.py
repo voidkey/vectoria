@@ -1,82 +1,71 @@
-"""Concurrent upload throttling.
+"""Concurrent uploads are non-blocking.
 
-The API must bound how many ingestions run simultaneously so N parallel
-uploads don't each hold ~50MB in memory at once.
+Before W1 Task 4 the API parsed in-process behind a concurrency
+semaphore and rejected the N+1 concurrent upload with 429 INGEST_BUSY.
+That semaphore is gone now: the API only uploads raw bytes to S3 and
+enqueues a ``parse_document`` task, and parsing happens in worker.
+This file guards the new behaviour — no 429 under fan-in, both requests
+land in the queue.
 """
 import asyncio
 import pytest
 from unittest.mock import patch, AsyncMock, MagicMock
 from datetime import datetime
 
-from parsers.base import ParseResult
+from db.models import Task
 
 
 @pytest.mark.asyncio
-async def test_concurrent_uploads_beyond_limit_get_429(client):
-    """When max_concurrent_ingestions slots are occupied, extra uploads
-    get 429 immediately instead of queuing and piling up memory.
-    """
-    from config import get_settings
-    cfg = get_settings()
-    # Force limit to 1 for test — any second concurrent request must be rejected.
-    original = cfg.max_concurrent_ingestions
-    cfg.max_concurrent_ingestions = 1
+async def test_concurrent_uploads_do_not_throttle(client):
+    """Fanning in N uploads must not return 429 — there is no semaphore."""
+    added_tasks: list[Task] = []
 
-    # A parser that blocks until we release it, simulating a slow parse.
-    gate = asyncio.Event()
-    fake_parser = MagicMock()
+    def _setup_session():
+        session = AsyncMock()
+        miss = MagicMock()
+        miss.scalar_one_or_none.return_value = None
+        session.execute = AsyncMock(return_value=miss)
 
-    async def _slow_parse(*args, **kwargs):
-        await gate.wait()
-        return ParseResult(content="ok", images={}, title="t")
+        def _add(obj):
+            if isinstance(obj, Task):
+                added_tasks.append(obj)
 
-    fake_parser.parse = _slow_parse
+        session.add = MagicMock(side_effect=_add)
+        session.commit = AsyncMock()
 
-    try:
-        with (
-            patch("api.routes.documents._validate_kb", new=AsyncMock()),
-            patch("api.routes.documents.get_storage") as mock_storage,
-            patch("api.routes.documents.registry") as mock_reg,
-            patch("api.routes.documents.get_session") as mock_sess,
-            patch("worker.queue.enqueue", new=AsyncMock()),
-            patch("api.routes.documents.extract_outline", return_value=[]),
-        ):
-            mock_storage.return_value = AsyncMock()
-            mock_reg.auto_select.return_value = "markitdown"
-            mock_reg.get_by_engine.return_value = fake_parser
+        def _refresh(obj):
+            obj.created_at = datetime(2026, 1, 1)
 
-            session = AsyncMock()
-            miss = MagicMock()
-            miss.scalar_one_or_none.return_value = None
-            session.execute = AsyncMock(return_value=miss)
-            session.add = MagicMock()
-            session.commit = AsyncMock()
-            session.refresh = AsyncMock(side_effect=lambda o: (
-                setattr(o, "id", "d1"),
-                setattr(o, "created_at", datetime(2026, 1, 1)),
-            ))
-            mock_sess.return_value.__aenter__.return_value = session
+        session.refresh = AsyncMock(side_effect=_refresh)
+        return session
 
-            # Launch two concurrent uploads.
-            req1 = asyncio.create_task(client.post(
+    with (
+        patch("api.routes.documents._validate_kb", new=AsyncMock()),
+        patch("api.routes.documents.get_storage") as mock_storage,
+        patch("api.routes.documents.registry") as mock_reg,
+        patch("api.routes.documents.get_session") as mock_sess,
+    ):
+        mock_storage.return_value = AsyncMock()
+        mock_reg.auto_select.return_value = "markitdown"
+        mock_sess.return_value.__aenter__ = AsyncMock(side_effect=lambda: _setup_session())
+        mock_sess.return_value.__aexit__ = AsyncMock(return_value=False)
+
+        # Five concurrent uploads — none should 429.
+        tasks = [
+            asyncio.create_task(client.post(
                 "/v1/knowledgebases/kb-x/documents/file",
-                files={"file": ("a.txt", b"aaa", "text/plain")},
+                files={"file": (f"f{i}.txt", f"content-{i}".encode(), "text/plain")},
             ))
-            # Small yield so req1 enters the semaphore first.
-            await asyncio.sleep(0.01)
-            req2 = asyncio.create_task(client.post(
-                "/v1/knowledgebases/kb-x/documents/file",
-                files={"file": ("b.txt", b"bbb", "text/plain")},
-            ))
+            for i in range(5)
+        ]
+        responses = await asyncio.gather(*tasks)
 
-            # req2 should return immediately with 429.
-            resp2 = await asyncio.wait_for(req2, timeout=2.0)
-            assert resp2.status_code == 429, resp2.text
-            assert resp2.json()["code"] == 1206  # INGEST_BUSY
-
-            # Release the gate so req1 completes.
-            gate.set()
-            resp1 = await asyncio.wait_for(req1, timeout=5.0)
-            assert resp1.status_code == 201, resp1.text
-    finally:
-        cfg.max_concurrent_ingestions = original
+    statuses = [r.status_code for r in responses]
+    assert all(s == 201 for s in statuses), (
+        f"concurrent uploads must not throttle; got {statuses}"
+    )
+    assert all(r.json()["status"] == "queued" for r in responses)
+    # All five got a parse_document Task row staged in-session — no
+    # silent drops, and they all share the atomic Document+Task insert.
+    parse_tasks = [t for t in added_tasks if t.task_type == "parse_document"]
+    assert len(parse_tasks) == 5
