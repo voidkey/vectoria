@@ -127,6 +127,12 @@ class Settings(BaseSettings):
     # don't collide — override in K8s if 9001 is needed elsewhere.
     worker_metrics_port: int = 9001
 
+    # Redis URL for distributed state (rate-limit token buckets today;
+    # shared circuit-breaker state / dedupe caches as future use cases).
+    # SecretStr so password-bearing URLs (``redis://:pw@host:6379/0``)
+    # don't show up in debug dumps or error traces.
+    redis_url: SecretStr = SecretStr("redis://localhost:6379/0")
+
     # Worker runtime limits
     # RSS self-kill threshold in bytes. When a worker's resident memory
     # exceeds this between tasks, it exits cleanly and K8s restarts it.
