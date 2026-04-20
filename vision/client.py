@@ -3,6 +3,7 @@ import logging
 
 from openai import AsyncOpenAI
 
+from infra.circuit_breaker import CircuitOpenError, get_breaker
 from parsers.image_metadata import detect_mime_type
 
 logger = logging.getLogger(__name__)
@@ -53,31 +54,36 @@ class VisionClient:
         """
         if not self._client:
             return ""
-        try:
-            mime = detect_mime_type(image_bytes)
-            if not mime.startswith("image/"):
-                logger.warning("Skipping non-image data (detected %s)", mime)
-                return ""
-            b64 = base64.b64encode(image_bytes).decode()
-            user_text = _build_user_text(context, section_title, alt)
-            resp = await self._client.chat.completions.create(
-                model=self._model,
-                messages=[
-                    {"role": "system", "content": _SYSTEM_PROMPT},
+        mime = detect_mime_type(image_bytes)
+        if not mime.startswith("image/"):
+            logger.warning("Skipping non-image data (detected %s)", mime)
+            return ""
+        b64 = base64.b64encode(image_bytes).decode()
+        user_text = _build_user_text(context, section_title, alt)
+        messages = [
+            {"role": "system", "content": _SYSTEM_PROMPT},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": user_text},
                     {
-                        "role": "user",
-                        "content": [
-                            {"type": "text", "text": user_text},
-                            {
-                                "type": "image_url",
-                                "image_url": {"url": f"data:{mime};base64,{b64}"},
-                            },
-                        ],
+                        "type": "image_url",
+                        "image_url": {"url": f"data:{mime};base64,{b64}"},
                     },
                 ],
-                max_tokens=200,
+            },
+        ]
+        try:
+            resp = await get_breaker("vision").call(
+                self._client.chat.completions.create,
+                model=self._model, messages=messages, max_tokens=200,
             )
             return resp.choices[0].message.content.strip()
+        except CircuitOpenError:
+            # Vision is non-critical (image descriptions are metadata).
+            # Fail soft so the overall document still completes.
+            logger.warning("Vision circuit open; skipping describe")
+            return ""
         except Exception:
             logger.exception("Vision LLM call failed")
             return ""

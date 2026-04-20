@@ -5,6 +5,7 @@ import random
 from openai import AsyncOpenAI, APIConnectionError, APIStatusError, APITimeoutError
 
 from config import get_settings
+from infra.circuit_breaker import get_breaker
 
 logger = logging.getLogger(__name__)
 
@@ -32,8 +33,14 @@ class Embedder:
         sem = asyncio.Semaphore(_MAX_CONCURRENCY)
 
         async def _embed_one_batch(batch: list[str]) -> list[list[float]]:
+            # Breaker wraps the *retry loop*, not each attempt: one logical
+            # batch = one breaker outcome. Retries inside still apply their
+            # own backoff; the breaker is the last-resort guard when even
+            # retries can't drain a persistent outage.
             async with sem:
-                return await self._embed_with_retry(batch)
+                return await get_breaker("embedding").call(
+                    self._embed_with_retry, batch,
+                )
 
         batch_results = await asyncio.gather(
             *(_embed_one_batch(b) for b in batches)

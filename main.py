@@ -7,6 +7,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import JSONResponse
+from prometheus_fastapi_instrumentator import Instrumentator
 
 from api.auth import verify_auth
 from api.errors import AppError, ErrorCode
@@ -19,6 +20,11 @@ from api.routes.images import router as images_router
 from api.routes.knowledgebase import router as kb_router
 from api.routes.query import router as query_router
 from config import get_settings
+# Importing the metrics module registers every metric in the default
+# collector at import time — keep this import even if unused here so the
+# /metrics scrape reports them from process start, not after the first
+# observation.
+import infra.metrics  # noqa: F401
 
 settings = get_settings()
 
@@ -46,6 +52,17 @@ app = FastAPI(title="Vectoria", version=_VERSION, root_path="/vectoria", lifespa
 
 # --- Middleware ---
 app.add_middleware(RequestIdMiddleware)
+
+# --- Prometheus metrics ---
+# Exposes GET /metrics (served at /vectoria/metrics behind the reverse proxy
+# because of root_path). The endpoint is not wrapped by verify_auth since it
+# sits at app-level, not inside an auth-gated router — scrape from the cluster
+# network and restrict access with a NetworkPolicy in prod.
+Instrumentator(
+    should_group_status_codes=False,
+    should_ignore_untemplated=True,
+    excluded_handlers=["/metrics", "/health.*"],
+).instrument(app).expose(app, endpoint="/metrics", include_in_schema=False)
 
 # --- CORS ---
 if settings.cors_origins:
