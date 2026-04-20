@@ -1,0 +1,207 @@
+"""Xiaohongshu (小红书) site handler.
+
+Xiaohongshu note pages are a single-page React app: the initial HTML
+response is an empty shell, content arrives via JS after DOMContentLoaded.
+There's no server-side-rendered path we can scrape with httpx, so this
+handler always goes through Playwright.
+
+Image CDN (xhscdn.com) quirks addressed here:
+  * The CDN returns WebP by default when the client advertises support.
+    ``canonicalize_image_url`` rewrites ``format/webp`` → ``format/jpg``
+    for the same downstream-compatibility reason as WeChat.
+  * Referer is checked on some asset paths; we set it to the note's
+    own article URL via ``download_headers``.
+
+Parse selectors are based on publicly visible DOM at time of writing —
+xhs ships UI refactors often enough that this may drift. The handler
+fails open: empty content is returned rather than raised, so ingest
+completes with a bare title and the upstream caller can still store
+the ``image_urls`` for downstream consumption.
+"""
+from __future__ import annotations
+
+import logging
+from urllib.parse import urlparse
+
+from parsers.base import ParseResult
+
+log = logging.getLogger(__name__)
+
+# xhslink.com is the shortener; xiaohongshu.com is the canonical domain.
+# We match both; Playwright's goto() will follow the xhslink redirect.
+_XHS_HOSTS = ("xiaohongshu.com", "xhslink.com")
+
+# Image CDN host — note subdomains like ``sns-img-qc.xhscdn.com``,
+# ``ci.xiaohongshu.com``, ``sns-img-bd.xhscdn.com`` all serve images.
+_XHS_IMG_HOST_SUFFIXES = ("xhscdn.com", "xiaohongshu.com")
+
+# Mobile UA used for the article fetch. Mobile renders a simpler DOM
+# (less client-side dynamic composition) so selectors stay stable.
+XHS_UA = (
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
+    "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 "
+    "Mobile/15E148 Safari/604.1"
+)
+
+
+def _is_xhs_article_host(host: str | None) -> bool:
+    if not host:
+        return False
+    host = host.lower()
+    return any(host == d or host.endswith("." + d) for d in _XHS_HOSTS)
+
+
+def _is_xhs_image_host(host: str | None) -> bool:
+    if not host:
+        return False
+    host = host.lower()
+    return any(host == s or host.endswith("." + s) for s in _XHS_IMG_HOST_SUFFIXES)
+
+
+def is_xhs_url(url: str) -> bool:
+    return _is_xhs_article_host(urlparse(url).hostname)
+
+
+def canonicalize_xhs_image_url(url: str) -> str:
+    """Force JPEG delivery from xhs image CDN.
+
+    The xhs CDN uses Qiniu-style ``?imageView2/...`` directives where
+    ``format/webp`` is the default modern browsers trigger. Swapping
+    to ``format/jpg`` keeps the bytes decodable by any stock
+    JPEG/PIL/vision pipeline without reaching for a WebP codec.
+
+    No-op for:
+      - hosts that aren't xhs CDNs (e.g. the article host itself)
+      - URLs that already pin a non-webp format
+      - malformed URLs that urlparse cannot handle
+    """
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return url
+    if not _is_xhs_image_host(parsed.hostname):
+        return url
+
+    # Qiniu-style directives live inside the query string as slash-
+    # separated tokens, not standard k=v pairs. Rewrite only the
+    # format/webp occurrence; leave everything else (mode, width,
+    # quality, watermark directives) untouched so signed URLs keep
+    # verifying.
+    if "format/webp" in parsed.query:
+        new_query = parsed.query.replace("format/webp", "format/jpg")
+        return parsed._replace(query=new_query).geturl()
+    return url
+
+
+def get_xhs_headers(article_url: str) -> dict[str, str] | None:
+    """Headers to send when fetching images referenced by an xhs note.
+
+    Referer is set to the note's own URL — most xhs CDN paths tolerate
+    missing Referer, but hotlink protection is occasionally enabled.
+    Matching ours to the caller's own page avoids all ambiguity.
+    """
+    if not is_xhs_url(article_url):
+        return None
+    return {"Referer": article_url, "User-Agent": XHS_UA}
+
+
+class XhsHandler:
+    def match(self, url: str) -> bool:
+        return is_xhs_url(url)
+
+    def download_headers(self, url: str) -> dict[str, str] | None:
+        return get_xhs_headers(url)
+
+    def canonicalize_image_url(self, url: str) -> str:
+        return canonicalize_xhs_image_url(url)
+
+    async def parse(self, url: str) -> ParseResult:
+        """Render the note via Playwright and extract title + text + image URLs.
+
+        Selectors here are based on the current public DOM layout and
+        may drift over time — the handler fails open (returns whatever
+        was extractable, even if partial) rather than raising, because
+        an empty ParseResult at least preserves the ``image_urls`` and
+        lets the upstream caller decide next steps.
+        """
+        try:
+            from playwright.async_api import async_playwright
+        except ImportError:
+            log.warning("playwright not installed; xhs parse returning empty")
+            return ParseResult(content="", title="")
+
+        try:
+            async with async_playwright() as p:
+                browser = await p.chromium.launch(
+                    headless=True,
+                    args=["--no-sandbox", "--disable-setuid-sandbox"],
+                )
+                try:
+                    page = await browser.new_page(user_agent=XHS_UA)
+                    # networkidle is brittle on SPAs; 30 s cap then
+                    # proceed regardless — selectors below tolerate a
+                    # partially-hydrated page.
+                    await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                    await page.wait_for_timeout(2000)  # soft hydration wait
+
+                    extract = await page.evaluate(
+                        """
+                        () => {
+                            const pickText = sels => {
+                                for (const s of sels) {
+                                    const el = document.querySelector(s);
+                                    if (el && el.textContent.trim()) {
+                                        return el.textContent.trim();
+                                    }
+                                }
+                                return "";
+                            };
+                            // Title lives in either note-content title or meta tag
+                            const title = pickText([
+                                '#detail-title',
+                                '.title',
+                                'h1',
+                            ]) || (document.querySelector('meta[property="og:title"]')?.content ?? '');
+
+                            const body = pickText([
+                                '#detail-desc',
+                                '.note-content .desc',
+                                '.content',
+                                'article',
+                            ]);
+
+                            // Images: hero carousel + inline. Cap at 20
+                            // to match download_images default.
+                            const imgs = Array.from(
+                                document.querySelectorAll('img')
+                            )
+                              .map(i => i.getAttribute('data-src') || i.src)
+                              .filter(s => s && !s.startsWith('data:'))
+                              .filter(s => /xhscdn\\.com|xiaohongshu\\.com/.test(s));
+                            const seen = new Set();
+                            const uniq = [];
+                            for (const u of imgs) {
+                                if (!seen.has(u)) { seen.add(u); uniq.push(u); }
+                                if (uniq.length >= 20) break;
+                            }
+                            return { title, body, imgs: uniq };
+                        }
+                        """,
+                    )
+                finally:
+                    await browser.close()
+        except Exception:
+            log.exception("xhs playwright parse failed for %s", url)
+            return ParseResult(content="", title="")
+
+        title = (extract.get("title") or "").strip()
+        body = (extract.get("body") or "").strip()
+        img_urls = list(extract.get("imgs") or [])[:20]
+
+        content = f"# {title}\n\n{body}" if title and body else (body or title)
+
+        return ParseResult(
+            content=content,
+            title=title or urlparse(url).netloc,
+            image_urls=img_urls,
+        )
