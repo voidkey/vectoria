@@ -53,6 +53,10 @@ dependencies = [
     # blobs for the image_refs pipeline.
     "mammoth>=1.8",
     "python-docx>=1.0",
+    # .xlsx native parsing: openpyxl in read-only + data-only mode
+    # bounds memory on multi-sheet workbooks and resolves cached
+    # formula values instead of emitting raw ``=SUM(...)`` strings.
+    "openpyxl>=3.1",
 ]
 
 [project.optional-dependencies]

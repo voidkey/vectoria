@@ -11,8 +11,8 @@ _EXT_PREFERENCE: dict[str, list[str]] = {
     ".doc":  ["docx-native", "docling", "markitdown"],
     ".pptx": ["pptx-native", "docling", "markitdown"],
     ".ppt":  ["pptx-native", "docling", "markitdown"],
-    ".xlsx": ["docling", "markitdown"],
-    ".xls":  ["docling", "markitdown"],
+    ".xlsx": ["xlsx-native", "docling", "markitdown"],
+    ".xls":  ["xlsx-native", "docling", "markitdown"],
     ".png":  ["docling"],
     ".jpg":  ["docling"],
     ".jpeg": ["docling"],
@@ -94,6 +94,8 @@ from parsers.docx_parser import DocxParser  # noqa: E402
 registry.register(DocxParser)
 from parsers.pptx_parser import PptxParser  # noqa: E402
 registry.register(PptxParser)
+from parsers.xlsx_parser import XlsxParser  # noqa: E402
+registry.register(XlsxParser)
 from parsers.docling_parser import DoclingParser  # noqa: E402
 registry.register(DoclingParser)
 from parsers.mineru_parser import MinerUParser  # noqa: E402
