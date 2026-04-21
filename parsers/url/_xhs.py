@@ -17,6 +17,14 @@ xhs ships UI refactors often enough that this may drift. The handler
 fails open: empty content is returned rather than raised, so ingest
 completes with a bare title and the upstream caller can still store
 the ``image_urls`` for downstream consumption.
+
+Known limitation (2026-04-21 smoke): on shared-link URLs with
+``xsec_token`` query args, body extraction returns empty even with the
+expanded selector set and ``og:description`` fallback. Title, figures,
+and phash all still populate correctly. Fixing the body path requires a
+live DOM sample from the current xhs build — tracked, not blocking. If
+downstream consumers need the note body (as opposed to title + images)
+the handler will need attention.
 """
 from __future__ import annotations
 
