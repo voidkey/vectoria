@@ -33,8 +33,16 @@ class Document(Base):
     title: Mapped[str] = mapped_column(String(500), default="", server_default="")
     source: Mapped[str] = mapped_column(Text, default="", server_default="")
     storage_key: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
+    # Legacy MD5 hash kept as read-only fallback during the W5-4
+    # migration window. New writes populate ``file_hash_sha256`` and
+    # leave MD5 NULL; dedup reads check sha256 first and only fall
+    # back to MD5 when sha256 is NULL (pre-migration rows). Drop this
+    # column in a later migration once all live rows have sha256.
     file_hash: Mapped[str | None] = mapped_column(
         String(32), nullable=True, default=None, index=True,
+    )
+    file_hash_sha256: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, default=None, index=True,
     )
     parse_engine: Mapped[str] = mapped_column(String(50), default="", server_default="")
     chunk_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")

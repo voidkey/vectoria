@@ -92,6 +92,15 @@ async def test_duplicate_file_in_same_kb_returns_existing_doc(client):
     assert body["id"] == "doc-existing"
     # Must NOT have kicked off a new indexing task.
     mock_task.assert_not_called()
+    # W5-4 content-leak guard: dedup hit must NOT echo the existing
+    # doc's content back in the response. A caller that stumbled into
+    # (or deliberately constructed) a hash collision with someone
+    # else's content should not learn the content from the upload
+    # response alone — they must at least GET the document, where
+    # normal auth/ACL checks apply.
+    assert body["content"] == "", (
+        "dedup response leaked existing content back to uploader"
+    )
 
 
 @pytest.mark.asyncio

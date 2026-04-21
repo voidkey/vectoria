@@ -43,13 +43,21 @@ def _doc_to_response(doc: Document) -> DocumentResponse:
 
 
 def _dedup_response(doc: Document) -> DocumentIngestResponse:
-    """Build an ingest response from an existing document (dedup hit)."""
+    """Build an ingest response from an existing document (dedup hit).
+
+    ``content`` is deliberately empty: returning the existing doc's
+    parsed text to a caller that happened to upload a file with the
+    same hash would leak content across the (hash, kb) boundary —
+    relevant now that we're on sha256 (W5-4) but was a real concern
+    under MD5 collisions. Clients that need the full content can GET
+    /documents/{id} with their normal auth.
+    """
     return DocumentIngestResponse(
         id=doc.id, kb_id=doc.kb_id, title=doc.title,
         source=doc.source, chunk_count=doc.chunk_count,
         status=doc.status, error_msg=doc.error_msg or "",
         created_at=doc.created_at.isoformat(),
-        content=doc.content or "",
+        content="",
         outline=[], image_count=0,
     )
 
@@ -131,6 +139,7 @@ async def _enqueue_ingest(
     source: str, storage_key: str | None,
     filename: str, selected_engine: str,
     file_hash: str | None,
+    file_hash_sha256: str | None = None,
     doc_id: str | None = None,
     wait: bool = False,
 ) -> DocumentIngestResponse:
@@ -155,7 +164,9 @@ async def _enqueue_ingest(
             title=filename or source,
             source=source, parse_engine=selected_engine,
             status="queued",
-            storage_key=storage_key, file_hash=file_hash,
+            storage_key=storage_key,
+            file_hash=file_hash,
+            file_hash_sha256=file_hash_sha256,
             content="", image_status="pending",
             chunk_count=0, error_msg="",
         )
@@ -225,12 +236,19 @@ async def ingest_file(
 
     # Per-KB file-hash dedup. Idempotency for accidental retries and
     # double-uploads that previously re-ran parse + embed and OOM'd the host.
-    file_hash = hashlib.md5(raw).hexdigest()
-    existing = await _find_existing_by_hash(kb_id, file_hash)
+    #
+    # sha256 is the primary key for W5-4+; MD5 is still computed so
+    # we can match pre-migration rows whose only hash is legacy MD5.
+    # New writes leave MD5 NULL — no new MD5 rows get created.
+    file_hash_sha256 = hashlib.sha256(raw).hexdigest()
+    legacy_md5 = hashlib.md5(raw).hexdigest()
+    existing = await _find_existing_by_hash(
+        kb_id, sha256=file_hash_sha256, md5=legacy_md5,
+    )
     if existing is not None:
         logger.info(
-            "Dedup hit: kb=%s hash=%s existing_doc=%s status=%s",
-            kb_id, file_hash, existing.id, existing.status,
+            "Dedup hit: kb=%s sha256=%s existing_doc=%s status=%s",
+            kb_id, file_hash_sha256, existing.id, existing.status,
         )
         return _dedup_response(existing)
 
@@ -247,28 +265,56 @@ async def ingest_file(
         kb_id,
         source=filename, storage_key=storage_key,
         filename=filename, selected_engine=selected_engine,
-        file_hash=file_hash, doc_id=doc_id, wait=wait,
+        file_hash=None, file_hash_sha256=file_hash_sha256,
+        doc_id=doc_id, wait=wait,
     )
 
 
-async def _find_existing_by_hash(kb_id: str, file_hash: str) -> Document | None:
-    """Return an existing live document for this (kb_id, file_hash), if any.
+async def _find_existing_by_hash(
+    kb_id: str, *,
+    sha256: str | None = None,
+    md5: str | None = None,
+) -> Document | None:
+    """Return an existing live document for ``(kb_id, hash)``, if any.
 
     Only non-``failed`` rows count as live — a prior ``failed`` attempt
     shouldn't block a fresh retry.
+
+    Pass ``sha256`` (new primary dedup key, W5-4) and/or ``md5`` (URL
+    hashes still use MD5 since URL strings are low-entropy and MD5's
+    collision weakness doesn't change risk there). For file content,
+    callers pass ``sha256`` and the query also matches pre-migration
+    rows whose only hash is legacy MD5, via a second lookup.
     """
+    _LIVE_STATUSES = ("completed", "indexing", "queued", "parsing")
     async with get_session() as session:
-        result = await session.execute(
-            select(Document)
-            .where(
-                Document.kb_id == kb_id,
-                Document.file_hash == file_hash,
-                Document.status.in_(("completed", "indexing", "queued", "parsing")),
+        if sha256 is not None:
+            result = await session.execute(
+                select(Document)
+                .where(
+                    Document.kb_id == kb_id,
+                    Document.file_hash_sha256 == sha256,
+                    Document.status.in_(_LIVE_STATUSES),
+                )
+                .order_by(Document.created_at.desc())
+                .limit(1)
             )
-            .order_by(Document.created_at.desc())
-            .limit(1)
-        )
-        return result.scalar_one_or_none()
+            hit = result.scalar_one_or_none()
+            if hit is not None:
+                return hit
+        if md5 is not None:
+            result = await session.execute(
+                select(Document)
+                .where(
+                    Document.kb_id == kb_id,
+                    Document.file_hash == md5,
+                    Document.status.in_(_LIVE_STATUSES),
+                )
+                .order_by(Document.created_at.desc())
+                .limit(1)
+            )
+            return result.scalar_one_or_none()
+        return None
 
 
 @router.post("/{kb_id}/documents/url", response_model=DocumentIngestResponse, status_code=201)
@@ -280,9 +326,13 @@ async def ingest_url(
     await validate_url(body.url)
     await _validate_kb(kb_id)
 
-    # URL dedup: hash the URL string itself.
-    url_hash = hashlib.md5(body.url.encode()).hexdigest()
-    existing = await _find_existing_by_hash(kb_id, url_hash)
+    # URL dedup: sha256 of the URL string. Also check the legacy MD5
+    # so pre-W5-4 URL ingests still dedup instead of being re-enqueued.
+    url_sha256 = hashlib.sha256(body.url.encode()).hexdigest()
+    legacy_url_md5 = hashlib.md5(body.url.encode()).hexdigest()
+    existing = await _find_existing_by_hash(
+        kb_id, sha256=url_sha256, md5=legacy_url_md5,
+    )
     if existing is not None:
         logger.info("URL dedup hit: kb=%s url=%s existing_doc=%s", kb_id, body.url, existing.id)
         return _dedup_response(existing)
@@ -292,7 +342,7 @@ async def ingest_url(
         kb_id,
         source=body.url, storage_key=None,
         filename="", selected_engine=selected_engine,
-        file_hash=url_hash, wait=wait,
+        file_hash=None, file_hash_sha256=url_sha256, wait=wait,
     )
 
 
