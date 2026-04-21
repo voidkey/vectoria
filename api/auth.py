@@ -6,9 +6,13 @@ are validated against it. When ``API_KEY`` is configured, requests carrying
 both may be enabled at once to let ecosystem services use JWT while
 standalone/open-source deployments keep using a static key.
 
-If neither secret is configured, requests pass through (local dev).
+If neither secret is configured, requests are rejected with 503 unless
+``allow_unauthenticated=True`` is set — the explicit gate prevents a
+silent sed-cleared ``.env.prod`` from putting the API online without
+any authentication.
 """
 import hmac
+import logging
 from typing import Any
 
 import jwt as pyjwt
@@ -16,6 +20,8 @@ from fastapi import Request
 
 from api.errors import AppError, ErrorCode
 from config import get_settings
+
+logger = logging.getLogger(__name__)
 
 
 JWT_HEADER = "X-Authorization-Token"
@@ -49,7 +55,20 @@ async def verify_auth(request: Request) -> dict[str, Any] | None:
     api_key = settings.api_key.get_secret_value()
 
     if not jwt_secret and not api_key:
-        return None
+        if settings.allow_unauthenticated:
+            return None
+        # Misconfiguration: both secrets empty but the explicit gate
+        # was never flipped. Refuse every request so nobody notices
+        # they're serving the API naked in production.
+        logger.error(
+            "auth misconfigured: API_KEY and JWT_SECRET are both empty but "
+            "ALLOW_UNAUTHENTICATED is false — refusing request"
+        )
+        raise AppError(
+            503, ErrorCode.INTERNAL_ERROR,
+            "Authentication is not configured (set API_KEY or JWT_SECRET, "
+            "or ALLOW_UNAUTHENTICATED=true for dev)",
+        )
 
     token = _extract_jwt(request)
     key = request.headers.get(API_KEY_HEADER)

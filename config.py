@@ -104,6 +104,14 @@ class Settings(BaseSettings):
     api_key: SecretStr = SecretStr("")
     cors_origins: list[str] = []
 
+    # Explicit gate for "no auth configured" mode. When both ``api_key``
+    # and ``jwt_secret`` are empty, ``verify_auth`` lets everything
+    # through — convenient for local dev but dangerous in prod if a
+    # sed mistake wipes the .env secrets. Default ``False`` means that
+    # combination instead raises 503 at request time so the leak is
+    # loud. Flip to ``True`` only in dev / CI.
+    allow_unauthenticated: bool = False
+
     # JWT auth (optional; enables X-Authorization-Token and Authorization: Bearer
     # alongside X-API-Key). Must match the signing secret/algorithm of whatever
     # service issues the tokens.

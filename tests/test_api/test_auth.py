@@ -24,13 +24,20 @@ def _make_request(headers: dict[str, str] | None = None) -> Request:
 
 @pytest.fixture
 def settings(monkeypatch):
-    """Yield a Settings object with auth fields reset; restore after test."""
+    """Yield a Settings object with auth fields reset; restore after test.
+
+    ``allow_unauthenticated=True`` mirrors the "local dev" intent of the
+    original tests: with no secrets set, requests pass. Tests that
+    exercise the W5-5 guardrail (secrets empty AND explicit gate off)
+    set ``allow_unauthenticated=False`` themselves.
+    """
     s = get_settings()
     # Reset to known state
     monkeypatch.setattr(s.api_key, "get_secret_value", lambda: "")
     monkeypatch.setattr(s.jwt_secret, "get_secret_value", lambda: "")
     monkeypatch.setattr(s, "jwt_algorithm", "HS256")
     monkeypatch.setattr(s, "jwt_issuer", "")
+    monkeypatch.setattr(s, "allow_unauthenticated", True)
     return s
 
 
@@ -64,6 +71,31 @@ async def test_dev_mode_ignores_headers(settings):
     req = _make_request({"X-API-Key": "anything", "X-Authorization-Token": "garbage"})
     result = await verify_auth(req)
     assert result is None
+
+
+# --- W5-5 guardrail: secrets empty + ALLOW_UNAUTHENTICATED=false ---
+
+@pytest.mark.asyncio
+async def test_no_secrets_without_explicit_opt_in_refuses(monkeypatch, settings):
+    """The fatal-misconfig case: a prod .env where both API_KEY and
+    JWT_SECRET got cleared by a sed mistake must not silently serve
+    unauthenticated traffic. The 503 makes the breakage loud.
+    """
+    monkeypatch.setattr(settings, "allow_unauthenticated", False)
+    req = _make_request()
+    with pytest.raises(AppError) as exc:
+        await verify_auth(req)
+    assert exc.value.status_code == 503
+
+
+@pytest.mark.asyncio
+async def test_no_secrets_without_explicit_opt_in_refuses_even_with_token(monkeypatch, settings):
+    """A well-formed header can't smuggle past the misconfig gate."""
+    monkeypatch.setattr(settings, "allow_unauthenticated", False)
+    req = _make_request({"X-Authorization-Token": "anything"})
+    with pytest.raises(AppError) as exc:
+        await verify_auth(req)
+    assert exc.value.status_code == 503
 
 
 # --- API key only ---

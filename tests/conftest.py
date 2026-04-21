@@ -16,6 +16,17 @@ def _disable_parser_isolation(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _allow_unauthenticated_in_tests(monkeypatch):
+    """Tests don't set up auth secrets; the W5-5 guardrail would 503 them.
+
+    Default to the "dev" mode for the whole suite so route-level tests
+    don't need to monkey with auth. test_api/test_auth.py exercises the
+    guardrail explicitly by re-flipping this to False.
+    """
+    monkeypatch.setattr(get_settings(), "allow_unauthenticated", True)
+
+
+@pytest.fixture(autouse=True)
 def _reset_circuit_breakers():
     """Each test starts with a clean breaker registry so one test's forced
     failures can't open the circuit for the next test.
