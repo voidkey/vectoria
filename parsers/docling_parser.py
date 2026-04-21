@@ -69,7 +69,13 @@ def _get_converter() -> "DocumentConverter":
 
 class DoclingParser(BaseParser):
     engine_name = "docling"
-    supported_types = [".pdf", ".docx", ".doc", ".pptx", ".ppt", ".xlsx", ".xls", ".png", ".jpg", ".jpeg", ".tiff", ".bmp"]
+    # Shrunk after W4-d/e/f: Office (.docx/.pptx/.xlsx) is now served by
+    # the native mammoth / python-pptx / openpyxl parsers, whose deps
+    # are hard-pinned in pyproject so they're always available — meaning
+    # docling in an Office fallback chain was unreachable dead code.
+    # docling still owns PDF fallback (behind mineru) and image OCR,
+    # which have no native replacement in the current stack.
+    supported_types = [".pdf", ".png", ".jpg", ".jpeg", ".tiff", ".bmp"]
 
     @classmethod
     def is_available(cls) -> bool:

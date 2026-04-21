@@ -63,3 +63,38 @@ def test_unavailable_parser_skipped_in_auto():
     reg.register(FakePdfParser)
     engine = reg.auto_select(filename="doc.pdf")
     assert engine == "fake_pdf"
+
+
+# ---------------------------------------------------------------------------
+# W4-g guard: Office formats are native-only
+# ---------------------------------------------------------------------------
+# After the native Office migration (W4-d/e/f), docling in Office
+# fallback chains was dead code (native deps are hard pins, always
+# available). Pin this so a future "just add docling back as a
+# fallback for safety" regression is caught — docling on Office loads
+# ~400 MB of torch + transformers via lazy-import for a file that the
+# native parser would also have handled.
+
+@pytest.mark.parametrize(
+    "filename,expected",
+    [
+        ("doc.docx",  "docx-native"),
+        ("doc.doc",   "docx-native"),
+        ("deck.pptx", "pptx-native"),
+        ("deck.ppt",  "pptx-native"),
+        ("data.xlsx", "xlsx-native"),
+        ("data.xls",  "xlsx-native"),
+    ],
+)
+def test_office_auto_select_is_native_only(filename, expected):
+    from parsers.registry import registry
+    assert registry.auto_select(filename=filename) == expected
+
+
+def test_docling_no_longer_claims_office_types():
+    from parsers.docling_parser import DoclingParser
+    for ext in (".docx", ".doc", ".pptx", ".ppt", ".xlsx", ".xls"):
+        assert ext not in DoclingParser.supported_types, (
+            f"docling still claims {ext} — trim supported_types so "
+            f"registry.supported_types() doesn't advertise Office via docling"
+        )

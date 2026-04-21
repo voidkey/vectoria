@@ -66,8 +66,13 @@ def test_engine_name():
 
 
 def test_supported_types():
+    # W4-g: docling now owns only PDF fallback + image OCR. Office
+    # formats moved to native parsers with hard-pinned deps, so keeping
+    # docling in their supported_types was misleading (registry would
+    # still pick the native engine, but the listing endpoint would
+    # advertise docling as an Office handler).
     assert ".pdf" in DoclingParser.supported_types
-    assert ".docx" in DoclingParser.supported_types
+    assert ".png" in DoclingParser.supported_types
 
 
 def test_docling_not_imported_by_docling_parser_module():

@@ -1,18 +1,30 @@
 from parsers.base import BaseParser
 
 # Extension -> preferred engine order (first available wins).
-# Native lightweight parsers are listed first; docling stays as a
-# fallback for cases where the native path fails to import (unlikely
-# given the deps are pinned) and is retained for .png/.jpg/.tiff (its
-# OCR path has no native equivalent yet).
+#
+# Office (.docx/.doc/.pptx/.ppt/.xlsx/.xls): native-only. The native
+# parsers' deps (mammoth+python-docx, python-pptx, openpyxl) are hard
+# pins in pyproject so is_available() always returns True — any
+# trailing docling/markitdown entry here was dead code. Native parsers
+# catch exceptions internally and return empty content, matching what
+# a fallback would produce on a file mammoth/python-pptx/openpyxl
+# can't load anyway.
+#
+# PDF: mineru is primary (VLM layout parsing). docling stays as a
+# fallback for cases where mineru is unavailable (model not
+# downloaded, etc.); markitdown is a text-only last resort.
+#
+# Images (.png/.jpg/.jpeg/.tiff/.bmp): docling is the only engine —
+# its OCR path has no native equivalent in the stack today. A future
+# rapidocr/paddleocr-based parser could replace it.
 _EXT_PREFERENCE: dict[str, list[str]] = {
     ".pdf":  ["mineru", "docling", "markitdown"],
-    ".docx": ["docx-native", "docling", "markitdown"],
-    ".doc":  ["docx-native", "docling", "markitdown"],
-    ".pptx": ["pptx-native", "docling", "markitdown"],
-    ".ppt":  ["pptx-native", "docling", "markitdown"],
-    ".xlsx": ["xlsx-native", "docling", "markitdown"],
-    ".xls":  ["xlsx-native", "docling", "markitdown"],
+    ".docx": ["docx-native"],
+    ".doc":  ["docx-native"],
+    ".pptx": ["pptx-native"],
+    ".ppt":  ["pptx-native"],
+    ".xlsx": ["xlsx-native"],
+    ".xls":  ["xlsx-native"],
     ".png":  ["docling"],
     ".jpg":  ["docling"],
     ".jpeg": ["docling"],
