@@ -1,9 +1,11 @@
 import asyncio
+import importlib.util
 import io
 import logging
 import tempfile
 import threading
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from config import get_settings
 from parsers.base import BaseParser, ParseResult
@@ -11,14 +13,19 @@ from parsers.convert import LEGACY_FORMAT_MAP, convert_legacy_format
 from parsers.image_ref import ImageRef
 from parsers.isolation import run_isolated
 
+if TYPE_CHECKING:
+    from docling.document_converter import DocumentConverter  # noqa: F401
+
 logger = logging.getLogger(__name__)
 
-try:
-    from docling.document_converter import DocumentConverter
-    from docling.datamodel.pipeline_options import PdfPipelineOptions
-    _DOCLING_AVAILABLE = True
-except ImportError:
-    _DOCLING_AVAILABLE = False
+# Lazy availability probe: ``importlib.util.find_spec`` checks the module
+# exists without importing it. Importing ``docling`` eagerly pulls in
+# torch + transformers + vision model stacks (~400 MB RSS) whether or
+# not we ever run a parse — and in practice we don't, because MinerU is
+# the PDF primary and docling is only the fallback. Defer both the
+# availability flag and the real imports until ``_get_converter()``
+# actually needs them.
+_DOCLING_AVAILABLE = importlib.util.find_spec("docling") is not None
 
 
 _converter: "DocumentConverter | None" = None
@@ -31,14 +38,21 @@ _convert_lock = threading.Lock()
 def _get_converter() -> "DocumentConverter":
     """Lazily build a single process-wide DocumentConverter.
 
-    Docling loads large layout/OCR models on first convert(); reusing one
-    instance avoids re-allocating them per request.
+    First call into this function is where docling actually gets
+    imported — the heavy torch / transformers / vision model stack
+    only hits RSS at the moment we commit to parsing something docling
+    owns, not at worker startup. Subsequent calls return the cached
+    instance.
     """
     global _converter  # noqa: PLW0603
     if _converter is not None:
         return _converter
     with _converter_lock:
         if _converter is None:
+            # Heavy imports live inside the lock so the ~400 MB model
+            # load only happens for the first real parse request.
+            from docling.document_converter import DocumentConverter
+            from docling.datamodel.pipeline_options import PdfPipelineOptions
             from docling.datamodel.base_models import InputFormat
             from docling.document_converter import ImageFormatOption, PdfFormatOption
 
@@ -49,6 +63,7 @@ def _get_converter() -> "DocumentConverter":
                     InputFormat.IMAGE: ImageFormatOption(pipeline_options=pipeline_opts),
                 },
             )
+            logger.info("docling DocumentConverter initialised (models loaded)")
     return _converter
 
 
