@@ -8,7 +8,6 @@ is kept as a fallback for edge cases where raw HTML has no content.
 """
 from __future__ import annotations
 
-import asyncio
 import logging
 from urllib.parse import urlparse, urlunparse, parse_qsl, urlencode
 
@@ -105,22 +104,27 @@ class WechatHandler:
         return canonicalize_wechat_image_url(url)
 
     async def parse(self, url: str) -> ParseResult:
-        result = await asyncio.get_running_loop().run_in_executor(
-            None, self._parse_raw, url,
-        )
+        result = await self._parse_raw(url)
         if result.content.strip():
             return result
         log.warning("WeChat raw extraction empty, falling back to playwright: %s", url)
         return await self._parse_with_playwright(url)
 
-    def _parse_raw(self, url: str) -> ParseResult:
+    async def _parse_raw(self, url: str) -> ParseResult:
+        """Fetch raw HTML via async httpx. Previously this dispatched the
+        sync ``httpx.get`` through ``run_in_executor(None, ...)``, which
+        stole from the default thread-pool that ``to_thread`` calls
+        elsewhere (notably the image-stream hot path) also share. Under
+        load the two sides competed for the same 40 threads and p95
+        wobbled. Native async fetch removes that coupling.
+        """
         try:
-            resp = httpx.get(
-                url,
+            async with httpx.AsyncClient(
                 timeout=15,
                 follow_redirects=True,
                 headers=get_wechat_headers(url) or {},
-            )
+            ) as client:
+                resp = await client.get(url)
             resp.raise_for_status()
             html = resp.text
         except Exception:

@@ -1,7 +1,6 @@
 """Generic URL handler — httpx fetch with playwright fallback."""
 from __future__ import annotations
 
-import asyncio
 from urllib.parse import urlparse
 
 import httpx
@@ -33,16 +32,24 @@ class GenericHandler:
         if _browser_only(url):
             return await self._parse_with_playwright(url)
 
-        result = await asyncio.get_running_loop().run_in_executor(
-            None, self._parse_sync, url,
-        )
+        result = await self._parse_httpx(url)
         if needs_browser_fallback(result):
             return await self._parse_with_playwright(url)
         return result
 
-    def _parse_sync(self, url: str) -> ParseResult:
+    async def _parse_httpx(self, url: str) -> ParseResult:
+        """Async HTTP fetch. Previously dispatched sync ``httpx.get``
+        via ``run_in_executor(None, ...)`` which shared the default
+        thread pool with ``asyncio.to_thread`` hot paths elsewhere
+        (image_stream, vision calls). Native async removes that
+        coupling and stops generic-URL fetches from fighting for
+        thread slots under concurrent load.
+        """
         try:
-            resp = httpx.get(url, timeout=15, follow_redirects=True)
+            async with httpx.AsyncClient(
+                timeout=15, follow_redirects=True,
+            ) as client:
+                resp = await client.get(url)
             resp.raise_for_status()
             downloaded = resp.text
             final_url = str(resp.url)

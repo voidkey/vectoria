@@ -1,5 +1,6 @@
 import pytest
 from unittest.mock import patch, MagicMock, AsyncMock
+from contextlib import contextmanager
 import lxml.html
 
 from parsers.url._wechat import (
@@ -10,6 +11,28 @@ from parsers.url._wechat import (
     extract_wechat_title,
 )
 from parsers.base import ParseResult
+
+
+@contextmanager
+def _patch_async_httpx(html: str):
+    """Patch parsers.url._wechat.httpx.AsyncClient to return ``html``.
+
+    The handler builds ``async with httpx.AsyncClient(...) as client``;
+    tests need the client's ``.get()`` to resolve to a mock response
+    carrying the canned HTML. Wrapped as a contextmanager so test
+    readability isn't hurt by the mock plumbing.
+    """
+    mock_resp = MagicMock()
+    mock_resp.text = html
+    mock_resp.raise_for_status = MagicMock()
+
+    mock_client = AsyncMock()
+    mock_client.get = AsyncMock(return_value=mock_resp)
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=None)
+
+    with patch("parsers.url._wechat.httpx.AsyncClient", return_value=mock_client):
+        yield
 
 
 def test_is_wechat_url_true():
@@ -91,11 +114,7 @@ async def test_handler_parse_regular_article():
     </div>
     </body></html>
     """
-    mock_resp = MagicMock()
-    mock_resp.text = fake_html
-    mock_resp.raise_for_status = MagicMock()
-
-    with patch("parsers.url._wechat.httpx.get", return_value=mock_resp), \
+    with _patch_async_httpx(fake_html), \
          patch("parsers.url._wechat.extract_with_trafilatura", return_value="正文内容"):
         h = WechatHandler()
         result = await h.parse("https://mp.weixin.qq.com/s/abc123")
@@ -118,11 +137,7 @@ async def test_handler_parse_image_message():
     </div>
     </body></html>
     """
-    mock_resp = MagicMock()
-    mock_resp.text = fake_html
-    mock_resp.raise_for_status = MagicMock()
-
-    with patch("parsers.url._wechat.httpx.get", return_value=mock_resp), \
+    with _patch_async_httpx(fake_html), \
          patch("parsers.url._wechat.extract_with_trafilatura", return_value="图片描述"):
         h = WechatHandler()
         result = await h.parse("https://mp.weixin.qq.com/s/imgmsg456")
@@ -135,13 +150,10 @@ async def test_handler_parse_image_message():
 @pytest.mark.asyncio
 async def test_handler_falls_back_to_playwright_on_empty():
     empty_html = "<html><body><p>no article</p></body></html>"
-    mock_resp = MagicMock()
-    mock_resp.text = empty_html
-    mock_resp.raise_for_status = MagicMock()
 
     pw_result = ParseResult(content="playwright content", images={}, title="PW Title")
 
-    with patch("parsers.url._wechat.httpx.get", return_value=mock_resp), \
+    with _patch_async_httpx(empty_html), \
          patch.object(WechatHandler, "_parse_with_playwright", new_callable=AsyncMock,
                       return_value=pw_result):
         h = WechatHandler()

@@ -21,7 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.base import get_session
 from db.models import Task
-from infra.metrics import QUEUE_DEPTH, QUEUE_OLDEST_AGE_SECONDS
+from infra.metrics import QUEUE_DEAD_TASKS, QUEUE_DEPTH, QUEUE_OLDEST_AGE_SECONDS
 
 logger = logging.getLogger(__name__)
 
@@ -221,6 +221,28 @@ async def sample_queue_metrics() -> None:
             QUEUE_DEPTH.labels(task_type=task_type).set(count)
             age = (now - oldest).total_seconds() if oldest else 0
             QUEUE_OLDEST_AGE_SECONDS.labels(task_type=task_type).set(max(age, 0))
+
+        # Separate pass for dead tasks so the pending-query index (on
+        # status='pending') can't be misread as "all statuses". The
+        # dead table is small-cardinality in practice — once the
+        # breaker retries exhaust, those rows sit there until ops
+        # intervenes.
+        dead_result = await session.execute(
+            select(Task.task_type, func.count(Task.id))
+            .where(Task.status == "dead")
+            .group_by(Task.task_type)
+        )
+        seen_types: set[str] = set()
+        for task_type, count in dead_result.all():
+            QUEUE_DEAD_TASKS.labels(task_type=task_type).set(count)
+            seen_types.add(task_type)
+        # A task_type whose dead count just dropped to zero still needs
+        # its gauge re-zeroed so alerts clear; we can't know the full
+        # type universe without another query, so rely on prometheus's
+        # "absent for resolve" semantics at the alert level. This gauge
+        # only re-emits non-zero types; operators must use
+        # ``absent(vectoria_queue_dead_tasks{task_type="..."})`` or
+        # track the delta to clear alerts.
 
 
 async def fail(task_id: str, error: str) -> None:

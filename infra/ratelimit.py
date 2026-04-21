@@ -22,11 +22,24 @@ Usage
 
 Behaviour under Redis outage
 ----------------------------
-Fail-closed: ``acquire`` returns False and logs a warning. The rate
-limiter's job is to protect *us* from banning ourselves on third-party
-services; during a Redis outage, allowing the request through would
-let a stampede past the normal protection. Callers that prefer
-fail-open behaviour can catch the False return and proceed anyway.
+Fail-open with a per-process local fallback bucket. Before W5-6 this
+module returned ``False`` on Redis errors (fail-closed) and callers
+silently dropped the image — "protecting us from being banned" was
+nominal but the actual effect was content loss during transient
+Redis blips. The new behaviour: on Redis error we flip to a local
+``MemoryStorage`` bucket with the same rate, so the worker still
+limits itself; aggregate protection degrades from "shared bucket
+across N workers" to "N separate buckets each with the full rate",
+but in practice Redis outages are short and the extra traffic stays
+well under CDN ban thresholds. Image loss is the bigger real-world
+cost and this trade avoids it.
+
+The fallback is sticky for the duration of the outage — we don't
+flip back to Redis on every call because the `limits` RedisStorage
+doesn't expose a health probe; instead we retry Redis opportunistically
+(once every ~60 s). Operators watching
+``RATELIMIT_CHECKS_TOTAL{result="local_fallback"}`` can tell when
+the service is degraded.
 
 Testing
 -------
@@ -36,6 +49,7 @@ swap in the in-memory backend via ``_set_storage_for_tests(...)``.
 from __future__ import annotations
 
 import logging
+import time
 from typing import TYPE_CHECKING
 
 from limits import RateLimitItemPerSecond
@@ -51,6 +65,26 @@ logger = logging.getLogger(__name__)
 
 _storage: Storage | None = None
 _limiter: MovingWindowRateLimiter | None = None
+
+# Local per-process fallback, built lazily on the first Redis error.
+# Shared across all keys inside this process. Using ``MemoryStorage``
+# from the same ``limits`` library so the semantics match (moving-
+# window strategy, same RateLimitItem type).
+_fallback_limiter: MovingWindowRateLimiter | None = None
+
+# Retry Redis at most every _REDIS_RETRY_SECONDS after an outage so
+# we're not hammering a down Redis on every acquire. When the timer
+# elapses we attempt one real limiter call; if it works, subsequent
+# acquires route to Redis again.
+_REDIS_RETRY_SECONDS = 60.0
+_last_redis_error_ts: float = 0.0
+
+
+def _get_fallback_limiter() -> MovingWindowRateLimiter:
+    global _fallback_limiter  # noqa: PLW0603
+    if _fallback_limiter is None:
+        _fallback_limiter = MovingWindowRateLimiter(MemoryStorage())
+    return _fallback_limiter
 
 
 async def _get_limiter() -> MovingWindowRateLimiter:
@@ -80,25 +114,55 @@ async def acquire(key: str, *, rate: int, per_seconds: int = 1) -> bool:
     need per-user-per-domain pacing. Different keys use independent
     buckets; same key across workers shares the same bucket.
 
-    On Redis failure, logs a warning and returns False so callers
-    don't accidentally stampede during an outage. The caller's code
-    path should treat False as "try again later".
+    On Redis failure, degrades to a per-process in-memory token bucket
+    with the same rate (see module docstring). Callers treat the
+    return value as "is this request permitted now"; they don't need
+    to distinguish shared-Redis vs local-fallback — the bucket shape
+    is the same, only the blast radius of "who shares the bucket"
+    changes. Outages surface via
+    ``RATELIMIT_CHECKS_TOTAL{result="local_fallback"}``.
     """
-    limiter = await _get_limiter()
+    global _last_redis_error_ts  # noqa: PLW0603
     item = RateLimitItemPerSecond(rate, per_seconds)
+
+    now = time.monotonic()
+    in_outage = (
+        _last_redis_error_ts > 0
+        and (now - _last_redis_error_ts) < _REDIS_RETRY_SECONDS
+    )
+    if not in_outage:
+        limiter = await _get_limiter()
+        try:
+            allowed = await limiter.hit(item, key)
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "rate limit Redis check failed for key=%s; falling back "
+                "to local bucket for ~%ds",
+                key, int(_REDIS_RETRY_SECONDS),
+            )
+            _last_redis_error_ts = now
+            # fall through to local fallback below
+        else:
+            # Successful Redis hit — clear any prior outage marker.
+            if _last_redis_error_ts:
+                logger.info("rate limit Redis recovered; resuming shared bucket")
+                _last_redis_error_ts = 0.0
+            RATELIMIT_CHECKS_TOTAL.labels(
+                key=key, result="allowed" if allowed else "blocked",
+            ).inc()
+            return allowed
+
+    # Outage path: serve from the in-memory fallback.
+    fallback = _get_fallback_limiter()
     try:
-        allowed = await limiter.hit(item, key)
-    except Exception:  # noqa: BLE001 — telemetry path, must never propagate
-        logger.warning(
-            "rate limit check failed for key=%s rate=%d/%ds; failing closed",
-            key, rate, per_seconds,
+        allowed = await fallback.hit(item, key)
+    except Exception:  # noqa: BLE001 — last resort; don't propagate
+        logger.exception(
+            "local fallback rate limiter failed for key=%s; allowing", key,
         )
         RATELIMIT_CHECKS_TOTAL.labels(key=key, result="error").inc()
-        return False
-
-    RATELIMIT_CHECKS_TOTAL.labels(
-        key=key, result="allowed" if allowed else "blocked",
-    ).inc()
+        return True
+    RATELIMIT_CHECKS_TOTAL.labels(key=key, result="local_fallback").inc()
     return allowed
 
 
@@ -112,9 +176,11 @@ def _reset_for_tests() -> None:
     Intended for pytest fixtures only. Production code must not call
     this — dropping the limiter mid-flight would reset every bucket.
     """
-    global _storage, _limiter  # noqa: PLW0603
+    global _storage, _limiter, _fallback_limiter, _last_redis_error_ts  # noqa: PLW0603
     _storage = None
     _limiter = None
+    _fallback_limiter = None
+    _last_redis_error_ts = 0.0
 
 
 def _set_storage_for_tests(storage: Storage) -> None:

@@ -66,6 +66,14 @@ QUEUE_OLDEST_AGE_SECONDS = Gauge(
     labelnames=("task_type",),
 )
 
+QUEUE_DEAD_TASKS = Gauge(
+    "vectoria_queue_dead_tasks",
+    "Tasks in terminal failure state per task type "
+    "(status='dead', i.e. max_attempts exhausted). "
+    "A non-zero here deserves an alert — retries already gave up.",
+    labelnames=("task_type",),
+)
+
 # ---------------------------------------------------------------------------
 # External dependencies (reliability)
 # ---------------------------------------------------------------------------

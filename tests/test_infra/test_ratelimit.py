@@ -73,11 +73,15 @@ async def test_bucket_refills_after_window_elapses():
     assert await ratelimit.acquire("refill-test", rate=2, per_seconds=1)
 
 
-async def test_failure_of_backend_fails_closed(monkeypatch):
-    """If Redis throws, acquire logs and returns False — never True.
+async def test_failure_of_backend_falls_back_to_local_bucket(monkeypatch):
+    """W5-6 change: when Redis throws, acquire flips to an in-memory
+    local bucket instead of silently dropping the caller's request.
 
-    Guards against a caller accidentally stampeding a third party when
-    the limiter is unavailable.
+    Rationale: the old fail-closed behaviour "protected us from being
+    banned" in theory, but in practice callers treat False as "skip
+    this image", so a Redis blip meant image loss during ingest.
+    Fail-open with local rate-limiting keeps per-worker pacing and
+    accepts a small degradation in cross-worker coordination.
     """
 
     class _ExplodingStorage(MemoryStorage):
@@ -87,8 +91,27 @@ async def test_failure_of_backend_fails_closed(monkeypatch):
     ratelimit._reset_for_tests()
     ratelimit._set_storage_for_tests(_ExplodingStorage())
 
-    # Must not raise — must return False.
-    assert await ratelimit.acquire("any", rate=10, per_seconds=1) is False
+    # Must not raise. First call triggers the Redis failure and falls
+    # back to the local bucket — the local bucket has room, so True.
+    assert await ratelimit.acquire("any", rate=10, per_seconds=1) is True
+
+    # Subsequent calls within the retry window go straight to local
+    # without hitting Redis again (checked via metric).
+    from prometheus_client import REGISTRY
+
+    def _read(result: str) -> float:
+        v = REGISTRY.get_sample_value(
+            "vectoria_ratelimit_checks_total",
+            {"key": "any", "result": result},
+        )
+        return float(v or 0)
+
+    before_fallback = _read("local_fallback")
+    await ratelimit.acquire("any", rate=10, per_seconds=1)
+    after_fallback = _read("local_fallback")
+    assert after_fallback > before_fallback, (
+        "local_fallback metric should increment on outage-path acquires"
+    )
 
 
 async def test_metric_increments_by_result():
