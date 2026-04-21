@@ -37,6 +37,16 @@ class UrlParser(BaseParser):
 
     async def parse(self, source: bytes | str, filename: str = "", **kwargs) -> ParseResult:
         url = source.decode() if isinstance(source, bytes) else source
+
+        # W5-1: close the DNS-rebinding window. The API validated this
+        # URL at enqueue time, but DNS may have flipped since then. Re-
+        # resolve right before the handler fires its own HTTP fetch so
+        # an attacker can't make us crawl internal metadata between
+        # validate and fetch. AppError propagates so worker.handlers
+        # marks the task failed with a clear error code.
+        from api.url_validation import reresolve_and_check_ssrf
+        await reresolve_and_check_ssrf(url)
+
         handler = find_handler(url)
         if handler is None:
             return ParseResult(content="", images={}, title="")

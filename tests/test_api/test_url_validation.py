@@ -197,3 +197,62 @@ async def test_happy_path_public_https_url():
     with patch("api.url_validation.socket.getaddrinfo",
                return_value=_mock_resolve("93.184.216.34")):
         await validate_url("https://example.com/some-article")  # no raise
+
+
+# ---------------------------------------------------------------------------
+# W5-1 DNS rebinding: worker-side re-check
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_reresolve_catches_dns_rebind_to_metadata():
+    """Attack scenario: API validates when DNS returns a public IP, but
+    by the time the worker dequeues the task DNS has flipped to an
+    AWS metadata address. ``reresolve_and_check_ssrf`` must reject
+    it at fetch time.
+    """
+    from api.url_validation import reresolve_and_check_ssrf
+
+    with patch("api.url_validation.socket.getaddrinfo",
+               return_value=_mock_resolve("169.254.169.254")):
+        with pytest.raises(AppError) as e:
+            await reresolve_and_check_ssrf("https://evil.com/fake-article")
+    assert e.value.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_reresolve_accepts_stable_public_ip():
+    """The common case: DNS still returns the same public IP the API
+    saw. Re-check is a no-op.
+    """
+    from api.url_validation import reresolve_and_check_ssrf
+
+    with patch("api.url_validation.socket.getaddrinfo",
+               return_value=_mock_resolve("93.184.216.34")):
+        await reresolve_and_check_ssrf("https://example.com/article")
+        # no raise
+
+
+@pytest.mark.asyncio
+async def test_reresolve_rejects_malformed_url():
+    """A handler followed a redirect to a malformed URL (javascript:/
+    file:/ whatever) — re-validate rejects before httpx sees it.
+    """
+    from api.url_validation import reresolve_and_check_ssrf
+
+    with pytest.raises(AppError):
+        await reresolve_and_check_ssrf("file:///etc/passwd")
+
+
+@pytest.mark.asyncio
+async def test_url_parser_reresolves_before_dispatching_to_handler():
+    """End-to-end: ``UrlParser.parse`` must call the re-check before it
+    reaches any site handler, so an attacker who slipped the API-time
+    validation gets blocked at worker-fetch time.
+    """
+    from parsers.url import UrlParser
+
+    with patch("api.url_validation.socket.getaddrinfo",
+               return_value=_mock_resolve("10.0.0.5")):
+        with pytest.raises(AppError) as e:
+            await UrlParser().parse("https://rebound.example/post")
+    assert e.value.status_code == 403

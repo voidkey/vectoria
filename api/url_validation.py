@@ -40,12 +40,12 @@ _BLOCKED_EXTENSIONS = {
 # 2130706433, etc.) into a canonical ``ipaddress.IPv4Address`` before
 # the membership test, so those attack surfaces are also covered.
 #
-# Note — DNS rebinding is *not* covered here: we resolve at ingest
-# time but the actual fetch runs in the worker much later. An attacker
-# controlling a DNS record could flip the answer to a private IP
-# between validate and fetch. The real fix lives in the URL parser's
-# HTTP client (resolve once, pin the IP for the connection) and is
-# tracked for W3 where platform-specific fetching lands.
+# DNS rebinding is mitigated by ``reresolve_and_check_ssrf``: the URL
+# parser re-runs this same check at fetch time (worker side), so an
+# attacker flipping DNS between validate (API) and fetch (worker) is
+# caught before the HTTP call leaves the box. The sub-second race
+# between the worker's re-resolve and the fetch's own resolve is
+# bounded by single-digit ms and considered acceptable residual risk.
 _SSRF_BLOCKED_NETWORKS = (
     ipaddress.ip_network("0.0.0.0/8"),       # "this" network / 0.0.0.0 trick
     ipaddress.ip_network("10.0.0.0/8"),      # RFC1918 private
@@ -132,6 +132,32 @@ async def validate_url(url: str) -> None:
     """Validate a URL for ingestion. Raises AppError on failure."""
     hostname = _check_url_format(url)
 
+    await asyncio.get_running_loop().run_in_executor(
+        None, _resolve_and_check_ssrf, hostname, url,
+    )
+
+
+async def reresolve_and_check_ssrf(url: str) -> None:
+    """Worker-side DNS-rebinding guard.
+
+    The API validates at enqueue time; the worker can run this much
+    later (queue backlog + parse time). An attacker controlling DNS
+    with a low TTL can flip the record to a private IP between those
+    two moments. This function is called *immediately before* the
+    worker's actual HTTP fetch so the window for rebinding shrinks
+    from seconds-to-minutes down to single-digit milliseconds (the
+    gap between this re-resolve and the fetch's own resolve inside
+    httpx / playwright).
+
+    URL format is re-checked too, because a handler could have
+    followed a redirect the API never saw.
+
+    Raises ``AppError(403, BLOCKED_ADDRESS)`` if the URL now resolves
+    to a private / link-local / metadata network, or
+    ``AppError(422, DNS_RESOLVE_FAILED)`` if DNS can't resolve it at
+    all (compared to the API's earlier successful resolve).
+    """
+    hostname = _check_url_format(url)
     await asyncio.get_running_loop().run_in_executor(
         None, _resolve_and_check_ssrf, hostname, url,
     )

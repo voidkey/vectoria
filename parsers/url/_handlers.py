@@ -198,13 +198,29 @@ async def download_images(
     ``?name=orig``). The returned dict is keyed by the *original* URL
     the caller passed in, so downstream markdown-position matching
     still works even when the fetch URL was rewritten.
+
+    SSRF: each image URL is re-validated against the private-address
+    blocklist right before fetch. Image URLs come from parsed HTML so
+    an attacker embedding ``<img src="http://169.254.169.254/...">``
+    would otherwise have worker fetch internal metadata. Blocked URLs
+    are silently skipped (image loss is acceptable; SSRF isn't).
     """
+    from api.url_validation import reresolve_and_check_ssrf
+    from api.errors import AppError
+
     images: dict[str, bytes] = {}
     async with httpx.AsyncClient(
         timeout=10, follow_redirects=True, headers=headers or {},
     ) as client:
         for original in urls[:20]:
             fetch_url = canonicalize(original) if canonicalize else original
+            try:
+                await reresolve_and_check_ssrf(fetch_url)
+            except AppError as exc:
+                logger.warning(
+                    "image SSRF check rejected %s: %s", fetch_url, exc.detail,
+                )
+                continue
             if not await _gate(fetch_url):
                 continue
             try:
