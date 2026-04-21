@@ -57,7 +57,8 @@ class PptxParser(BaseParser):
                 None, self._parse_sync, source, filename,
             )
         return await run_isolated(
-            _pptx_parse_worker, source, filename, timeout=cfg.parser_timeout,
+            _pptx_parse_worker, source, filename,
+            timeout=cfg.parser_timeout, tier="fast",
         )
 
     def _parse_sync(self, source: bytes | str, filename: str) -> ParseResult:

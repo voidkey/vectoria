@@ -71,7 +71,8 @@ class XlsxParser(BaseParser):
                 None, self._parse_sync, source, filename,
             )
         return await run_isolated(
-            _xlsx_parse_worker, source, filename, timeout=cfg.parser_timeout,
+            _xlsx_parse_worker, source, filename,
+            timeout=cfg.parser_timeout, tier="fast",
         )
 
     def _parse_sync(self, source: bytes | str, filename: str) -> ParseResult:
