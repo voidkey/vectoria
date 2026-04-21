@@ -107,15 +107,36 @@ async def _block_heavy_resources(route):  # type: ignore[no-untyped-def]
 async def parse_session(
     *, user_agent: str | None = None,
     block_heavy: bool = True,
+    viewport: dict | None = None,
+    locale: str | None = None,
+    init_script: str | None = None,
 ) -> "AsyncIterator[BrowserContext]":
     """Yield a fresh BrowserContext from the pooled browser.
 
     Close is guaranteed on scope exit (success or exception), so
     callers don't need a try/finally. Cookies/storage are isolated to
     this context — two concurrent calls don't see each other's state.
+
+    Optional knobs:
+      * ``viewport`` — override default viewport (e.g. for desktop
+        rendering on sites that sniff viewport width).
+      * ``locale`` — BCP 47 locale string (``"en-US"``, ``"zh-CN"``);
+        some sites send different markup based on ``navigator.language``.
+      * ``init_script`` — JS injected into every page on load, before
+        page JS runs. Used for the ``navigator.webdriver`` anti-detection
+        shim on stubborn targets (threads.net / instagram style).
     """
     browser = await get_browser()
-    context = await browser.new_context(user_agent=user_agent)
+    new_ctx_kwargs: dict = {}
+    if user_agent is not None:
+        new_ctx_kwargs["user_agent"] = user_agent
+    if viewport is not None:
+        new_ctx_kwargs["viewport"] = viewport
+    if locale is not None:
+        new_ctx_kwargs["locale"] = locale
+    context = await browser.new_context(**new_ctx_kwargs)
+    if init_script:
+        await context.add_init_script(init_script)
     if block_heavy:
         await context.route("**/*", _block_heavy_resources)
     try:

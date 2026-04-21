@@ -55,32 +55,37 @@ class GenericHandler:
         return ParseResult(content=text, images={}, title=title, image_urls=img_urls)
 
     async def _parse_with_playwright(self, url: str) -> ParseResult:
+        """Browser-pool fallback for JS-challenge / SPA / anti-bot sites.
+
+        Uses the process-wide Chromium from ``_browser.parse_session`` so
+        we pay the ~2-4 s launch cost once per worker instead of once per
+        URL. ``block_heavy=False`` keeps stylesheets+images loading —
+        some anti-bot challenges gate their clearance signal on layout
+        completion, and blocking images can keep the page stuck on
+        "Just a moment...". The ``navigator.webdriver`` shim masks the
+        CDP automation surface that Cloudflare looks at.
+        """
         try:
-            from playwright.async_api import async_playwright
+            from parsers.url._browser import parse_session
         except ImportError:
             return ParseResult(content="", images={}, title="")
 
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(
-                headless=True,
-                args=[
-                    "--no-sandbox",
-                    "--disable-setuid-sandbox",
-                    "--disable-blink-features=AutomationControlled",
-                ],
-            )
-            try:
-                ctx = await browser.new_context(
-                    user_agent=(
-                        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-                    ),
-                    viewport={"width": 1280, "height": 800},
-                    locale="en-US",
-                )
-                await ctx.add_init_script(
-                    "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
-                )
+        ua = (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+        )
+        anti_webdriver = (
+            "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
+        )
+
+        try:
+            async with parse_session(
+                user_agent=ua,
+                block_heavy=False,
+                viewport={"width": 1280, "height": 800},
+                locale="en-US",
+                init_script=anti_webdriver,
+            ) as ctx:
                 page = await ctx.new_page()
                 await page.goto(url, wait_until="domcontentloaded", timeout=30000)
 
@@ -103,8 +108,11 @@ class GenericHandler:
                 final_url = page.url
                 if not title:
                     title = urlparse(final_url).netloc
-            finally:
-                await browser.close()
+        except ModuleNotFoundError:
+            # ``_browser.get_browser`` imports ``playwright.async_api`` on
+            # first use; absent package surfaces here, not at the outer
+            # try/except above.
+            return ParseResult(content="", images={}, title="")
 
         text = extract_with_trafilatura(html)
         img_urls = extract_image_urls(html, final_url)
