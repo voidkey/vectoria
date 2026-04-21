@@ -155,28 +155,48 @@ class XhsHandler:
                                 }
                                 return "";
                             };
-                            // Title lives in either note-content title or meta tag
+                            // Title: note-detail title, generic h1, or og tag.
                             const title = pickText([
                                 '#detail-title',
                                 '.title',
                                 'h1',
                             ]) || (document.querySelector('meta[property="og:title"]')?.content ?? '');
 
-                            const body = pickText([
+                            // Body: try several known-good selectors, then
+                            // a broader attribute match for any xhs-layout
+                            // shift that moves ``note-content`` / ``note-text``
+                            // onto a new wrapper. og:description is a
+                            // last-resort fallback that survives most
+                            // refactors because the SSR meta tag is generic.
+                            let body = pickText([
                                 '#detail-desc',
                                 '.note-content .desc',
+                                '.note-detail-content',
+                                '[class*="note-text"]',
+                                '[class*="noteContent"]',
+                                '[class*="note-content"]',
                                 '.content',
                                 'article',
                             ]);
+                            if (!body) {
+                                body = document.querySelector(
+                                    'meta[property="og:description"]'
+                                )?.content || '';
+                            }
 
                             // Images: hero carousel + inline. Cap at 20
-                            // to match download_images default.
+                            // to match download_images default. Exclude
+                            // avatars / qrcodes / icons — they live on
+                            // sns-avatar-qc.* or carry those words in
+                            // the URL, and only add noise to vision /
+                            // phash downstream.
                             const imgs = Array.from(
                                 document.querySelectorAll('img')
                             )
                               .map(i => i.getAttribute('data-src') || i.src)
                               .filter(s => s && !s.startsWith('data:'))
-                              .filter(s => /xhscdn\\.com|xiaohongshu\\.com/.test(s));
+                              .filter(s => /xhscdn\\.com|xiaohongshu\\.com/.test(s))
+                              .filter(s => !/avatar|qrcode|icon/i.test(s));
                             const seen = new Set();
                             const uniq = [];
                             for (const u of imgs) {

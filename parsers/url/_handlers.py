@@ -17,20 +17,26 @@ logger = logging.getLogger(__name__)
 _IMG_TAG = re.compile(r'<img[^>]+(?:data-src|src)=["\']([^"\']+)["\']', re.IGNORECASE)
 
 # Image CDN suffix → (rate, per_seconds). Checked via host.endswith so
-# subdomains fall under the same bucket ("xhscdn.com" matches both
-# ``sns-img.xhscdn.com`` and ``ci.xiaohongshu.com``-like CDN edges).
+# subdomains fall under the same bucket — e.g. ``qpic.cn`` matches
+# both ``mmbiz.qpic.cn`` (WeChat Mp) and ``mmecoa.qpic.cn`` (newer
+# WeChat variant that shipped in early 2024).
 # Buckets are global: the rate limiter shares them across every worker
 # pointing at the same Redis.
 #
 # Numbers are conservative guesses from public reports of platform
 # ban thresholds; tune when real blocked-rate metrics come in.
+#
+# Ordering doesn't matter for the current suffix check — only one
+# entry can match a given host under strict suffix rules. If we ever
+# need overlapping rules, switch to longest-prefix selection here.
 _DOMAIN_RATES: tuple[tuple[str, int, int], ...] = (
-    ("mmbiz.qpic.cn", 10, 1),    # WeChat Mp article CDN
-    ("xhscdn.com",     3, 1),    # Xiaohongshu CDN (strict ban risk)
-    ("sinaimg.cn",     5, 1),    # Weibo
-    ("pbs.twimg.com",  2, 1),    # Twitter / X media
+    ("qpic.cn",        10, 1),   # WeChat Mp article CDN (mmbiz / mmecoa / ...)
+    ("xhscdn.com",      3, 1),   # Xiaohongshu image CDN (strict ban risk)
+    ("xiaohongshu.com", 3, 1),   # Xiaohongshu static assets (picasso-static)
+    ("sinaimg.cn",      5, 1),   # Weibo
+    ("pbs.twimg.com",   2, 1),   # Twitter / X media
     ("pic-bj.bcebos.com", 5, 1), # Baidu BCE storage sometimes used by zhihu
-    ("zhimg.com",      5, 1),    # Zhihu image CDN
+    ("zhimg.com",       5, 1),   # Zhihu image CDN
 )
 
 # Anything that doesn't match a specific CDN uses this. 10/s is loose

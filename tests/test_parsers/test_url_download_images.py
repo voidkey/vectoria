@@ -51,6 +51,33 @@ def test_rate_map_covers_target_platforms():
     assert _rate_for_host("pbs.twimg.com") == (2, 1)
 
 
+def test_rate_map_covers_qpic_variants():
+    """Real traffic surfaced mmecoa.qpic.cn in early 2024 — a newer
+    WeChat CDN variant that the original ``mmbiz.qpic.cn`` entry
+    didn't match. The broadened ``qpic.cn`` suffix now catches both,
+    and any future ``*.qpic.cn`` host WeChat rolls out.
+    """
+    for host in (
+        "mmbiz.qpic.cn",
+        "mmecoa.qpic.cn",
+        "mmedia-static.qpic.cn",  # hypothetical future
+    ):
+        assert _rate_for_host(host) == (10, 1), host
+
+
+def test_rate_map_covers_xiaohongshu_static_assets():
+    """picasso-static.xiaohongshu.com carries UI assets for xhs notes
+    (cover images, logos). It should be rate-limited as tight as
+    xhscdn.com since it's the same platform's infra.
+    """
+    for host in (
+        "xiaohongshu.com",
+        "picasso-static.xiaohongshu.com",
+        "www.xiaohongshu.com",
+    ):
+        assert _rate_for_host(host) == (3, 1), host
+
+
 def test_rate_map_fallback_for_unknown_host():
     # Must never return 0 — that would block everything.
     rate, per = _rate_for_host("unknown.example.com")
