@@ -44,6 +44,10 @@ dependencies = [
     "coredis>=4.17,<6",
     "limits>=3.7",
     "imagehash>=4.3",
+    # python-pptx is declared explicitly (not just via docling transitive)
+    # so the PptxImageExtractor plugin keeps working if docling is ever
+    # retired. 1.0+ stabilised the slide.notes_slide API we rely on.
+    "python-pptx>=1.0",
 ]
 
 [project.optional-dependencies]

@@ -19,6 +19,12 @@ def _fresh_registry():
     ie._clear_for_tests()
     yield
     ie._clear_for_tests()
+    # Restore the bundled defaults so subsequent test files (e.g.
+    # test_pptx_images.py::test_plugin_registered_at_parsers_import)
+    # still see them. Otherwise the last teardown here leaves the
+    # registry empty for the rest of the pytest session.
+    import parsers
+    parsers._register_default_image_extractors()
 
 
 def _ref(name: str) -> ImageRef:
