@@ -1,10 +1,14 @@
 from parsers.base import BaseParser
 
-# Extension -> preferred engine order (first available wins)
+# Extension -> preferred engine order (first available wins).
+# Native lightweight parsers are listed first; docling stays as a
+# fallback for cases where the native path fails to import (unlikely
+# given the deps are pinned) and is retained for .png/.jpg/.tiff (its
+# OCR path has no native equivalent yet).
 _EXT_PREFERENCE: dict[str, list[str]] = {
     ".pdf":  ["mineru", "docling", "markitdown"],
-    ".docx": ["docling", "markitdown"],
-    ".doc":  ["docling", "markitdown"],
+    ".docx": ["docx-native", "docling", "markitdown"],
+    ".doc":  ["docx-native", "docling", "markitdown"],
     ".pptx": ["docling", "markitdown"],
     ".ppt":  ["docling", "markitdown"],
     ".xlsx": ["docling", "markitdown"],
@@ -86,6 +90,8 @@ class ParserRegistry:
 registry = ParserRegistry()
 
 # Auto-register built-in parsers
+from parsers.docx_parser import DocxParser  # noqa: E402
+registry.register(DocxParser)
 from parsers.docling_parser import DoclingParser  # noqa: E402
 registry.register(DoclingParser)
 from parsers.mineru_parser import MinerUParser  # noqa: E402
