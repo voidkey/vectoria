@@ -1,13 +1,15 @@
-"""PptxParser (python-pptx) — native .pptx text extraction with
-speaker-notes support.
+"""PptxParser (python-pptx) — native .pptx text + image extraction.
 
-Speaker notes are the docling-drop gap this parser fills. Guards:
+Speaker notes (text and images) are the docling-drop gap the native
+parser fills. Guards:
   * each slide emits as ``## Slide N: Title`` section
   * notes-slide text is nested as ``### Notes``
   * tables render as pipe-markdown
   * empty frames / blank paragraphs are dropped
-  * image_refs is always empty (PptxImageExtractor owns that path)
-  * registry picks pptx-native over docling
+  * body pictures surface in ``image_refs`` with
+    ``slide_NNN_img_M`` naming
+  * notes-slide pictures surface as ``slide_NNN_notes_img_M``
+  * registry picks pptx-native over everything else
 """
 import io
 
@@ -125,14 +127,42 @@ async def test_parse_title_falls_back_to_filename_when_no_core_title():
 
 
 # ---------------------------------------------------------------------------
-# Image path: always empty — the PptxImageExtractor plugin owns it
+# Image path: body + notes pictures in a single slide walk (W6-6
+# merged the old PptxImageExtractor back into the parser)
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_parse_returns_empty_image_refs():
-    """PptxImageExtractor (W4-c plugin) fills image_refs via the W4-b
-    override seam. Having the parser also emit them would be
-    duplicated slide-walking work.
+async def test_parse_produces_body_picture_image_refs():
+    """Body Picture shapes must surface in image_refs with the
+    ``slide_NNN_img_M`` naming convention.
+    """
+    from pptx import Presentation
+    from pptx.util import Inches
+    from PIL import Image
+    from parsers.pptx_parser import PptxParser
+
+    png = io.BytesIO()
+    Image.new("RGB", (8, 8), color="green").save(png, format="PNG")
+    png.seek(0)
+
+    prs = Presentation()
+    slide = prs.slides.add_slide(prs.slide_layouts[6])  # blank
+    slide.shapes.add_picture(png, Inches(1), Inches(1), Inches(1), Inches(1))
+    out = io.BytesIO()
+    prs.save(out)
+
+    result = await PptxParser().parse(out.getvalue(), filename="deck.pptx")
+    assert len(result.image_refs) == 1
+    assert result.image_refs[0].name.startswith("slide_000_img_0")
+    # Dimensions propagated from the slide geometry (1 inch × 96 DPI).
+    assert result.image_refs[0].width == 96
+    assert result.image_refs[0].height == 96
+
+
+@pytest.mark.asyncio
+async def test_parse_returns_empty_image_refs_on_deck_without_pictures():
+    """The text-only fixture has no pictures, so image_refs is empty.
+    Guards against accidental ghost refs.
     """
     from parsers.pptx_parser import PptxParser
     result = await PptxParser().parse(

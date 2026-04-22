@@ -1,9 +1,10 @@
 """Native .pptx parser via python-pptx.
 
-The signature capability over docling: speaker-notes text is
-emitted alongside slide body content. For product-demo / lecture
-decks, notes often carry the key narrative (what the presenter
-actually says) and embedding them lifts retrieval quality measurably.
+Produces both text and images from a single slide walk. Speaker-
+notes text is emitted inline (docling used to drop these; that was
+the original reason to build W4-b's image-extractor override seam
+around it — collapsed back into the parser in W6-6 since the override
+had exactly one implementation and no other consumers).
 
 Output structure
 ----------------
@@ -12,14 +13,15 @@ Each slide becomes an ``## Slide N: Title`` section. Body text
 slide has a notes slide, a nested ``### Notes`` block carries the
 notes text — same-paragraph preservation, not merged in-line.
 
-This gives the outline extractor ``extract_outline`` a proper
-hierarchy to key off, and the splitter sees "this chunk is from
-slide 5 notes, section title is 'Slide 5'" downstream.
-
-Images are not produced here — the ``PptxImageExtractor`` plugin
-(W4-c, registered at ``parsers/__init__.py``) handles them via the
-W4-b override seam. Returning empty ``image_refs`` avoids
-duplicate work.
+Images
+------
+Both slide body shapes and notes-slide shapes are walked. Picture
+shapes (MSO_SHAPE_TYPE.PICTURE) emit ``ImageRef`` entries with
+``BytesFactory`` (picklable — parser runs under isolation). Names:
+  slide_{idx:03d}_img_{n}          — body picture
+  slide_{idx:03d}_notes_img_{n}    — speaker-notes picture
+so downstream DB rows + S3 keys are greppable to "which slide did
+this come from, and was it in notes".
 """
 from __future__ import annotations
 
@@ -31,9 +33,20 @@ from pathlib import Path
 from config import get_settings
 from parsers.base import BaseParser, ParseResult
 from parsers.convert import LEGACY_FORMAT_MAP, convert_legacy_format
+from parsers.image_ref import BytesFactory, ImageRef
 from parsers.isolation import run_isolated
 
 logger = logging.getLogger(__name__)
+
+_MIME_EXT_MAP = {
+    "image/png":   ".png",
+    "image/jpeg":  ".jpg",
+    "image/gif":   ".gif",
+    "image/bmp":   ".bmp",
+    "image/tiff":  ".tiff",
+    "image/x-emf": ".emf",
+    "image/webp":  ".webp",
+}
 
 
 class PptxParser(BaseParser):
@@ -89,11 +102,13 @@ class PptxParser(BaseParser):
             return ParseResult(content="", title=Path(filename).stem)
 
         lines: list[str] = []
+        image_refs: list[ImageRef] = []
         deck_title = _extract_deck_title(prs) or Path(filename).stem
         lines.append(f"# {deck_title}")
         lines.append("")
 
         for idx, slide in enumerate(prs.slides, start=1):
+            slide_idx_0 = idx - 1
             slide_title = _extract_slide_title(slide)
             header = f"## Slide {idx}"
             if slide_title:
@@ -106,7 +121,13 @@ class PptxParser(BaseParser):
                 lines.append(body)
                 lines.append("")
 
-            # Speaker notes — the docling-drop gap we're filling.
+            # Body images.
+            _collect_picture_refs(
+                slide.shapes, image_refs,
+                name_prefix=f"slide_{slide_idx_0:03d}_img",
+            )
+
+            # Speaker notes — the docling-drop gap the native path fills.
             if slide.has_notes_slide:
                 notes_text = _extract_notes_text(slide.notes_slide)
                 if notes_text:
@@ -114,16 +135,17 @@ class PptxParser(BaseParser):
                     lines.append("")
                     lines.append(notes_text)
                     lines.append("")
+                _collect_picture_refs(
+                    slide.notes_slide.shapes, image_refs,
+                    name_prefix=f"slide_{slide_idx_0:03d}_notes_img",
+                )
 
         content = "\n".join(lines).strip() + "\n"
 
         return ParseResult(
             content=content,
             title=deck_title,
-            # PptxImageExtractor (registered at parsers/__init__.py)
-            # will override image_refs via the W4-b seam. Returning
-            # empty here avoids duplicate slide-walking work.
-            image_refs=[],
+            image_refs=image_refs,
         )
 
 
@@ -215,6 +237,50 @@ def _extract_notes_text(notes_slide) -> str:
     if tf is None:
         return ""
     return _text_frame_to_str(tf)
+
+
+def _collect_picture_refs(
+    shapes, out: list[ImageRef], *, name_prefix: str,
+) -> None:
+    """Walk a shape tree, appending ImageRef entries for every Picture.
+
+    Recurses into GroupShapes. Uses ``BytesFactory`` so the ImageRef
+    round-trips through the process-pool boundary — parsers run under
+    ``parser_isolation``, and nested closures capturing pptx objects
+    would fail to unpickle in the parent.
+    """
+    for shape in shapes:
+        if shape.shape_type == 6:  # MSO_SHAPE_TYPE.GROUP
+            _collect_picture_refs(shape.shapes, out, name_prefix=name_prefix)
+            continue
+        image = getattr(shape, "image", None)
+        if image is None:
+            continue
+        try:
+            blob = image.blob
+            content_type = image.content_type or "image/png"
+        except Exception:
+            continue
+
+        n = len(out)
+        suffix = _MIME_EXT_MAP.get(content_type, ".png")
+        # Width/height from the slide geometry when available (EMU:
+        # 914400 per inch; px assumes 96 DPI).
+        w = h = None
+        try:
+            if shape.width and shape.height:
+                w = int(shape.width / 914400 * 96)
+                h = int(shape.height / 914400 * 96)
+        except Exception:
+            pass
+
+        out.append(ImageRef(
+            name=f"{name_prefix}_{n}{suffix}",
+            mime=content_type,
+            width=w,
+            height=h,
+            _factory=BytesFactory(blob),
+        ))
 
 
 def _pptx_parse_worker(source: bytes | str, filename: str) -> ParseResult:

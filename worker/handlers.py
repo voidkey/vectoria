@@ -119,23 +119,6 @@ async def handle_parse_document(payload: dict) -> None:
         )
         raise  # re-raise → queue handles retry/backoff/dead-letter
 
-    # Per-filetype image-extractor override (W4-b). If a plugin is
-    # registered for this file's extension / mime, let it REPLACE the
-    # parser's image_refs — e.g. PptxImageExtractor can add speaker-
-    # notes figures that docling drops. ``None`` means no override;
-    # parser refs stay. URL ingests (raw is str) skip this entirely
-    # since URL handlers own their own image pipeline.
-    if isinstance(raw, bytes):
-        from parsers.image_extractor import extract_override
-        override = await extract_override(raw, filename=filename)
-        if override is not None:
-            logger.info(
-                "image_extractor override: parser produced %d refs, "
-                "plugin produced %d refs for %s",
-                len(parse_result.image_refs), len(override), filename,
-            )
-            parse_result.image_refs = override
-
     # Drop the source bytes ASAP; the parser may have materialised them
     # into structures held on parse_result but `raw` itself can go.
     raw = None  # noqa: F841

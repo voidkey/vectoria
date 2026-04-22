@@ -90,9 +90,12 @@ def test_docx_parser_produces_picklable_refs_for_docx_with_image():
 
 
 @pytest.mark.asyncio
-async def test_pptx_image_extractor_produces_picklable_refs():
-    """PptxImageExtractor path: ``_make_ref`` in ``parsers._pptx_images``
-    must use ``BytesFactory`` rather than a nested def."""
+async def test_pptx_parser_produces_picklable_image_refs():
+    """PptxParser image path (W6-6 absorbed the old PptxImageExtractor):
+    body-shape pictures must round-trip through pickle. Parser runs
+    under ``parser_isolation`` so the subprocess's ParseResult is
+    pickled back to the parent.
+    """
     try:
         from pptx import Presentation
         from pptx.util import Inches
@@ -103,7 +106,7 @@ async def test_pptx_image_extractor_produces_picklable_refs():
     except ImportError:
         pytest.skip("PIL not available")
 
-    from parsers._pptx_images import PptxImageExtractor
+    from parsers.pptx_parser import PptxParser
 
     # Build a minimal .pptx with one slide holding one picture shape.
     png = io.BytesIO()
@@ -116,8 +119,8 @@ async def test_pptx_image_extractor_produces_picklable_refs():
     out = io.BytesIO()
     prs.save(out)
 
-    refs = await PptxImageExtractor().extract(out.getvalue(), filename="deck.pptx")
-    _assert_refs_pickle(refs)
+    result = PptxParser()._parse_sync(out.getvalue(), "deck.pptx")
+    _assert_refs_pickle(result.image_refs)
 
 
 def test_parser_modules_have_no_nested_factory_defs():
