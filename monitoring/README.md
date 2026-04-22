@@ -4,12 +4,46 @@ Operator-facing artifacts for the metrics surface `infra/metrics.py`
 exposes. Nothing here ships into the runtime image — these are
 configuration files for your Prometheus server and Grafana instance.
 
+## Quickstart (recommended)
+
+Run Prometheus + Grafana in the **same compose project** as vectoria
+so they can scrape `app:8000` and `worker:9001` by service name:
+
+```bash
+cd /path/to/vectoria
+docker compose \
+  -f compose.yaml -f compose.prod.yaml \
+  -f monitoring/compose.monitoring.yaml \
+  --env-file .env.prod \
+  up -d prometheus grafana
+```
+
+That brings up:
+- **Prometheus** on `http://<host>:9090` (loopback by default — see
+  `PROM_BIND` env var if you need remote access; it has no auth, so
+  front with an auth proxy before exposing)
+- **Grafana** on `http://<host>:3000` (admin/admin; change immediately
+  or set `GF_ADMIN_PASSWORD` in the env). The Vectoria dashboard
+  auto-provisions into the "Vectoria" folder.
+
+Both dashboard + rules hot-reload from disk. Edit
+`monitoring/prometheus-rules.yaml` and:
+
+```bash
+curl -X POST http://127.0.0.1:9090/-/reload
+```
+
 ## Files
 
 | File | Purpose |
 |------|---------|
-| `prometheus-rules.yaml` | 10 alert rules covering queue, worker, parser, external APIs, and rate-limit degradation. Add to Prometheus via `rule_files:`. |
-| `grafana-dashboard.json` | Baseline dashboard: queue depth/age/DLQ, worker RSS + task rate, parser latency + status, circuit breakers + external API health, rate-limit decisions. Import via Grafana UI. |
+| `compose.monitoring.yaml` | Compose overlay that brings up Prometheus + Grafana wired into the vectoria stack. |
+| `prometheus.yaml` | Prometheus config: scrape `app:8000` + `worker:9001`, load `rules.yaml`. |
+| `prometheus-rules.yaml` | 11 alert rules covering queue, worker, parser, external APIs, and rate-limit degradation. |
+| `grafana/provisioning/datasources/prom.yaml` | Auto-configures the Prometheus datasource in Grafana. |
+| `grafana/provisioning/dashboards/provider.yaml` | Tells Grafana to pick up dashboards from `/var/lib/grafana/dashboards` inside the container. |
+| `grafana/dashboards/vectoria.json` | The Vectoria dashboard (auto-loaded). |
+| `grafana-dashboard.json` | Same dashboard as a standalone reference — import manually into an existing Grafana via UI when you don't want to run our stack. |
 
 ## Layering
 

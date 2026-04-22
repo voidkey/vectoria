@@ -1,0 +1,90 @@
+# Monitoring stack: Prometheus + Grafana wired into the main vectoria
+# compose network so they can scrape app:8000 and worker:9001 by
+# service name.
+#
+# Usage (on deploy-host / any host running the main stack):
+#
+#   cd /root/app/src/vectoria
+#   docker compose \
+#     -f compose.yaml -f compose.prod.yaml \
+#     -f monitoring/compose.monitoring.yaml \
+#     --env-file .env.prod \
+#     up -d prometheus grafana
+#
+# Or to run them in a separate project that joins the main network:
+#
+#   docker compose -f monitoring/compose.monitoring.yaml -p vectoria-mon up -d
+#
+# Grafana defaults:
+#   * URL:   http://<host>:3000
+#   * Login: admin / admin  (change after first login; or set
+#            GF_SECURITY_ADMIN_PASSWORD in the env)
+#   * Prometheus datasource + Vectoria dashboard auto-provisioned.
+#
+# Prometheus URL (no auth — keep bound to loopback unless you front it
+# with an auth proxy):
+#   * http://127.0.0.1:9090
+
+services:
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    restart: unless-stopped
+    volumes:
+      # Config + rules are mounted read-only; edits on disk hot-reload
+      # via the /-/reload endpoint (no container restart).
+      - ./monitoring/prometheus.yaml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/prometheus-rules.yaml:/etc/prometheus/rules.yaml:ro
+      - vectoria_prom_data:/prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=30d
+      - --web.enable-lifecycle
+    ports:
+      # Loopback-only by default — Prometheus has no auth. Override
+      # PROM_BIND=0.0.0.0 once a proper auth proxy is in front.
+      - "${PROM_BIND:-127.0.0.1}:9090:9090"
+    networks:
+      - default
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:9090/-/ready"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+
+  grafana:
+    image: grafana/grafana:11.2.0
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GF_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GF_ADMIN_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      # Install no external plugins; keep boot fast + supply chain small.
+      GF_INSTALL_PLUGINS: ""
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      # Mount a single dashboards dir; the provider config picks up any
+      # .json in it. We reuse the existing flat grafana-dashboard.json
+      # without moving files — the ``:ro`` mount is directory-scoped so
+      # only that one file is visible inside the container.
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - vectoria_grafana_data:/var/lib/grafana
+    ports:
+      - "${GRAFANA_BIND:-0.0.0.0}:3000:3000"
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    networks:
+      - default
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:3000/api/health || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+
+volumes:
+  vectoria_prom_data:
+    name: vectoria_prom_data
+  vectoria_grafana_data:
+    name: vectoria_grafana_data
