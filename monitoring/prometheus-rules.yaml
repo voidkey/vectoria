@@ -69,26 +69,14 @@ groups:
   - name: vectoria.worker
     rules:
 
-      - alert: VectoriaWorkerRssNearLimit
-        # Fire when a worker sits above 80% of its configured cap for
-        # 2 minutes. The self-kill at 100% is defensive; the alert
-        # catches creep before the restart happens so ops can
-        # proactively correlate with load.
-        expr: |
-          vectoria_worker_rss_bytes
-          / on() group_left () scalar(max(vectoria_worker_rss_bytes))
-          > 0.8
-        for: 2m
-        labels:
-          severity: warning
-          component: worker
-        annotations:
-          summary: "Worker RSS > 80% of observed peak"
-          description: >
-            Worker resident memory is approaching its self-kill
-            threshold. Likely cause: a large document in-flight or a
-            parser leaking. If this persists past one task cycle,
-            check the parse_duration histogram for the heavy engines.
+      # Removed: VectoriaWorkerRssNearLimit. The intended expression
+      # needed the configured self-kill cap as a metric to compare
+      # against; without that, the previous formulation (dividing by
+      # ``max(rss_bytes)``) always evaluated to 1.0 for a single-worker
+      # deploy and fired permanently. Ongoing self-kills
+      # (VectoriaWorkerRssKillsOngoing below) cover the "RSS cap is
+      # being hit" case reliably. Bring this alert back with a real
+      # cap-metric once worker_rss_limit_bytes is exported.
 
       - alert: VectoriaWorkerRssKillsOngoing
         # Any RSS self-kill in the last hour is worth surfacing —
