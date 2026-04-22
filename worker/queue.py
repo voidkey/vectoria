@@ -198,8 +198,18 @@ async def reap_dead_tasks() -> int:
         return len(dead_ids)
 
 
+# Task types we've ever observed in a DLQ gauge sample. Tracked so we
+# can re-emit ``0`` for any type that dropped to zero between samples
+# — otherwise the gauge retains its last non-zero value forever and
+# ``vectoria_queue_dead_tasks > 0`` alerts never clear after operator
+# cleanup. Module-level because sample_queue_metrics runs from a loop,
+# not a class instance.
+_SEEN_DEAD_TYPES: set[str] = set()
+
+
 async def sample_queue_metrics() -> None:
-    """Update ``QUEUE_DEPTH`` and ``QUEUE_OLDEST_AGE_SECONDS`` gauges.
+    """Update ``QUEUE_DEPTH``, ``QUEUE_OLDEST_AGE_SECONDS``, and
+    ``QUEUE_DEAD_TASKS`` gauges.
 
     One aggregated SELECT per call per worker. Cheap enough to run every
     few polling iterations in the worker loop — not on every 1 s tick.
@@ -224,25 +234,23 @@ async def sample_queue_metrics() -> None:
 
         # Separate pass for dead tasks so the pending-query index (on
         # status='pending') can't be misread as "all statuses". The
-        # dead table is small-cardinality in practice — once the
-        # breaker retries exhaust, those rows sit there until ops
-        # intervenes.
+        # dead table is small-cardinality in practice — once retries
+        # exhaust, those rows sit there until ops intervenes.
         dead_result = await session.execute(
             select(Task.task_type, func.count(Task.id))
             .where(Task.status == "dead")
             .group_by(Task.task_type)
         )
-        seen_types: set[str] = set()
-        for task_type, count in dead_result.all():
+        current: dict[str, int] = dict(dead_result.all())
+        # Re-zero previously-seen types that dropped to zero so the
+        # gauge reflects reality and alerts resolve. Without this the
+        # gauge keeps its last non-zero value and downstream
+        # ``> 0`` alerts stay firing forever.
+        for task_type in _SEEN_DEAD_TYPES - current.keys():
+            QUEUE_DEAD_TASKS.labels(task_type=task_type).set(0)
+        for task_type, count in current.items():
             QUEUE_DEAD_TASKS.labels(task_type=task_type).set(count)
-            seen_types.add(task_type)
-        # A task_type whose dead count just dropped to zero still needs
-        # its gauge re-zeroed so alerts clear; we can't know the full
-        # type universe without another query, so rely on prometheus's
-        # "absent for resolve" semantics at the alert level. This gauge
-        # only re-emits non-zero types; operators must use
-        # ``absent(vectoria_queue_dead_tasks{task_type="..."})`` or
-        # track the delta to clear alerts.
+            _SEEN_DEAD_TYPES.add(task_type)
 
 
 async def fail(task_id: str, error: str) -> None:
