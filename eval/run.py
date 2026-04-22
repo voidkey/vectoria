@@ -135,6 +135,10 @@ async def _run_query(
         "top_k": top_k,
         "rerank": rerank,
         "query_rewrite": query_rewrite,
+        # Eval only scores retrieval — skip the ~8 s LLM answer
+        # generation so a full run drops from ~11 min to under a
+        # minute. ``sources`` is still populated.
+        "retrieve_only": True,
     }
     headers = {"X-API-Key": api_key}
     t0 = time.monotonic()

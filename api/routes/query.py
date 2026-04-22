@@ -7,6 +7,7 @@ from api.schemas import QueryRequest, QueryResponse
 from config import get_settings
 from rag.embedder import get_embedder
 from rag.pipeline import build_default_pipeline
+from rag.steps.generate import GenerateStep
 from rag.steps.query_rewrite import QueryRewriteStep
 from rag.steps.rerank import RerankStep
 from vectorstore.pgvector import PgVectorStore
@@ -48,15 +49,31 @@ async def query_kb(kb_id: str, body: QueryRequest):
         llm_client=_get_llm_client(), rerank_client=_get_rerank_client(),
     )
 
-    # Apply per-request overrides
-    if not body.query_rewrite:
-        for step in pipeline.steps:
-            if isinstance(step, QueryRewriteStep):
-                step.enabled = False
-    if body.rerank:
-        for step in pipeline.steps:
-            if isinstance(step, RerankStep):
-                step.enabled = True
+    # Apply per-request overrides. The default pipeline config lives
+    # in ``build_default_pipeline`` + ``Settings``; this block lets a
+    # caller flip behavior per request without touching config.
+    for step in pipeline.steps:
+        if isinstance(step, QueryRewriteStep) and not body.query_rewrite:
+            step.enabled = False
+        elif isinstance(step, RerankStep) and body.rerank:
+            step.enabled = True
+        elif isinstance(step, GenerateStep) and body.retrieve_only:
+            # retrieve_only skips LLM answer generation entirely —
+            # sources still populate but answer stays empty. Eval
+            # and "raw retrieval for custom prompting" use this.
+            step.enabled = False
 
     ctx = await pipeline.run(body.query, kb_id=kb_id, top_k=body.top_k)
-    return QueryResponse(answer=ctx.answer, sources=ctx.sources)
+
+    # GenerateStep owns the sources-from-final_results conversion; when
+    # it's skipped (retrieve_only) we populate the same shape here so
+    # the response contract doesn't change — callers always get
+    # ``sources`` regardless of whether the LLM ran.
+    sources = ctx.sources
+    if body.retrieve_only and not sources and ctx.final_results:
+        sources = [
+            {"chunk_id": r.chunk_id, "content": r.content,
+             "score": r.score, "doc_id": r.doc_id}
+            for r in ctx.final_results
+        ]
+    return QueryResponse(answer=ctx.answer, sources=sources)

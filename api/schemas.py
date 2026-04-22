@@ -107,7 +107,19 @@ class QueryRequest(BaseModel):
     query: str = Field(..., min_length=1, max_length=2000)
     top_k: int = Field(default=5, ge=1, le=100)
     rerank: bool = False
-    query_rewrite: bool = True
+    # Default flipped to False in W6-8 after eval/reports/baseline-2026-04-22.json
+    # showed the LLM-driven query rewrite dropped CJK hit@1 from 0.70
+    # → 0.55 on the deploy-host Jaspers KB. Left as a per-request opt-in for
+    # cases where the caller has evidence it helps (very short queries,
+    # non-Chinese traffic, …).
+    query_rewrite: bool = False
+    # When True, skip the LLM answer generation and return an empty
+    # ``answer`` field; ``sources`` still contains the retrieved chunks.
+    # Used by the retrieval evaluation harness (eval/run.py) so one
+    # eval cycle drops from ~11 min to under a minute. End users who
+    # want to build their own prompts on top of raw retrieval can also
+    # opt in.
+    retrieve_only: bool = False
 
 
 class QueryResponse(BaseModel):

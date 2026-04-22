@@ -128,7 +128,13 @@ class Settings(BaseSettings):
     jwt_issuer: str = ""
 
     # RAG pipeline toggles
-    enable_query_rewrite: bool = True
+    # Query rewrite: ``eval/reports/baseline-2026-04-22.json`` showed
+    # the LLM rewriter drops CJK hit@1 from 0.70 → 0.55 on real
+    # philosophy-text queries; 5/20 queries miss entirely with
+    # rewrite on. Leaving the knob in place for opt-in experimentation
+    # (short queries / English traffic may behave differently) but
+    # the default is off.
+    enable_query_rewrite: bool = False
     enable_reranker: bool = False
     reranker_base_url: str = ""
 

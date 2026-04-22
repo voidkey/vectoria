@@ -64,7 +64,7 @@
       "datasource": {"type": "prometheus", "uid": "Prometheus"},
       "targets": [{
         "refId": "A",
-        "expr": "vectoria_worker_rss_bytes / clamp_min(vectoria_worker_rss_limit_bytes, 1)"
+        "expr": "vectoria_worker_rss_bytes / (vectoria_worker_rss_limit_bytes > 0)"
       }],
       "fieldConfig": {
         "defaults": {"unit": "percentunit", "min": 0, "max": 1, "thresholds": {"mode": "absolute", "steps": [
