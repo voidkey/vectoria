@@ -7,4 +7,5 @@ data/
 dist/
 *.egg-info/
 .pytest_cache/
-docs/superpowers/.claude/scheduled_tasks.lock
+docs/superpowers/
+.claude/scheduled_tasks.lock
