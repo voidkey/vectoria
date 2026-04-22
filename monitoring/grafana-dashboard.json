@@ -1,0 +1,242 @@
+{
+  "__description": "Import via Grafana UI → Dashboards → New → Import → upload JSON. Requires a Prometheus datasource named 'Prometheus' (adjust in datasource blocks if yours is named differently). Panels are laid out in a 12-column grid. Extend by duplicating the panel blocks and adjusting PromQL.",
+  "title": "Vectoria — Ingest & Retrieval",
+  "uid": "vectoria-core",
+  "tags": ["vectoria", "rag"],
+  "timezone": "browser",
+  "schemaVersion": 38,
+  "refresh": "30s",
+  "time": {"from": "now-1h", "to": "now"},
+  "panels": [
+
+    {
+      "id": 1,
+      "type": "row",
+      "title": "Queue",
+      "gridPos": {"x": 0, "y": 0, "w": 24, "h": 1}
+    },
+
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Queue depth by task_type",
+      "gridPos": {"x": 0, "y": 1, "w": 12, "h": 8},
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "targets": [
+        {
+          "expr": "vectoria_queue_depth",
+          "legendFormat": "{{task_type}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "short"}}
+    },
+
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "Oldest pending task age (s)",
+      "gridPos": {"x": 12, "y": 1, "w": 8, "h": 8},
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "targets": [
+        {
+          "expr": "vectoria_queue_oldest_age_seconds",
+          "legendFormat": "{{task_type}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "s"}}
+    },
+
+    {
+      "id": 12,
+      "type": "stat",
+      "title": "Dead tasks (DLQ)",
+      "gridPos": {"x": 20, "y": 1, "w": 4, "h": 8},
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "targets": [
+        {
+          "expr": "sum(vectoria_queue_dead_tasks)",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null},
+              {"color": "red", "value": 1}
+            ]
+          }
+        }
+      }
+    },
+
+    {
+      "id": 2,
+      "type": "row",
+      "title": "Worker",
+      "gridPos": {"x": 0, "y": 9, "w": 24, "h": 1}
+    },
+
+    {
+      "id": 20,
+      "type": "timeseries",
+      "title": "Worker RSS (bytes)",
+      "gridPos": {"x": 0, "y": 10, "w": 12, "h": 8},
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "targets": [{"expr": "vectoria_worker_rss_bytes", "refId": "A"}],
+      "fieldConfig": {"defaults": {"unit": "bytes"}}
+    },
+
+    {
+      "id": 21,
+      "type": "timeseries",
+      "title": "Task rate by status",
+      "gridPos": {"x": 12, "y": 10, "w": 12, "h": 8},
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "targets": [
+        {
+          "expr": "sum by (status) (rate(vectoria_tasks_total[5m]))",
+          "legendFormat": "{{status}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "ops"}}
+    },
+
+    {
+      "id": 3,
+      "type": "row",
+      "title": "Parser",
+      "gridPos": {"x": 0, "y": 18, "w": 24, "h": 1}
+    },
+
+    {
+      "id": 30,
+      "type": "timeseries",
+      "title": "Parse p95 (s) by engine",
+      "gridPos": {"x": 0, "y": 19, "w": 12, "h": 8},
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (engine, le) (rate(vectoria_parse_duration_seconds_bucket[5m])))",
+          "legendFormat": "{{engine}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "s"}}
+    },
+
+    {
+      "id": 31,
+      "type": "timeseries",
+      "title": "Parse status rate by engine",
+      "gridPos": {"x": 12, "y": 19, "w": 12, "h": 8},
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "targets": [
+        {
+          "expr": "sum by (engine, status) (rate(vectoria_parse_duration_seconds_count[5m]))",
+          "legendFormat": "{{engine}} {{status}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "ops"}}
+    },
+
+    {
+      "id": 4,
+      "type": "row",
+      "title": "External APIs",
+      "gridPos": {"x": 0, "y": 27, "w": 24, "h": 1}
+    },
+
+    {
+      "id": 40,
+      "type": "timeseries",
+      "title": "Circuit breaker state (0=closed 1=half 2=open)",
+      "gridPos": {"x": 0, "y": 28, "w": 8, "h": 8},
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "targets": [
+        {
+          "expr": "vectoria_circuit_state",
+          "legendFormat": "{{name}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {"defaults": {"min": 0, "max": 2}}
+    },
+
+    {
+      "id": 41,
+      "type": "timeseries",
+      "title": "External API p95 latency (s)",
+      "gridPos": {"x": 8, "y": 28, "w": 8, "h": 8},
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (api, le) (rate(vectoria_external_api_duration_seconds_bucket[5m])))",
+          "legendFormat": "{{api}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "s"}}
+    },
+
+    {
+      "id": 42,
+      "type": "timeseries",
+      "title": "External API error rate",
+      "gridPos": {"x": 16, "y": 28, "w": 8, "h": 8},
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "targets": [
+        {
+          "expr": "sum by (api) (rate(vectoria_external_api_calls_total{status!=\"success\"}[5m])) / ignoring(status) group_left sum by (api) (rate(vectoria_external_api_calls_total[5m]))",
+          "legendFormat": "{{api}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "percentunit", "min": 0, "max": 1}}
+    },
+
+    {
+      "id": 5,
+      "type": "row",
+      "title": "Rate limiting",
+      "gridPos": {"x": 0, "y": 36, "w": 24, "h": 1}
+    },
+
+    {
+      "id": 50,
+      "type": "timeseries",
+      "title": "Rate limit decisions (result)",
+      "gridPos": {"x": 0, "y": 37, "w": 12, "h": 8},
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "targets": [
+        {
+          "expr": "sum by (result) (rate(vectoria_ratelimit_checks_total[5m]))",
+          "legendFormat": "{{result}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "ops"}}
+    },
+
+    {
+      "id": 51,
+      "type": "timeseries",
+      "title": "Blocked rate by key",
+      "gridPos": {"x": 12, "y": 37, "w": 12, "h": 8},
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "targets": [
+        {
+          "expr": "sum by (key) (rate(vectoria_ratelimit_checks_total{result=\"blocked\"}[5m]))",
+          "legendFormat": "{{key}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "ops"}}
+    }
+  ]
+}

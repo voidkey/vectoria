@@ -1,0 +1,237 @@
+# Prometheus alerting rules for vectoria.
+#
+# Scope: operational alerts that a human should act on. Rules fire on
+# sustained conditions (``for:``) rather than spikes so transient blips
+# (redeploys, GC pauses, cold starts) don't page. Thresholds are tuned
+# for a single-node test/prod deploy; multi-instance fleets may want
+# to aggregate with ``sum by (instance)`` first.
+#
+# Drop into a Prometheus rule_files: directive:
+#
+#   rule_files:
+#     - /etc/prometheus/vectoria-rules.yaml
+#
+# Then hot-reload with ``curl -XPOST http://prom:9090/-/reload`` or
+# SIGHUP — changes take effect without restart.
+groups:
+
+  # ---------------------------------------------------------------
+  # Queue health
+  # ---------------------------------------------------------------
+  - name: vectoria.queue
+    rules:
+
+      - alert: VectoriaQueueBacklogGrowing
+        expr: vectoria_queue_depth > 50
+        for: 5m
+        labels:
+          severity: warning
+          component: queue
+        annotations:
+          summary: "Queue depth elevated for {{ $labels.task_type }}"
+          description: >
+            vectoria_queue_depth{task_type="{{ $labels.task_type }}"}
+            has been above 50 for 5 minutes. Workers may be stuck or
+            outpaced. Check worker logs, RSS, and external-API
+            circuit state.
+
+      - alert: VectoriaQueueTaskAging
+        expr: vectoria_queue_oldest_age_seconds > 600
+        for: 2m
+        labels:
+          severity: warning
+          component: queue
+        annotations:
+          summary: "Oldest {{ $labels.task_type }} task >10min old"
+          description: >
+            A task of type {{ $labels.task_type }} has been pending
+            more than 10 minutes. Typical parses complete in seconds;
+            aging indicates a stuck worker or starvation (check
+            tier=heavy pool for a runaway docling / mineru call).
+
+      - alert: VectoriaDeadTaskAccumulating
+        expr: vectoria_queue_dead_tasks > 0
+        for: 1m
+        labels:
+          severity: warning
+          component: queue
+        annotations:
+          summary: "Dead-letter tasks present for {{ $labels.task_type }}"
+          description: >
+            vectoria_queue_dead_tasks{task_type="{{ $labels.task_type }}"}
+            is {{ $value }}. These exhausted max_attempts and need
+            operator triage — inspect ``SELECT * FROM tasks WHERE
+            status='dead'`` and decide whether to requeue or delete.
+
+  # ---------------------------------------------------------------
+  # Worker resource health
+  # ---------------------------------------------------------------
+  - name: vectoria.worker
+    rules:
+
+      - alert: VectoriaWorkerRssNearLimit
+        # Fire when a worker sits above 80% of its configured cap for
+        # 2 minutes. The self-kill at 100% is defensive; the alert
+        # catches creep before the restart happens so ops can
+        # proactively correlate with load.
+        expr: |
+          vectoria_worker_rss_bytes
+          / on() group_left () scalar(max(vectoria_worker_rss_bytes))
+          > 0.8
+        for: 2m
+        labels:
+          severity: warning
+          component: worker
+        annotations:
+          summary: "Worker RSS > 80% of observed peak"
+          description: >
+            Worker resident memory is approaching its self-kill
+            threshold. Likely cause: a large document in-flight or a
+            parser leaking. If this persists past one task cycle,
+            check the parse_duration histogram for the heavy engines.
+
+      - alert: VectoriaWorkerRssKillsOngoing
+        # Any RSS self-kill in the last hour is worth surfacing —
+        # self-kill is a last-resort backstop, not a routine event.
+        expr: increase(vectoria_worker_rss_kills_total[1h]) > 0
+        labels:
+          severity: warning
+          component: worker
+        annotations:
+          summary: "Worker self-killed on RSS limit"
+          description: >
+            {{ $value }} worker self-kill(s) in the last hour.
+            Either the memory cap is too tight for current traffic,
+            or a specific parse is leaking. Identify the task_type
+            that preceded the kill via
+            vectoria_task_duration_seconds.
+
+  # ---------------------------------------------------------------
+  # External dependencies
+  # ---------------------------------------------------------------
+  - name: vectoria.external
+    rules:
+
+      - alert: VectoriaCircuitOpen
+        # circuit_state: 0=closed, 1=half_open, 2=open. Open >1 min
+        # means the automatic recovery probe is failing repeatedly.
+        expr: vectoria_circuit_state == 2
+        for: 1m
+        labels:
+          severity: critical
+          component: external
+        annotations:
+          summary: "Circuit {{ $labels.name }} is OPEN"
+          description: >
+            The {{ $labels.name }} circuit breaker opened. Downstream
+            calls short-circuit until the reset timer probes success.
+            Check the external service (mineru, vision API, embedding
+            endpoint) — if it's genuinely down, the breaker is doing
+            its job.
+
+      - alert: VectoriaExternalAPIErrorRate
+        expr: |
+          sum by (api) (
+            rate(vectoria_external_api_calls_total{status!="success"}[5m])
+          )
+          / ignoring(status) group_left
+          sum by (api) (
+            rate(vectoria_external_api_calls_total[5m])
+          ) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+          component: external
+        annotations:
+          summary: "{{ $labels.api }} error rate > 10%"
+          description: >
+            External API {{ $labels.api }} has >10% error rate over
+            the last 5 minutes. If sustained, the circuit breaker
+            will open.
+
+  # ---------------------------------------------------------------
+  # Parser health
+  # ---------------------------------------------------------------
+  - name: vectoria.parser
+    rules:
+
+      - alert: VectoriaParseErrorRate
+        expr: |
+          sum by (engine) (
+            rate(vectoria_parse_duration_seconds_count{status="error"}[10m])
+          )
+          / ignoring(status) group_left
+          sum by (engine) (
+            rate(vectoria_parse_duration_seconds_count[10m])
+          ) > 0.2
+        for: 10m
+        labels:
+          severity: warning
+          component: parser
+        annotations:
+          summary: "{{ $labels.engine }} parse error rate > 20%"
+          description: >
+            Parser {{ $labels.engine }} is failing >20% of calls.
+            Check the parser's subprocess pool tier — a stuck child
+            process can also surface here as timeouts.
+
+      - alert: VectoriaParseTimeoutSpike
+        expr: |
+          sum(rate(vectoria_parse_duration_seconds_count{status="timeout"}[15m]))
+          > 0
+        for: 5m
+        labels:
+          severity: warning
+          component: parser
+        annotations:
+          summary: "Parse timeouts observed"
+          description: >
+            Isolation-pool timeouts in the last 15 minutes. The pool
+            is being recycled on each timeout but the upstream source
+            (large or malformed file, hung docling/mineru call) is
+            still a user-visible failure.
+
+  # ---------------------------------------------------------------
+  # Rate limiting / Redis
+  # ---------------------------------------------------------------
+  - name: vectoria.ratelimit
+    rules:
+
+      - alert: VectoriaRateLimitDegraded
+        # Sustained local_fallback → Redis is unreachable, per-process
+        # buckets are active. Not immediately user-impacting (fail-open),
+        # but cross-worker coordination is lost and CDN bans become
+        # more likely if traffic is heavy.
+        expr: |
+          sum(rate(vectoria_ratelimit_checks_total{result="local_fallback"}[5m]))
+          > 0
+        for: 5m
+        labels:
+          severity: warning
+          component: ratelimit
+        annotations:
+          summary: "Rate limiter fell back to per-process buckets"
+          description: >
+            Redis has been unreachable for >5 minutes; each worker is
+            rate-limiting independently. Check vectoria-redis-1
+            container health and the limits.aio storage URL config.
+
+      - alert: VectoriaRateLimitBlockedSpike
+        # Sustained ``blocked`` spikes on a specific key indicate a
+        # hot CDN (xhs/qpic/pbs.twimg) is throttling us. Not a bug
+        # per se; operators want to know so they can tune the
+        # per-domain bucket in parsers/url/_handlers.py.
+        expr: |
+          sum by (key) (rate(vectoria_ratelimit_checks_total{result="blocked"}[10m]))
+          > 0.1
+        for: 10m
+        labels:
+          severity: info
+          component: ratelimit
+        annotations:
+          summary: "Frequent rate-limit blocks for key={{ $labels.key }}"
+          description: >
+            Image downloads for {{ $labels.key }} are being gated
+            regularly. Consider raising the per-domain rate in
+            parsers/url/_handlers.py if this CDN accepts higher
+            sustained traffic without banning.
