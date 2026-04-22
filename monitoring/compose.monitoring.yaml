@@ -67,6 +67,14 @@ services:
       GF_AUTH_ANONYMOUS_ENABLED: "false"
       # Install no external plugins; keep boot fast + supply chain small.
       GF_INSTALL_PLUGINS: ""
+      # Postgres datasource connection — wired through so the
+      # vectoria-badcases dashboard can query the documents table. In
+      # prod, create a dedicated readonly role and set GRAFANA_DB_USER/
+      # GRAFANA_DB_PASSWORD; dev falls back to the main Postgres creds.
+      VECTORIA_DB_HOST: ${POSTGRES_HOST:-db}
+      VECTORIA_DB_NAME: ${POSTGRES_DB:-vectoria}
+      VECTORIA_DB_USER: ${GRAFANA_DB_USER:-${POSTGRES_USER:-postgres}}
+      VECTORIA_DB_PASSWORD: ${GRAFANA_DB_PASSWORD:-${POSTGRES_PASSWORD:-postgres}}
     volumes:
       - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
       # Mount a single dashboards dir; the provider config picks up any

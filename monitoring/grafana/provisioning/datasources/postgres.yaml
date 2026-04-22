@@ -1,0 +1,31 @@
+# Postgres datasource for the vectoria-badcases dashboard. Values are
+# populated via env-var expansion from the grafana service in
+# compose.monitoring.yaml — NO plaintext credentials in this file.
+#
+# In prod, create a readonly role:
+#
+#   CREATE ROLE grafana_ro LOGIN PASSWORD '...';
+#   GRANT CONNECT ON DATABASE vectoria TO grafana_ro;
+#   GRANT USAGE ON SCHEMA public TO grafana_ro;
+#   GRANT SELECT ON documents, knowledge_bases TO grafana_ro;
+#
+# and set GRAFANA_DB_USER=grafana_ro, GRAFANA_DB_PASSWORD=... in .env.prod.
+# Dev just reuses POSTGRES_USER. Grafana needs ``enable_feature_toggle``
+# on env-var expansion, which is on by default since 10.3.
+apiVersion: 1
+
+datasources:
+  - name: Vectoria-DB
+    uid: vectoria-db
+    type: postgres
+    access: proxy
+    url: $VECTORIA_DB_HOST:5432
+    user: $VECTORIA_DB_USER
+    database: $VECTORIA_DB_NAME
+    secureJsonData:
+      password: $VECTORIA_DB_PASSWORD
+    jsonData:
+      sslmode: disable        # compose-internal traffic, no TLS needed
+      postgresVersion: 1600   # pg16 — enables newer SQL features in query editor
+      timescaledb: false
+    editable: false           # provisioned datasources shouldn't be mutated in UI

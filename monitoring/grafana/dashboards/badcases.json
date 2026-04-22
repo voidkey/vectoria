@@ -1,0 +1,125 @@
+{
+  "__description": "Failed-ingest drilldown. Row 1: summary + breakdowns. Row 2: failure time series + top engines. Row 3: recent sample rows (click a row to copy doc_id/source for repro). Time range controls at top-right filter every panel. Default: last 24h. Uses the provisioned Vectoria-DB postgres datasource (see provisioning/datasources/postgres.yaml).",
+  "title": "Vectoria — Bad Cases",
+  "uid": "vectoria-badcases",
+  "tags": ["vectoria", "badcases", "rag"],
+  "timezone": "browser",
+  "schemaVersion": 38,
+  "refresh": "5m",
+  "time": {"from": "now-24h", "to": "now"},
+  "panels": [
+
+    {"id": 100, "type": "row", "title": "Summary", "gridPos": {"x": 0, "y": 0, "w": 24, "h": 1}},
+
+    {
+      "id": 101, "type": "stat",
+      "title": "失败样本总数",
+      "gridPos": {"x": 0, "y": 1, "w": 4, "h": 4},
+      "datasource": {"type": "postgres", "uid": "vectoria-db"},
+      "targets": [{
+        "refId": "A",
+        "format": "table",
+        "rawSql": "SELECT COUNT(*) AS value FROM documents WHERE status='failed' AND $__timeFilter(created_at)"
+      }],
+      "fieldConfig": {"defaults": {"unit": "short", "thresholds": {"mode": "absolute", "steps": [
+        {"color": "green", "value": null}, {"color": "orange", "value": 20}, {"color": "red", "value": 100}
+      ]}}}
+    },
+
+    {
+      "id": 102, "type": "stat",
+      "title": "入库成功率",
+      "gridPos": {"x": 4, "y": 1, "w": 4, "h": 4},
+      "datasource": {"type": "postgres", "uid": "vectoria-db"},
+      "targets": [{
+        "refId": "A",
+        "format": "table",
+        "rawSql": "SELECT CASE WHEN COUNT(*) = 0 THEN NULL ELSE SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END)::float / COUNT(*) END AS value FROM documents WHERE status IN ('completed','failed') AND $__timeFilter(created_at)"
+      }],
+      "fieldConfig": {"defaults": {"unit": "percentunit", "min": 0, "max": 1, "thresholds": {"mode": "absolute", "steps": [
+        {"color": "red", "value": null}, {"color": "orange", "value": 0.8}, {"color": "green", "value": 0.95}
+      ]}}}
+    },
+
+    {
+      "id": 103, "type": "bargauge",
+      "title": "按错误类型",
+      "gridPos": {"x": 8, "y": 1, "w": 8, "h": 4},
+      "datasource": {"type": "postgres", "uid": "vectoria-db"},
+      "targets": [{
+        "refId": "A",
+        "format": "table",
+        "rawSql": "SELECT COALESCE(error_type, 'unclassified') AS metric, COUNT(*) AS value FROM documents WHERE status='failed' AND $__timeFilter(created_at) GROUP BY error_type ORDER BY value DESC"
+      }],
+      "options": {"orientation": "horizontal", "displayMode": "gradient"},
+      "fieldConfig": {"defaults": {"unit": "short"}}
+    },
+
+    {
+      "id": 104, "type": "bargauge",
+      "title": "按解析引擎",
+      "gridPos": {"x": 16, "y": 1, "w": 8, "h": 4},
+      "datasource": {"type": "postgres", "uid": "vectoria-db"},
+      "targets": [{
+        "refId": "A",
+        "format": "table",
+        "rawSql": "SELECT NULLIF(parse_engine, '') AS metric, COUNT(*) AS value FROM documents WHERE status='failed' AND $__timeFilter(created_at) GROUP BY parse_engine ORDER BY value DESC"
+      }],
+      "options": {"orientation": "horizontal", "displayMode": "gradient"},
+      "fieldConfig": {"defaults": {"unit": "short"}}
+    },
+
+    {"id": 200, "type": "row", "title": "Trends", "gridPos": {"x": 0, "y": 5, "w": 24, "h": 1}},
+
+    {
+      "id": 201, "type": "timeseries",
+      "title": "失败数量（按错误类型）",
+      "gridPos": {"x": 0, "y": 6, "w": 16, "h": 8},
+      "datasource": {"type": "postgres", "uid": "vectoria-db"},
+      "targets": [{
+        "refId": "A",
+        "format": "time_series",
+        "rawSql": "SELECT $__timeGroup(created_at, '1h') AS time, COALESCE(error_type, 'unclassified') AS metric, COUNT(*) AS value FROM documents WHERE status='failed' AND $__timeFilter(created_at) GROUP BY 1, 2 ORDER BY 1"
+      }],
+      "fieldConfig": {"defaults": {"unit": "short"}}
+    },
+
+    {
+      "id": 202, "type": "table",
+      "title": "Top 出问题的来源域名（仅 URL 样本）",
+      "gridPos": {"x": 16, "y": 6, "w": 8, "h": 8},
+      "datasource": {"type": "postgres", "uid": "vectoria-db"},
+      "targets": [{
+        "refId": "A",
+        "format": "table",
+        "rawSql": "SELECT SUBSTRING(source FROM '^(?:https?://)?([^/]+)') AS domain, COUNT(*) AS failures FROM documents WHERE status='failed' AND source LIKE 'http%' AND $__timeFilter(created_at) GROUP BY 1 ORDER BY failures DESC LIMIT 10"
+      }],
+      "fieldConfig": {"defaults": {}}
+    },
+
+    {"id": 300, "type": "row", "title": "Sample Failures (最近案例)", "gridPos": {"x": 0, "y": 14, "w": 24, "h": 1}},
+
+    {
+      "id": 301, "type": "table",
+      "title": "失败样本列表（点任意行复制字段用于复现）",
+      "gridPos": {"x": 0, "y": 15, "w": 24, "h": 16},
+      "datasource": {"type": "postgres", "uid": "vectoria-db"},
+      "targets": [{
+        "refId": "A",
+        "format": "table",
+        "rawSql": "SELECT created_at AS time, parse_engine AS engine, COALESCE(error_type,'?') AS error_type, CASE WHEN source LIKE 'http%' THEN LEFT(source, 80) ELSE COALESCE(NULLIF(title,''), source) END AS source, LEFT(error_msg, 120) AS error_msg, id AS doc_id, kb_id FROM documents WHERE status='failed' AND $__timeFilter(created_at) ORDER BY created_at DESC LIMIT 200"
+      }],
+      "fieldConfig": {
+        "defaults": {"custom": {"align": "left"}},
+        "overrides": [
+          {"matcher": {"id": "byName", "options": "error_type"}, "properties": [{"id": "custom.width", "value": 120}]},
+          {"matcher": {"id": "byName", "options": "engine"}, "properties": [{"id": "custom.width", "value": 100}]},
+          {"matcher": {"id": "byName", "options": "time"}, "properties": [{"id": "custom.width", "value": 170}]},
+          {"matcher": {"id": "byName", "options": "doc_id"}, "properties": [{"id": "custom.width", "value": 280}]}
+        ]
+      },
+      "options": {"showHeader": true, "sortBy": [{"displayName": "time", "desc": true}]}
+    }
+
+  ]
+}

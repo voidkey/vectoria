@@ -13,6 +13,7 @@ These are the same operations that previously ran inside
 
 import asyncio
 import logging
+import traceback
 
 from sqlalchemy import select
 
@@ -116,6 +117,8 @@ async def handle_parse_document(payload: dict) -> None:
         await update_doc(
             doc_id, status="failed",
             error_msg=f"Parsing failed: {e}"[:500],
+            error_type="parse_error",
+            error_trace=traceback.format_exc(),
         )
         raise  # re-raise → queue handles retry/backoff/dead-letter
 
@@ -134,6 +137,7 @@ async def handle_parse_document(payload: dict) -> None:
         await update_doc(
             doc_id, status="failed",
             error_msg="Parsing returned empty content",
+            error_type="empty_content",
         )
         return
 
@@ -149,6 +153,7 @@ async def handle_parse_document(payload: dict) -> None:
             error_msg=(
                 f"Parsed content exceeds {cfg.max_content_chars} characters"
             ),
+            error_type="too_large",
         )
         return
 
@@ -161,7 +166,8 @@ async def handle_parse_document(payload: dict) -> None:
         doc_id,
         title=parse_result.title or filename or source,
         content=content, status="indexing",
-        image_status=image_status, error_msg="",
+        image_status=image_status,
+        error_msg="", error_type=None, error_trace=None,
     )
 
     if not has_image_urls and has_inline_images:
@@ -225,12 +231,15 @@ async def handle_index_document(payload: dict) -> None:
         await update_doc(
             doc_id, status="failed",
             error_msg=f"Indexing failed: {e}"[:500],
+            error_type="indexing_error",
+            error_trace=traceback.format_exc(),
         )
         raise  # re-raise for queue retry/backoff
 
     DOCUMENT_OUTCOMES.labels(outcome="completed").inc()
     await update_doc(
-        doc_id, chunk_count=len(chunk_data), status="completed", error_msg="",
+        doc_id, chunk_count=len(chunk_data), status="completed",
+        error_msg="", error_type=None, error_trace=None,
     )
 
 
