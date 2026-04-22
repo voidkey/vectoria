@@ -27,7 +27,7 @@
 
 services:
   prometheus:
-    image: prom/prometheus:v2.54.1
+    image: ${PROM_IMAGE:-prom/prometheus:v2.55.1}
     restart: unless-stopped
     volumes:
       # Config + rules are mounted read-only; edits on disk hot-reload
@@ -53,7 +53,7 @@ services:
       retries: 6
 
   grafana:
-    image: grafana/grafana:11.2.0
+    image: ${GRAFANA_IMAGE:-grafana/grafana:11.2.0}
     restart: unless-stopped
     environment:
       GF_SECURITY_ADMIN_USER: ${GF_ADMIN_USER:-admin}
