@@ -29,3 +29,24 @@ receivers:
       # and forwards to the webhook URL from its WECOM_WEBHOOK_URL env.
       - url: http://alert-relay:8080/alert
         send_resolved: true
+
+# 抑制规则：避免告警风暴时重要信息被淹没。
+# 触发逻辑：source 告警存在时，target 告警会被静默（仍在 prometheus
+# 里处于 firing，但不推送到 wecom）。equal 字段未填意味着全局生效，
+# 适合单实例部署；多实例时应补 equal: ['instance'] 以防跨实例误抑制。
+inhibit_rules:
+
+  # Worker 整体不可达时，worker 侧所有细粒度告警都是这个根因的下游。
+  # 先告 "Worker 挂了"，不要同时洗屏 "队列堆积"、"解析失败"、"内存超"。
+  - source_matchers:
+      - alertname = VectoriaWorkerAbsent
+    target_matchers:
+      - component =~ "worker|queue|parser|documents"
+      - alertname != VectoriaWorkerAbsent
+
+  # API 整体不可达时，API 侧的错误率/延迟告警不用再报。
+  - source_matchers:
+      - alertname = VectoriaApiAbsent
+    target_matchers:
+      - component = api
+      - alertname != VectoriaApiAbsent

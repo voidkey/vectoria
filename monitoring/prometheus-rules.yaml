@@ -1,81 +1,137 @@
-# Prometheus alerting rules for vectoria.
+# =====================================================================
+# Vectoria 告警规则
+# =====================================================================
 #
-# Scope: operational alerts that a human should act on. Rules fire on
-# sustained conditions (``for:``) rather than spikes so transient blips
-# (redeploys, GC pauses, cold starts) don't page. Thresholds are tuned
-# for a single-node test/prod deploy; multi-instance fleets may want
-# to aggregate with ``sum by (instance)`` first.
+# 设计原则：
+#   1. 症状告警，不告原因。告 "用户看到错了"，不告 "CPU 高"
+#      —— 资源高但用户没感知的情况不该起夜。
+#   2. 所有比值型告警都加 "最小流量闸门"，避免低流量时分母接近 0
+#      放大误报（1 次请求失败 = 100% 错误率 → 起夜）。
+#   3. 每条规则都有 `for:` 持续时间，规避重启、GC、冷启动的瞬时抖动。
+#   4. severity 三档，alertmanager 侧按此字段做路由：
+#        critical  立即处理（起夜）
+#        warning   工作时间内看
+#        info      趋势记录，不打扰
+#   5. summary 一句话事实（WeCom 标题），description 给当前值 +
+#      排查路径 + 仪表盘链接。
 #
-# Drop into a Prometheus rule_files: directive:
+# 接入：
+#   prometheus.yaml → rule_files: [/etc/prometheus/rules.yaml]
+#   热重载：curl -XPOST http://prom:9090/-/reload  或 SIGHUP
 #
-#   rule_files:
-#     - /etc/prometheus/vectoria-rules.yaml
-#
-# Then hot-reload with ``curl -XPOST http://prom:9090/-/reload`` or
-# SIGHUP — changes take effect without restart.
+# 占位符：
+#   下面 description 里的 http://grafana.internal:3000 需要替换成你
+#   实际能被运维外网访问到的 Grafana 域名（WeCom 消息里要能点开）。
+# =====================================================================
+
 groups:
 
-  # ---------------------------------------------------------------
-  # API (RED — rate, errors, duration per endpoint)
-  # ---------------------------------------------------------------
-  # Data comes from prometheus_fastapi_instrumentator: per-handler
-  # labels on ``http_requests_total`` + ``http_request_duration_seconds``.
-  # ``handler`` is the route template (``/v1/knowledgebases/{kb_id}/
-  # documents/url``), ``status`` is the response code, ``method`` is
-  # the verb. Excluded: ``/metrics`` and ``/health`` (health spam).
+  # -------------------------------------------------------------------
+  # 可观测性兜底：抓取失败（最重要，必须最先触发）
+  # -------------------------------------------------------------------
+  # 进程死了 / 端口不通 / 容器重启中 → Prometheus 抓不到指标
+  # → 其它所有基于指标的告警都 "沉默" 了。必须用 up == 0 兜底，
+  # 否则服务全挂你看到的是 "一片绿"。
+  - name: vectoria.availability
+    rules:
+
+      - alert: VectoriaApiAbsent
+        expr: up{job="vectoria-app"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          service: vectoria
+          component: api
+        annotations:
+          summary: "[{{ $externalLabels.env }}] API 实例抓取失败（/metrics 无响应）"
+          description: |
+            vectoria-app 的 /metrics 端点连续 2 分钟无响应。
+            可能原因：
+              • 进程崩溃 / OOM / 被 kill
+              • 容器在重启循环
+              • Prometheus 到 app 的网络断了
+            排查：docker ps | grep vectoria-app；docker logs vectoria-app-1 | tail -200
+            仪表盘：http://grafana.internal:3000/d/vectoria-core
+
+      - alert: VectoriaWorkerAbsent
+        expr: up{job="vectoria-worker"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          service: vectoria
+          component: worker
+        annotations:
+          summary: "[{{ $externalLabels.env }}] Worker 实例抓取失败（/metrics 无响应）"
+          description: |
+            vectoria-worker 的 /metrics 连续 2 分钟无响应。
+            警告：此时队列会无声堆积，RSS/OOM 等兜底告警全部失效。
+            排查：docker logs vectoria-worker-1 | tail -200
+            看是否 OOM、段错误、Python 异常栈。
+            仪表盘：http://grafana.internal:3000/d/vectoria-core
+
+  # -------------------------------------------------------------------
+  # API（RED：错误率 / 延迟 / 客户端错误）
+  # -------------------------------------------------------------------
+  # 数据源 prometheus_fastapi_instrumentator，per-handler 拆分。
+  # /metrics 和 /health* 排除（健康检查噪音）。
   - name: vectoria.api
     rules:
 
       - alert: VectoriaApiServerErrorRate
-        # >5% 5xx over 5 minutes on any single handler means that
-        # endpoint is broken for users. Per-handler so an error in
-        # /query doesn't mask a healthy /documents/file (or vice
-        # versa). Symptom-level alert — the operator doesn't need to
-        # know *why*, just that callers are seeing errors.
+        # 5xx 比例 >5% 持续 5 分钟，且该 handler 至少 0.1 req/s
+        # （5 分钟窗口内 ≥ ~30 请求）。低流量时不报 —— 1 次 500
+        # = 100% 错误率这种毛刺不该把人叫醒。
         expr: |
-          sum by (handler) (rate(http_requests_total{status=~"5..",handler!~"/metrics|/health.*"}[5m]))
-          /
-          sum by (handler) (rate(http_requests_total{handler!~"/metrics|/health.*"}[5m]))
-          > 0.05
+          (
+            sum by (handler) (rate(http_requests_total{status=~"5..",handler!~"/metrics|/health.*"}[5m]))
+            /
+            sum by (handler) (rate(http_requests_total{handler!~"/metrics|/health.*"}[5m]))
+          ) > 0.05
+          and
+          sum by (handler) (rate(http_requests_total{handler!~"/metrics|/health.*"}[5m])) > 0.1
         for: 5m
         labels:
           severity: critical
+          service: vectoria
           component: api
         annotations:
-          summary: "API 5xx rate >5% on {{ $labels.handler }}"
-          description: >
-            5xx error rate on {{ $labels.handler }} exceeded 5% for 5
-            minutes. Callers see errors. Check worker logs for the
-            task_type that feeds this endpoint, and the parse /
-            external-API dashboards for correlating failures.
+          summary: "[{{ $externalLabels.env }}] 接口 {{ $labels.handler }} 5xx 错误率 {{ $value | humanizePercentage }}"
+          description: |
+            接口：{{ $labels.handler }}
+            当前 5xx 比例：{{ $value | humanizePercentage }}（阈值 5%）
+            用户侧已看到报错。
+            排查顺序：
+              1. worker 日志中查相关 task_type
+              2. Parser / External API 看板是否有对应失败
+              3. 最近是否发版（git log --since=30min）
+            仪表盘：http://grafana.internal:3000/d/vectoria-core
 
       - alert: VectoriaApiClientErrorSpike
-        # Sustained 4xx spike usually means either (a) a new caller
-        # is misusing the API (missing auth / bad payload shape) or
-        # (b) a validation regression just shipped. Severity info
-        # because the service is doing its job — but somebody should
-        # still look.
+        # 非 401/404 的 4xx 绝对速率 > 0.5/s 持续 10 分钟。
+        # 典型场景：新客户端传坏 payload / 校验刚变严 / 前端回归。
         expr: |
           sum by (handler, status) (rate(http_requests_total{status=~"4..",status!="401",status!="404",handler!~"/metrics|/health.*"}[10m]))
           > 0.5
         for: 10m
         labels:
           severity: info
+          service: vectoria
           component: api
         annotations:
-          summary: "API 4xx spike on {{ $labels.handler }} (status={{ $labels.status }})"
-          description: >
-            Sustained {{ $labels.status }} responses on
-            {{ $labels.handler }}. Often the first signal of a
-            validation regression or a frontend/client that just
-            started sending bad payloads. 401/404 excluded as noise.
+          summary: "[{{ $externalLabels.env }}] 接口 {{ $labels.handler }} 大量 {{ $labels.status }} 响应"
+          description: |
+            接口：{{ $labels.handler }}
+            状态码：{{ $labels.status }}
+            速率：{{ $value | humanize }} 次/秒
+            服务本身 OK，在拒绝坏请求。通常原因：
+              • 调用方传参不对
+              • 刚上线的校验变严（回归）
+              • 某个客户端版本有 bug
+            401/404 已排除（常规噪音）。
 
       - alert: VectoriaApiLatencyHigh
-        # p95 > 30 s means the callers who don't time out are
-        # waiting half a minute for a response. Wait=true ingest
-        # calls can legitimately take ~30 s (the config says
-        # ``ingest_wait_timeout_seconds=30``) so this threshold is
-        # tuned for the ingest path; tighten for pure-query deploys.
+        # p95 > 30s 持续 5 分钟。30s 对齐 ingest_wait_timeout_seconds
+        # （见 config.py），按最慢的 ingest 接口调。纯查询服务可调严到 5s。
         expr: |
           histogram_quantile(
             0.95,
@@ -84,70 +140,84 @@ groups:
         for: 5m
         labels:
           severity: warning
+          service: vectoria
           component: api
         annotations:
-          summary: "API p95 latency >30s on {{ $labels.handler }}"
-          description: >
-            {{ $labels.handler }} p95 latency is above 30 seconds.
-            Check: worker backlog (queue_depth), external-API
-            latency (mineru / embedding), parser p95 per engine.
+          summary: "[{{ $externalLabels.env }}] 接口 {{ $labels.handler }} p95 延迟 {{ $value | humanizeDuration }}"
+          description: |
+            接口：{{ $labels.handler }}
+            当前 p95：{{ $value | humanizeDuration }}（阈值 30s）
+            95% 请求中最慢那 5% 已经超过 30 秒。排查顺序：
+              1. 队列深度（vectoria_queue_depth）是否堆积
+              2. 外部 API p95（MinerU / embedding / vision）
+              3. Parser p95 各引擎
+              4. DB / 向量库延迟
+            仪表盘：http://grafana.internal:3000/d/vectoria-core
 
-  # ---------------------------------------------------------------
-  # Documents (ingest pipeline outcomes)
-  # ---------------------------------------------------------------
+  # -------------------------------------------------------------------
+  # 文档入库（端到端结果）
+  # -------------------------------------------------------------------
   - name: vectoria.documents
     rules:
 
       - alert: VectoriaDocumentFailureRate
-        # Top-level "% of documents ending up broken". Covers every
-        # failure mode (parse_error, empty_content, too_large,
-        # indexing_error) without pinning the alert to a specific
-        # cause. Threshold 20% is deliberately generous — legitimate
-        # corrupt inputs happen; tighten if your traffic is curated.
+        # 文档非 completed 结束 >20% 持续 10 分钟。
+        # 流量闸门 > 0.01 docs/s（10 分钟 ≥6 文档）才算样本够。
+        # 20% 阈值偏宽 —— 正常就有坏输入；语料可控的部署可调严。
         expr: |
-          sum(rate(vectoria_documents_total{outcome!="completed"}[10m]))
-          /
-          sum(rate(vectoria_documents_total[10m])) > 0.2
+          (
+            sum(rate(vectoria_documents_total{outcome!="completed"}[10m]))
+            /
+            sum(rate(vectoria_documents_total[10m]))
+          ) > 0.2
+          and
+          sum(rate(vectoria_documents_total[10m])) > 0.01
         for: 10m
         labels:
           severity: warning
+          service: vectoria
           component: documents
         annotations:
-          summary: "Document ingest failure rate >20%"
-          description: >
-            >20% of documents ingested in the last 10 minutes
-            ended up in a failed terminal state. Break down by
-            ``outcome`` in Grafana to pinpoint: empty_content
-            points at a parser, too_large at upstream size bounds,
-            parse_error at a parser exception.
+          summary: "[{{ $externalLabels.env }}] 文档入库失败率 {{ $value | humanizePercentage }}"
+          description: |
+            过去 10 分钟失败率：{{ $value | humanizePercentage }}（阈值 20%）
+            定位原因（Grafana 按 outcome 拆开）：
+              • empty_content → 某 Parser 返回空（常见：扫描版 PDF 没 OCR）
+              • too_large → 上游文件超过 max_content_chars
+              • parse_error → Parser 抛异常
+              • indexing_error → embedding / 向量写入失败
+            仪表盘：http://grafana.internal:3000/d/vectoria-core
 
       - alert: VectoriaParseEmptyRate
-        # Empty-content rate per engine — the parser reported no
-        # error but returned nothing useful. Typical causes: scanned
-        # PDFs going through pdfium (no OCR), CAPTCHA-walled URLs
-        # served by generic site handler, password-protected Office
-        # files that mammoth/python-pptx silently accept.
+        # 某引擎空结果比例 >30% 持续 10 分钟。
+        # 闸门 >0.01 parses/s 避免冷门引擎误报。
         expr: |
-          sum by (engine) (rate(vectoria_parse_empty_total[10m]))
-          / ignoring() group_left
-          sum by (engine) (rate(vectoria_parse_duration_seconds_count[10m])) > 0.3
+          (
+            sum by (engine) (rate(vectoria_parse_empty_total[10m]))
+            /
+            sum by (engine) (rate(vectoria_parse_duration_seconds_count[10m]))
+          ) > 0.3
+          and
+          sum by (engine) (rate(vectoria_parse_duration_seconds_count[10m])) > 0.01
         for: 10m
         labels:
           severity: warning
+          service: vectoria
           component: parser
         annotations:
-          summary: "{{ $labels.engine }} empty-result rate >30%"
-          description: >
-            Parser {{ $labels.engine }} is returning empty content
-            on >30% of calls. Not an exception rate — these parses
-            completed cleanly but had nothing to extract. If engine
-            is ``ocr-native`` with image uploads, check rapidocr
-            model version / language config. If ``pdfium``, likely
-            scanned PDFs that need OCR — MinerU should own those.
+          summary: "[{{ $externalLabels.env }}] 解析引擎 {{ $labels.engine }} 空结果率 {{ $value | humanizePercentage }}"
+          description: |
+            引擎：{{ $labels.engine }}
+            空结果率：{{ $value | humanizePercentage }}（阈值 30%）
+            注意：不是报错，是 "解析成功但没东西可提取"。常见原因：
+              • pdfium：扫描版 PDF 缺 OCR，应走 MinerU
+              • ocr-native：rapidocr 模型或语言配置不匹配
+              • url handler：被反爬 / CAPTCHA 墙拦截
+              • Office：受密码保护，mammoth/python-pptx 悄悄吞掉
 
-  # ---------------------------------------------------------------
-  # Queue health
-  # ---------------------------------------------------------------
+  # -------------------------------------------------------------------
+  # 队列健康
+  # -------------------------------------------------------------------
   - name: vectoria.queue
     rules:
 
@@ -156,214 +226,250 @@ groups:
         for: 5m
         labels:
           severity: warning
+          service: vectoria
           component: queue
         annotations:
-          summary: "Queue depth elevated for {{ $labels.task_type }}"
-          description: >
-            vectoria_queue_depth{task_type="{{ $labels.task_type }}"}
-            has been above 50 for 5 minutes. Workers may be stuck or
-            outpaced. Check worker logs, RSS, and external-API
-            circuit state.
+          summary: "[{{ $externalLabels.env }}] 队列 {{ $labels.task_type }} 积压 {{ $value }} 条"
+          description: |
+            task_type={{ $labels.task_type }} 待处理任务已 {{ $value }} 条
+            并持续 5 分钟（阈值 50）。Worker 处理不过来或卡住。
+            排查顺序：
+              1. Worker 是否健康（VectoriaWorkerAbsent 应先报）
+              2. Worker RSS 是否逼近上限
+              3. 外部 API 熔断器是否开启
+              4. 是否突发流量，需要扩容
+            仪表盘：http://grafana.internal:3000/d/vectoria-core
 
       - alert: VectoriaQueueTaskAging
         expr: vectoria_queue_oldest_age_seconds > 600
         for: 2m
         labels:
           severity: warning
+          service: vectoria
           component: queue
         annotations:
-          summary: "Oldest {{ $labels.task_type }} task >10min old"
-          description: >
-            A task of type {{ $labels.task_type }} has been pending
-            more than 10 minutes. Typical parses complete in seconds;
-            aging indicates a stuck worker or starvation (check
-            tier=heavy pool for a runaway docling / mineru call).
+          summary: "[{{ $externalLabels.env }}] 队列 {{ $labels.task_type }} 最老任务已等 {{ $value | humanizeDuration }}"
+          description: |
+            task_type={{ $labels.task_type }} 队头任务已等 {{ $value | humanizeDuration }}
+            （阈值 10 分钟）。正常任务秒级完成，出现老任务意味着：
+              • Worker 卡死（subprocess 挂起）
+              • 资源饥饿（heavy 档的 docling / mineru 跑飞）
+              • 任务本身过大（打量看 max_content_chars）
 
       - alert: VectoriaDeadTaskAccumulating
         expr: vectoria_queue_dead_tasks > 0
         for: 1m
         labels:
           severity: warning
+          service: vectoria
           component: queue
         annotations:
-          summary: "Dead-letter tasks present for {{ $labels.task_type }}"
-          description: >
-            vectoria_queue_dead_tasks{task_type="{{ $labels.task_type }}"}
-            is {{ $value }}. These exhausted max_attempts and need
-            operator triage — inspect ``SELECT * FROM tasks WHERE
-            status='dead'`` and decide whether to requeue or delete.
+          summary: "[{{ $externalLabels.env }}] 死信队列出现 {{ $labels.task_type }} 任务"
+          description: |
+            task_type={{ $labels.task_type }}：{{ $value }} 条已耗尽重试
+            进入死信队列。需要人工决策：
+              SELECT * FROM tasks WHERE status='dead';
+            决定重入队还是删除。
 
-  # ---------------------------------------------------------------
-  # Worker resource health
-  # ---------------------------------------------------------------
+  # -------------------------------------------------------------------
+  # Worker 资源
+  # -------------------------------------------------------------------
   - name: vectoria.worker
     rules:
 
       - alert: VectoriaWorkerRssNearLimit
-        # Fires when current RSS sits above 80% of the configured
-        # self-kill threshold for 2 minutes — operators get a
-        # proactive warning before the worker actually restarts
-        # itself. The ``worker_rss_limit_bytes > 0`` filter skips
-        # deploys where the cap is disabled (config default is 0).
+        # RSS > 上限 80% 持续 2 分钟 —— 运维的 "提前预警"，避免
+        # 用户真正看到 worker 重启。
+        # on(instance) 按实例匹配（多 worker 部署不会 many-to-many）。
+        # 仅在配了 WORKER_RSS_LIMIT_BYTES 时触发（cap=0 时静默，
+        # 因为 `> 0` 过滤掉了未配置的样本；见 config.py）。
         expr: |
           vectoria_worker_rss_bytes
-          / on() vectoria_worker_rss_limit_bytes > 0.8
-          and on() vectoria_worker_rss_limit_bytes > 0
+          / on(instance) vectoria_worker_rss_limit_bytes > 0.8
+          and on(instance) vectoria_worker_rss_limit_bytes > 0
         for: 2m
         labels:
           severity: warning
+          service: vectoria
           component: worker
         annotations:
-          summary: "Worker RSS >80% of self-kill cap"
-          description: >
-            Worker resident memory is within 20% of the configured
-            self-kill threshold. A single large parse away from an
-            automatic restart. Likely causes: heavy document
-            in-flight (check parse_duration p95), RSS creep from a
-            parser leak, or the cap is too tight for current load.
+          summary: "[{{ $externalLabels.env }}] Worker RSS 已达上限 {{ $value | humanizePercentage }}"
+          description: |
+            Worker 内存占用：上限的 {{ $value | humanizePercentage }}（阈值 80%）
+            再一次大解析就会自动 self-kill 重启。可能原因：
+              • 正在解析大文件（看 parse_duration p95）
+              • Parser 内存泄漏（RSS 持续爬升，不随任务完成下降）
+              • 上限配太紧，与当前流量不匹配
+            仪表盘：http://grafana.internal:3000/d/vectoria-core
 
       - alert: VectoriaWorkerRssKillsOngoing
-        # Any RSS self-kill in the last hour is worth surfacing —
-        # self-kill is a last-resort backstop, not a routine event.
+        # 任何 1 小时内的自杀事件都要看。自杀是兜底机制，不应常发。
+        # for: 1m 让 alertmanager 聚合窗口（group_wait=30s）能稳定抓到。
         expr: increase(vectoria_worker_rss_kills_total[1h]) > 0
+        for: 1m
         labels:
           severity: warning
+          service: vectoria
           component: worker
         annotations:
-          summary: "Worker self-killed on RSS limit"
-          description: >
-            {{ $value }} worker self-kill(s) in the last hour.
-            Either the memory cap is too tight for current traffic,
-            or a specific parse is leaking. Identify the task_type
-            that preceded the kill via
-            vectoria_task_duration_seconds.
+          summary: "[{{ $externalLabels.env }}] 过去 1 小时 Worker 因 RSS 自杀 {{ $value | humanize }} 次"
+          description: |
+            Worker 触发 RSS 上限自杀 {{ $value | humanize }} 次。
+            自杀是最后防线，常规不该发。可能原因：
+              • 内存上限配太紧，跟不上当前流量
+              • 某个 task_type 泄漏（看自杀前的 task_duration 分布）
+            彻底定位需要结合 worker 日志 + task_id 对应的输入。
 
-  # ---------------------------------------------------------------
-  # External dependencies
-  # ---------------------------------------------------------------
+  # -------------------------------------------------------------------
+  # 外部依赖
+  # -------------------------------------------------------------------
   - name: vectoria.external
     rules:
 
       - alert: VectoriaCircuitOpen
-        # circuit_state: 0=closed, 1=half_open, 2=open. Open >1 min
-        # means the automatic recovery probe is failing repeatedly.
+        # circuit_state: 0=closed, 1=half_open, 2=open。
+        # 持续 1 分钟 open 意味着自动恢复探测连续失败。
         expr: vectoria_circuit_state == 2
         for: 1m
         labels:
           severity: critical
+          service: vectoria
           component: external
         annotations:
-          summary: "Circuit {{ $labels.name }} is OPEN"
-          description: >
-            The {{ $labels.name }} circuit breaker opened. Downstream
-            calls short-circuit until the reset timer probes success.
-            Check the external service (mineru, vision API, embedding
-            endpoint) — if it's genuinely down, the breaker is doing
-            its job.
+          summary: "[{{ $externalLabels.env }}] 熔断器 {{ $labels.name }} 已打开"
+          description: |
+            {{ $labels.name }} 熔断器打开，下游调用全部快速失败
+            直到自动探测成功。判断：
+              • 对方真的挂了 → 熔断器做对了，等恢复即可
+              • 对方没挂是我们误判 → 看 external_api_error_rate
+                ，可能要调熔断阈值
+            影响：依赖 {{ $labels.name }} 的业务功能当前残缺。
 
       - alert: VectoriaExternalAPIErrorRate
+        # 外部 API 失败率 > 10% 持续 5 分钟，闸门 >0.05/s
+        # （5 分钟 ≥15 次调用）。再恶化会触发 VectoriaCircuitOpen。
         expr: |
-          sum by (api) (
-            rate(vectoria_external_api_calls_total{status!="success"}[5m])
-          )
-          / ignoring(status) group_left
-          sum by (api) (
-            rate(vectoria_external_api_calls_total[5m])
+          (
+            sum by (api) (rate(vectoria_external_api_calls_total{status!="success"}[5m]))
+            /
+            sum by (api) (rate(vectoria_external_api_calls_total[5m]))
           ) > 0.1
+          and
+          sum by (api) (rate(vectoria_external_api_calls_total[5m])) > 0.05
         for: 5m
         labels:
           severity: warning
+          service: vectoria
           component: external
         annotations:
-          summary: "{{ $labels.api }} error rate > 10%"
-          description: >
-            External API {{ $labels.api }} has >10% error rate over
-            the last 5 minutes. If sustained, the circuit breaker
-            will open.
+          summary: "[{{ $externalLabels.env }}] 外部 API {{ $labels.api }} 失败率 {{ $value | humanizePercentage }}"
+          description: |
+            外部 API：{{ $labels.api }}
+            失败率：{{ $value | humanizePercentage }}（阈值 10%）
+            持续恶化会触发熔断器，届时该功能完全失败。
+            看 Grafana 上 status 标签拆分，定位是 timeout / 5xx / 连接错误。
 
-  # ---------------------------------------------------------------
-  # Parser health
-  # ---------------------------------------------------------------
+  # -------------------------------------------------------------------
+  # 解析器
+  # -------------------------------------------------------------------
+  # observe_parse（infra/metrics.py）产生 status ∈
+  # {ok, error, timeout, circuit_open}。error 和 timeout 分开告警：
+  # timeout 多了通常是上游文件有问题或子进程卡死，和普通异常处理路径不同。
   - name: vectoria.parser
     rules:
 
       - alert: VectoriaParseErrorRate
+        # status="error" 不含 timeout（timeout 单列），所以这条
+        # 真的就是 "Parser 抛异常" 的比例。
         expr: |
-          sum by (engine) (
-            rate(vectoria_parse_duration_seconds_count{status="error"}[10m])
-          )
-          / ignoring(status) group_left
-          sum by (engine) (
-            rate(vectoria_parse_duration_seconds_count[10m])
+          (
+            sum by (engine) (rate(vectoria_parse_duration_seconds_count{status="error"}[10m]))
+            /
+            sum by (engine) (rate(vectoria_parse_duration_seconds_count[10m]))
           ) > 0.2
+          and
+          sum by (engine) (rate(vectoria_parse_duration_seconds_count[10m])) > 0.01
         for: 10m
         labels:
           severity: warning
+          service: vectoria
           component: parser
         annotations:
-          summary: "{{ $labels.engine }} parse error rate > 20%"
-          description: >
-            Parser {{ $labels.engine }} is failing >20% of calls.
-            Check the parser's subprocess pool tier — a stuck child
-            process can also surface here as timeouts.
+          summary: "[{{ $externalLabels.env }}] 解析引擎 {{ $labels.engine }} 错误率 {{ $value | humanizePercentage }}"
+          description: |
+            引擎：{{ $labels.engine }}
+            错误率：{{ $value | humanizePercentage }}（阈值 20%）
+            区别于空结果 —— 这条是 Parser 抛异常。
+            排查：
+              • engine={{ $labels.engine }} 最近处理过的文件类型
+              • 相关依赖版本是否有更新
+              • worker 日志里的完整异常栈
 
       - alert: VectoriaParseTimeoutSpike
-        expr: |
-          sum(rate(vectoria_parse_duration_seconds_count{status="timeout"}[15m]))
-          > 0
+        # 15 分钟内超过 2 次隔离池超时（>2 意味着至少 3 次）。
+        # 单次偶发超时池会自动重建恢复，不告警；频繁超时通常是
+        # 上游文件畸形或某个引擎的内部逻辑卡死。
+        expr: increase(vectoria_parse_duration_seconds_count{status="timeout"}[15m]) > 2
         for: 5m
         labels:
           severity: warning
+          service: vectoria
           component: parser
         annotations:
-          summary: "Parse timeouts observed"
-          description: >
-            Isolation-pool timeouts in the last 15 minutes. The pool
-            is being recycled on each timeout but the upstream source
-            (large or malformed file, hung docling/mineru call) is
-            still a user-visible failure.
+          summary: "[{{ $externalLabels.env }}] 解析 {{ $labels.engine }} 超时频发（{{ $value | humanize }} 次/15 分）"
+          description: |
+            引擎：{{ $labels.engine }}
+            15 分钟内超时：{{ $value | humanize }} 次（阈值 >2）
+            这些解析调用超过 parser_timeout（默认 120s）被强杀。
+            子进程池已自动重建，但对应文档在用户侧是失败的。
+            常见原因：
+              • 文件过大或畸形（PDF 内嵌奇葩资源、损坏的 Office 文件）
+              • docling / mineru 内部卡死
+              • 系统资源紧张（CPU 打满导致所有解析都慢）
 
-  # ---------------------------------------------------------------
-  # Rate limiting / Redis
-  # ---------------------------------------------------------------
+  # -------------------------------------------------------------------
+  # 限流 / Redis
+  # -------------------------------------------------------------------
   - name: vectoria.ratelimit
     rules:
 
       - alert: VectoriaRateLimitDegraded
-        # Sustained local_fallback → Redis is unreachable, per-process
-        # buckets are active. Not immediately user-impacting (fail-open),
-        # but cross-worker coordination is lost and CDN bans become
-        # more likely if traffic is heavy.
+        # 持续 local_fallback → Redis 连不上，每 worker 独立限流。
+        # 业务不报错（fail-open），但跨 worker 协调丢失，
+        # 高流量下更容易被 CDN 封。
         expr: |
           sum(rate(vectoria_ratelimit_checks_total{result="local_fallback"}[5m]))
           > 0
         for: 5m
         labels:
           severity: warning
+          service: vectoria
           component: ratelimit
         annotations:
-          summary: "Rate limiter fell back to per-process buckets"
-          description: >
-            Redis has been unreachable for >5 minutes; each worker is
-            rate-limiting independently. Check vectoria-redis-1
-            container health and the limits.aio storage URL config.
+          summary: "[{{ $externalLabels.env }}] 限流器降级为进程内桶（Redis 不可达）"
+          description: |
+            Redis 已连不上 >5 分钟，每个 worker 在独立限流。
+            业务不报错（fail-open），但：
+              • 跨 worker 协调丢失（总并发会翻倍）
+              • 重流量下被 CDN 封的概率上升
+            排查：docker ps | grep redis；检查 limits.aio 存储 URL 配置。
 
       - alert: VectoriaRateLimitBlockedSpike
-        # Sustained ``blocked`` spikes on a specific key indicate a
-        # hot CDN (xhs/qpic/pbs.twimg) is throttling us. Not a bug
-        # per se; operators want to know so they can tune the
-        # per-domain bucket in parsers/url/_handlers.py.
+        # 持续 blocked 说明某 CDN（xhs/qpic/pbs.twimg）在节流我们。
+        # 不是 bug，但运维可以考虑调整 per-domain 桶。
         expr: |
           sum by (key) (rate(vectoria_ratelimit_checks_total{result="blocked"}[10m]))
           > 0.1
         for: 10m
         labels:
           severity: info
+          service: vectoria
           component: ratelimit
         annotations:
-          summary: "Frequent rate-limit blocks for key={{ $labels.key }}"
-          description: >
-            Image downloads for {{ $labels.key }} are being gated
-            regularly. Consider raising the per-domain rate in
-            parsers/url/_handlers.py if this CDN accepts higher
-            sustained traffic without banning.
+          summary: "[{{ $externalLabels.env }}] 限流 key={{ $labels.key }} 频繁被阻（{{ $value | humanize }}/秒）"
+          description: |
+            限流 key：{{ $labels.key }}
+            被阻速率：{{ $value | humanize }}/秒（阈值 0.1/s）
+            通常是某 CDN（xhs、qpic、pbs.twimg 等）在节流我们的图片下载。
+            若该 CDN 能接受更高并发，考虑调整 parsers/url/_handlers.py
+            里的 per-domain rate。

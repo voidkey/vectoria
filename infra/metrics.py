@@ -119,7 +119,7 @@ CIRCUIT_TRANSITIONS = Counter(
 PARSE_DURATION_SECONDS = Histogram(
     "vectoria_parse_duration_seconds",
     "Wall-clock time spent in parser.parse().",
-    labelnames=("engine", "status"),  # status ∈ {ok, error, circuit_open}
+    labelnames=("engine", "status"),  # status ∈ {ok, error, timeout, circuit_open}
     buckets=_TASK_BUCKETS,
 )
 
@@ -201,10 +201,15 @@ async def observe_parse(engine: str):
         async with observe_parse("mineru"):
             result = await parser.parse(...)
 
-    Classifies the outcome automatically: ``ok`` on clean exit, ``error``
-    on any exception (re-raised). ``CircuitOpenError`` is counted as
-    ``circuit_open`` — it's distinct from parser/engine failure and
-    worth separating on the dashboard.
+    Classifies the outcome automatically:
+      * ``ok`` — clean exit
+      * ``circuit_open`` — ``CircuitOpenError`` (downstream circuit tripped,
+        distinct from parser/engine failure)
+      * ``timeout`` — ``TimeoutError`` (isolation-pool wall-clock timeout;
+        the subprocess is being recycled but the call is user-visible failure)
+      * ``error`` — any other exception
+
+    All statuses re-raise; this block only records and re-throws.
     """
     start = time.monotonic()
     status = "ok"
@@ -214,7 +219,15 @@ async def observe_parse(engine: str):
         # Lazy import: circuit_breaker imports this module at top-level
         # so we must avoid a circular import here.
         from infra.circuit_breaker import CircuitOpenError
-        status = "circuit_open" if isinstance(exc, CircuitOpenError) else "error"
+        if isinstance(exc, CircuitOpenError):
+            status = "circuit_open"
+        elif isinstance(exc, TimeoutError):
+            # Py 3.11+ unifies asyncio.TimeoutError and
+            # concurrent.futures.TimeoutError under builtin TimeoutError,
+            # so this single isinstance covers both isolation.py paths.
+            status = "timeout"
+        else:
+            status = "error"
         raise
     finally:
         PARSE_DURATION_SECONDS.labels(engine=engine, status=status).observe(

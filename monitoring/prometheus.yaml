@@ -10,6 +10,12 @@
 global:
   scrape_interval: 15s
   evaluation_interval: 15s
+  # 所有从这个 Prometheus 发出的告警/远程写入自动带上这些标签。
+  # 线上部署时把 env 改成 prod —— 只需换这一行即可区分两套告警来源。
+  # $externalLabels.env 在 rules.yaml 的 summary/description 模板里被引用。
+  external_labels:
+    env: test
+    service: vectoria
 
 rule_files:
   - /etc/prometheus/rules.yaml
