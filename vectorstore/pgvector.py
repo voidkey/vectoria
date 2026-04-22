@@ -131,31 +131,37 @@ class PgVectorStore(VectorStore):
     async def keyword_search(
         self, query: str, kb_id: str, top_k: int
     ) -> list[SearchResult]:
-        """Trigram-similarity keyword search.
+        """Trigram word-similarity keyword search.
 
         Before W6-1a this used ``to_tsvector('simple', ...)`` + BM25,
         which tokenized CJK paragraphs as a single token and returned
-        ~zero recall for Chinese queries. Trigram similarity works on
-        character-level 3-grams so CJK / Latin / mixed text all score
-        uniformly.
+        ~zero recall for Chinese queries.
 
-        ``content % $1`` is the trigram index-probing operator (uses
-        the pg_trgm GIN index); ``similarity()`` is the score. Results
-        below a very low threshold are filtered out so unrelated
-        content doesn't pollute the fused set for short queries.
+        We use ``word_similarity(query, content)`` (operator ``%>``)
+        rather than the symmetric ``similarity()``. Rationale: content
+        chunks are long (512+ chars) and queries are short (5-50
+        chars). Symmetric similarity normalizes by the union of
+        trigrams so the denominator is dominated by content — a query
+        that matches a short substring perfectly still scores near 0.
+        ``word_similarity`` finds the best short-window match of the
+        query inside content and normalizes by the query length, so
+        short-query-in-long-text scoring is meaningful for CJK.
 
-        The 0.1 threshold is deliberately low — the fusion step will
-        re-weight against vector search anyway. We just want "any
-        meaningful overlap" to contribute a rank in RRF.
+        The GIN ``gin_trgm_ops`` index supports both operators, so
+        this is an index-backed lookup (no seq scan).
+
+        Threshold is left at the pg_trgm default (0.6 for
+        word_similarity) since word-level matching is far more
+        selective than raw similarity and 0.6 correctly separates "the
+        query substring appears" from "random noise overlap".
         """
         async with self._pool.acquire() as conn:
-            await conn.execute("SET LOCAL pg_trgm.similarity_threshold = 0.1")
             rows = await conn.fetch(
                 """
                 SELECT id, content, doc_id, parent_id,
-                       similarity(content, $1) AS score
+                       word_similarity($1, content) AS score
                 FROM chunks
-                WHERE kb_id = $2 AND content % $1
+                WHERE kb_id = $2 AND content %> $1
                 ORDER BY score DESC
                 LIMIT $3
                 """,
