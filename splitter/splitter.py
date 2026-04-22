@@ -11,47 +11,42 @@ class Chunk:
     id: str
     content: str
     index: int
-    parent_id: str | None = None  # set for child chunks in parent-child mode
 
 
 class Splitter:
-    """
-    Recursive character text splitter with optional parent-child mode.
+    """Recursive character text splitter.
 
-    Uses a separator priority list (paragraph → line → sentence → word → char)
-    to recursively split text while preserving document structure.
+    Separator priority (paragraph → line → sentence → word → char)
+    preserves document structure while respecting ``chunk_size``.
+    Adjacent chunks overlap by ``chunk_overlap`` characters so
+    sentence-straddling context isn't lost at chunk boundaries.
 
-    parent_chunk_size > 0 enables parent-child:
-      - Parent chunks (large) are stored for context expansion
-      - Child chunks (small) are indexed for retrieval
-      - Child chunks have parent_id pointing to their parent chunk
+    Parent-child mode used to be in here; it was removed in W6-6
+    because the worker's ``handle_index_document`` only ever indexed
+    the parent-sized chunks — children were built and discarded. The
+    "small-chunk retrieval + parent expansion at query time" pattern
+    is valuable when implemented fully, but the half-version made
+    ``parent_chunk_size`` silently mean ``chunk_size`` while carrying
+    confusing dead code in Splitter, worker, and the RAG pipeline.
+    Re-add with proper end-to-end plumbing and an eval harness when
+    we actually want it.
     """
 
     def __init__(
         self,
         chunk_size: int = 512,
         chunk_overlap: int = 50,
-        parent_chunk_size: int = 0,
         separators: list[str] | None = None,
     ):
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
-        self.parent_chunk_size = parent_chunk_size
         self.separators = separators or _DEFAULT_SEPARATORS
 
     def split(self, text: str) -> list[Chunk]:
         if not text.strip():
             return []
-
-        if self.parent_chunk_size > 0:
-            return self._parent_child_split(text)
-        return self._build_chunks(text, chunk_size=self.chunk_size, parent_id=None)
-
-    def _build_chunks(
-        self, text: str, chunk_size: int, parent_id: str | None, index_offset: int = 0,
-    ) -> list[Chunk]:
-        splits = self._recursive_split(text, self.separators, chunk_size)
-        return self._merge_splits(splits, chunk_size, parent_id, index_offset)
+        splits = self._recursive_split(text, self.separators, self.chunk_size)
+        return self._merge_splits(splits)
 
     def _recursive_split(
         self, text: str, separators: list[str], chunk_size: int,
@@ -95,29 +90,21 @@ class Splitter:
                 result.append(piece)
         return result
 
-    def _merge_splits(
-        self,
-        splits: list[str],
-        chunk_size: int,
-        parent_id: str | None,
-        index_offset: int,
-    ) -> list[Chunk]:
+    def _merge_splits(self, splits: list[str]) -> list[Chunk]:
         """Merge small splits into chunks respecting chunk_size and overlap."""
         chunks: list[Chunk] = []
         current: list[str] = []
         current_len = 0
-        idx = index_offset
+        idx = 0
 
         for piece in splits:
             piece_len = len(piece)
 
-            if current_len + piece_len > chunk_size and current:
-                # Flush current chunk
+            if current_len + piece_len > self.chunk_size and current:
                 content = "".join(current).strip()
                 if content:
                     chunks.append(Chunk(
-                        id=str(uuid.uuid4()), content=content,
-                        index=idx, parent_id=parent_id,
+                        id=str(uuid.uuid4()), content=content, index=idx,
                     ))
                     idx += 1
 
@@ -136,33 +123,13 @@ class Splitter:
             current.append(piece)
             current_len += piece_len
 
-        # Flush remaining
         content = "".join(current).strip()
         if content:
             chunks.append(Chunk(
-                id=str(uuid.uuid4()), content=content,
-                index=idx, parent_id=parent_id,
+                id=str(uuid.uuid4()), content=content, index=idx,
             ))
 
         return chunks
-
-    def _parent_child_split(self, text: str) -> list[Chunk]:
-        parents = self._build_chunks(text, chunk_size=self.parent_chunk_size, parent_id=None)
-        all_chunks: list[Chunk] = []
-        child_idx = 0
-
-        for parent in parents:
-            all_chunks.append(parent)
-            children = self._build_chunks(
-                parent.content,
-                chunk_size=self.chunk_size,
-                parent_id=parent.id,
-                index_offset=child_idx,
-            )
-            all_chunks.extend(children)
-            child_idx += len(children)
-
-        return all_chunks
 
 
 def _split_keeping_separator(text: str, sep: str) -> list[str]:

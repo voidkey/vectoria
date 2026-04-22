@@ -15,12 +15,19 @@ class Pipeline:
 
 
 def build_default_pipeline(store, embedder, llm_client, rerank_client) -> Pipeline:
-    """Build the standard pipeline from configured steps."""
+    """Build the standard pipeline from configured steps.
+
+    ExpandStep (child→parent chunk swap) used to sit between Rerank
+    and Generate. Removed in W6-6 along with parent-child chunking
+    since the feature was never functional (worker discarded
+    children). Re-add with a proper small-chunk index + parent fetch
+    when we want parent-document retrieval; current flat chunking
+    doesn't need it.
+    """
     from rag.steps.retrieve import RetrieveStep
     from rag.steps.fusion import FusionStep
     from rag.steps.query_rewrite import QueryRewriteStep
     from rag.steps.rerank import RerankStep
-    from rag.steps.expand import ExpandStep
     from rag.steps.generate import GenerateStep
 
     cfg = get_settings()
@@ -29,6 +36,5 @@ def build_default_pipeline(store, embedder, llm_client, rerank_client) -> Pipeli
         RetrieveStep(store=store, embedder=embedder),
         FusionStep(),
         RerankStep(client=rerank_client, enabled=cfg.enable_reranker),
-        ExpandStep(store=store),
         GenerateStep(llm_client=llm_client),
     ])

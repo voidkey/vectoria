@@ -219,22 +219,20 @@ async def handle_index_document(payload: dict) -> None:
     splitter = Splitter(
         chunk_size=cfg.splitter_chunk_size,
         chunk_overlap=cfg.splitter_chunk_overlap,
-        parent_chunk_size=cfg.splitter_parent_chunk_size,
     )
     chunks = splitter.split(content)
 
-    indexable = [c for c in chunks if c.parent_id is None]
     embedder = get_embedder()
-    texts = [c.content for c in indexable]
+    texts = [c.content for c in chunks]
     try:
         embeddings = await embedder.embed_batch(texts) if texts else []
         chunk_data = [
             ChunkData(
                 id=c.id, doc_id=doc_id, kb_id=kb_id,
                 content=c.content, embedding=embeddings[i],
-                chunk_index=c.index, parent_id=c.parent_id,
+                chunk_index=c.index, parent_id=None,
             )
-            for i, c in enumerate(indexable)
+            for i, c in enumerate(chunks)
         ]
         async with await PgVectorStore.create() as store:
             await store.upsert(chunk_data)

@@ -55,7 +55,6 @@ class RerankStep(PipelineStep):
                         idx, n_candidates,
                     )
             ctx.final_results = results
-            ctx.rerank_applied = True
         except Exception:
             logger.exception("Rerank failed, falling back to fused results")
             ctx.final_results = ctx.fused_results[: ctx.top_k]

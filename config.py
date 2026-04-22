@@ -52,14 +52,14 @@ class Settings(BaseSettings):
     # many intermediate copies.
     max_content_chars: int = 5_000_000
 
-    # Chunking knobs. Child chunks are what gets embedded + indexed;
-    # parent chunks expand the retrieval context at query time
-    # (parent-child mode when parent_chunk_size > 0). Defaults match
-    # the old hard-coded values in worker/handlers.py — moving them
-    # here makes tuning possible without code change.
-    splitter_chunk_size: int = 512
+    # Chunking knobs. Chunks are what gets embedded + indexed and also
+    # what the LLM receives as retrieval context. Defaults are tuned
+    # for mixed CJK/Latin content at 1024 chars — large enough to
+    # carry a paragraph's worth of context but still under the
+    # embedding model's token limits at the char-to-token expansion
+    # ratio typical of CJK.
+    splitter_chunk_size: int = 1024
     splitter_chunk_overlap: int = 64
-    splitter_parent_chunk_size: int = 1024
 
     # Hard cap on raw upload size (bytes). Rejected at the HTTP entry before
     # the file is buffered in memory.
