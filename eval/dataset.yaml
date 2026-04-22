@@ -1,0 +1,140 @@
+# Retrieval evaluation set — vectoria W6-7
+#
+# Each query is marked as a "hit" when at least one of the
+# ``must_contain_any`` phrases appears in any of the top-k returned
+# chunks' content. Multiple phrases per query tolerate paraphrase /
+# rewording while still pinning the query to real content in the KB.
+#
+# Label rationale
+# ---------------
+# Choosing phrases (not chunk_ids) as the ground truth means the eval
+# survives reingest — if a document is re-chunked or embeddings
+# change, the phrases are still in the text. chunk_id labels would
+# rot silently.
+#
+# How to extend
+# -------------
+# Add a new query block. If the query is expected to have multiple
+# relevant chunks, list all of their anchor phrases so any hit
+# counts. Keep phrases short (5-15 chars) — longer ones become
+# brittle against chunk boundary placement.
+
+kb_id: 3b6602de-8690-4462-b0cd-e6f5de8178c5   # 视频创作知识库 (Jaspers 教育哲学)
+top_k: 5
+
+queries:
+
+  # ---------------------------------------------------------------
+  # Tier 1 — direct phrase queries (should work without any
+  # advanced retrieval; trigram alone should catch these)
+  # ---------------------------------------------------------------
+
+  - id: Q01
+    query: "贵族和大众的对立"
+    must_contain_any: ["贵族和大众之间的对立"]
+    tier: direct
+
+  - id: Q02
+    query: "权威的危机与转变"
+    must_contain_any: ["权威的危机与转变"]
+    tier: direct
+
+  - id: Q03
+    query: "习惯与传统"
+    must_contain_any: ["习惯巩固了传统"]
+    tier: direct
+
+  - id: Q04
+    query: "尼采作为教育家"
+    must_contain_any: ["尼采不是通过教义和命令成为教育家"]
+    tier: direct
+
+  - id: Q05
+    query: "教育无用还是教育全能"
+    must_contain_any: ["教育无用", "教育全能"]
+    tier: direct
+
+  # ---------------------------------------------------------------
+  # Tier 2 — topical (phrasing doesn't match exactly; vector search
+  # needs to bridge the gap)
+  # ---------------------------------------------------------------
+
+  - id: Q06
+    query: "大学的理念"
+    must_contain_any: ["大学理念", "大学的理念"]
+    tier: topical
+
+  - id: Q07
+    query: "自由与权威如何共存"
+    must_contain_any: ["自由与权威之间的张力", "自由需要权威"]
+    tier: topical
+
+  - id: Q08
+    query: "德国的政治冷漠"
+    must_contain_any: ["不关心政治", "对国家没有任何责任感"]
+    tier: topical
+
+  - id: Q09
+    query: "祖母对童年的影响"
+    must_contain_any: ["祖母的关爱", "祖母"]
+    tier: topical
+
+  - id: Q10
+    query: "精神创造与童年"
+    must_contain_any: ["儿童时期的经历", "精神创造"]
+    tier: topical
+
+  - id: Q11
+    query: "哲学研究的本质"
+    must_contain_any: ["哲学研究", "原初自我存在"]
+    tier: topical
+
+  - id: Q12
+    query: "学校课程过多带来的问题"
+    must_contain_any: ["课程门类", "整体精神的培养"]
+    tier: topical
+
+  - id: Q13
+    query: "宪法与德国基本法"
+    must_contain_any: ["基本法", "宪法"]
+    tier: topical
+
+  # ---------------------------------------------------------------
+  # Tier 3 — conceptual (no obvious shared phrases; requires
+  # vector semantics to bridge query → content)
+  # ---------------------------------------------------------------
+
+  - id: Q14
+    query: "父亲给我的理性思维训练"
+    must_contain_any: ["父母", "理智思考", "父亲"]
+    tier: conceptual
+
+  - id: Q15
+    query: "教育资金如何影响教学质量"
+    must_contain_any: ["教育资金", "如何去运用"]
+    tier: conceptual
+
+  - id: Q16
+    query: "神性与超验的权威"
+    must_contain_any: ["超验性", "神性"]
+    tier: conceptual
+
+  - id: Q17
+    query: "自我选择塑造人的高贵品质"
+    must_contain_any: ["自我选择", "灵魂的光辉"]
+    tier: conceptual
+
+  - id: Q18
+    query: "被剥夺教授职位的经历"
+    must_contain_any: ["1937年", "教授席位", "被剥夺"]
+    tier: conceptual
+
+  - id: Q19
+    query: "希腊传统与中世纪精神延续"
+    must_contain_any: ["传统", "精神"]
+    tier: conceptual
+
+  - id: Q20
+    query: "个体的自由与大众社会的张力"
+    must_contain_any: ["自由", "大众"]
+    tier: conceptual
