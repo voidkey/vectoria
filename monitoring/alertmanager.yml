@@ -1,0 +1,31 @@
+# Alertmanager config for vectoria.
+#
+# Single route → single receiver → the wecom-group-bot relay running
+# as a sidecar. Groups alerts that arrive close together so a storm
+# ships as one wecom message instead of N messages; repeats once per
+# hour while an alert stays firing so nobody forgets.
+#
+# For multi-environment / multi-team fan-out add child routes under
+# ``routes:`` with ``matchers:`` on labels (severity, component, …).
+
+global:
+  resolve_timeout: 5m
+
+route:
+  receiver: wecom
+  # group_by: fold alerts on the same alert+labelset into one message.
+  # alertname+severity keeps DLQ-across-task_types in a single bundle
+  # without collapsing unrelated alerts.
+  group_by: ['alertname', 'severity']
+  group_wait: 30s       # sit on the first firing for 30s to collect more
+  group_interval: 5m    # resend when a new alert joins a live group
+  repeat_interval: 1h   # re-ping while still firing so it doesn't fade
+
+receivers:
+  - name: wecom
+    webhook_configs:
+      # ``alert-relay`` is the sidecar service name in the monitoring
+      # compose. It reshapes the payload to wecom's group-bot contract
+      # and forwards to the webhook URL from its WECOM_WEBHOOK_URL env.
+      - url: http://alert-relay:8080/alert
+        send_resolved: true

@@ -14,6 +14,13 @@ global:
 rule_files:
   - /etc/prometheus/rules.yaml
 
+# Where firing alerts get shipped. Alertmanager (in the monitoring
+# compose) dedupes + groups + routes to the wecom relay.
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ['alertmanager:9093']
+
 scrape_configs:
   - job_name: vectoria-app
     metrics_path: /metrics

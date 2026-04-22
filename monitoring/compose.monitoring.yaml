@@ -9,11 +9,16 @@
 #     -f compose.yaml -f compose.prod.yaml \
 #     -f monitoring/compose.monitoring.yaml \
 #     --env-file .env.prod \
-#     up -d prometheus grafana
+#     up -d prometheus grafana alertmanager alert-relay
 #
 # Or to run them in a separate project that joins the main network:
 #
 #   docker compose -f monitoring/compose.monitoring.yaml -p vectoria-mon up -d
+#
+# Alertmanager requires ``WECOM_WEBHOOK_URL`` in the .env (or shell
+# env) so the alert-relay sidecar knows where to POST. Example:
+#
+#   WECOM_WEBHOOK_URL=https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=...
 #
 # Grafana defaults:
 #   * URL:   http://<host>:3000
@@ -83,8 +88,56 @@ services:
       timeout: 3s
       retries: 6
 
+  alertmanager:
+    image: ${ALERTMANAGER_IMAGE:-prom/alertmanager:v0.28.0}
+    restart: unless-stopped
+    volumes:
+      - ./monitoring/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - vectoria_am_data:/alertmanager
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.yml
+      - --storage.path=/alertmanager
+    ports:
+      - "${ALERTMANAGER_BIND:-127.0.0.1}:9093:9093"
+    networks:
+      - default
+    depends_on:
+      alert-relay:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:9093/-/ready"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+
+  alert-relay:
+    # Tiny FastAPI service that reshapes Alertmanager's generic
+    # webhook payload into WeChat group-bot format. Reuses the
+    # vectoria image so no separate artifact to build or pin.
+    image: ${VECTORIA_IMAGE:-voidkey/vectoria:latest}
+    restart: unless-stopped
+    command:
+      - uvicorn
+      - monitoring.alert_relay:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8080"
+    environment:
+      WECOM_WEBHOOK_URL: ${WECOM_WEBHOOK_URL:-}
+      RELAY_MAX_ALERTS: ${RELAY_MAX_ALERTS:-10}
+    networks:
+      - default
+    healthcheck:
+      test: ["CMD-SHELL", "python -c 'import urllib.request,sys;sys.exit(0 if urllib.request.urlopen(\"http://localhost:8080/health\",timeout=3).status==200 else 1)'"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+
 volumes:
   vectoria_prom_data:
     name: vectoria_prom_data
   vectoria_grafana_data:
     name: vectoria_grafana_data
+  vectoria_am_data:
+    name: vectoria_am_data

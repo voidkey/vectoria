@@ -6,16 +6,20 @@ configuration files for your Prometheus server and Grafana instance.
 
 ## Quickstart (recommended)
 
-Run Prometheus + Grafana in the **same compose project** as vectoria
-so they can scrape `app:8000` and `worker:9001` by service name:
+Run Prometheus + Grafana + Alertmanager + the wecom relay in the
+**same compose project** as vectoria so they can scrape `app:8000`
+and `worker:9001` by service name:
 
 ```bash
 cd /path/to/vectoria
+# Set the wecom group-bot webhook in .env.prod (or export in shell):
+#   WECOM_WEBHOOK_URL=https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxx
+
 docker compose \
   -f compose.yaml -f compose.prod.yaml \
   -f monitoring/compose.monitoring.yaml \
   --env-file .env.prod \
-  up -d prometheus grafana
+  up -d prometheus grafana alertmanager alert-relay
 ```
 
 That brings up:
@@ -25,6 +29,23 @@ That brings up:
 - **Grafana** on `http://<host>:3000` (admin/admin; change immediately
   or set `GF_ADMIN_PASSWORD` in the env). The Vectoria dashboard
   auto-provisions into the "Vectoria" folder.
+- **Alertmanager** on `http://<host>:9093` (loopback by default —
+  `ALERTMANAGER_BIND` to override). Routes all firing alerts to the
+  wecom relay below.
+- **alert-relay** (internal-only) — reshapes Alertmanager's generic
+  webhook into WeChat group-bot format (`msgtype=text`) and POSTs to
+  `WECOM_WEBHOOK_URL`. No host port; reached at `alert-relay:8080`
+  from inside the compose network.
+
+### Verify the wecom pipeline
+
+```bash
+# Fire a test alert directly through Alertmanager (bypasses Prometheus):
+ssh deploy-host 'curl -H "Content-Type: application/json" -d "[{\"labels\":{\"alertname\":\"ManualTest\",\"severity\":\"warning\"},\"annotations\":{\"summary\":\"pipeline test\",\"description\":\"if you see this in wecom, the alerting path works\"}}]" http://127.0.0.1:9093/api/v2/alerts'
+```
+
+A text message should land in the wecom group within ~30s (the
+`group_wait` period in `alertmanager.yml`).
 
 Both dashboard + rules hot-reload from disk. Edit
 `monitoring/prometheus-rules.yaml` and:
@@ -44,9 +65,11 @@ rule edit (`docker restart vectoria-prometheus-1`). In-place edits
 
 | File | Purpose |
 |------|---------|
-| `compose.monitoring.yaml` | Compose overlay that brings up Prometheus + Grafana wired into the vectoria stack. |
-| `prometheus.yaml` | Prometheus config: scrape `app:8000` + `worker:9001`, load `rules.yaml`. |
-| `prometheus-rules.yaml` | 11 alert rules covering queue, worker, parser, external APIs, and rate-limit degradation. |
+| `compose.monitoring.yaml` | Compose overlay that brings up Prometheus + Grafana + Alertmanager + wecom relay wired into the vectoria stack. |
+| `prometheus.yaml` | Prometheus config: scrape `app:8000` + `worker:9001`, load `rules.yaml`, route firing alerts to Alertmanager. |
+| `prometheus-rules.yaml` | 10 alert rules covering queue, worker, parser, external APIs, and rate-limit degradation. |
+| `alertmanager.yml` | Alertmanager routing + grouping config; single receiver = the wecom relay. |
+| `alert_relay.py` | Tiny FastAPI service that reshapes Alertmanager webhook payloads to WeChat group-bot JSON and forwards to `WECOM_WEBHOOK_URL`. Reuses the vectoria image. |
 | `grafana/provisioning/datasources/prom.yaml` | Auto-configures the Prometheus datasource in Grafana. |
 | `grafana/provisioning/dashboards/provider.yaml` | Tells Grafana to pick up dashboards from `/var/lib/grafana/dashboards` inside the container. |
 | `grafana/dashboards/vectoria.json` | The Vectoria dashboard (auto-loaded). |
