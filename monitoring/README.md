@@ -33,6 +33,13 @@ Both dashboard + rules hot-reload from disk. Edit
 curl -X POST http://127.0.0.1:9090/-/reload
 ```
 
+**Gotcha**: when rule files are updated via `git pull`, Git replaces
+the file atomically (rename-over-write). Bind-mounts hold the old
+inode — Prometheus keeps serving the previous rule set even after
+`-/reload`. Workaround: restart the container after a git-pull-driven
+rule edit (`docker restart vectoria-prometheus-1`). In-place edits
+(e.g. `vi prometheus-rules.yaml`) reload cleanly and don't need this.
+
 ## Files
 
 | File | Purpose |
