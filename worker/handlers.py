@@ -209,7 +209,12 @@ async def handle_index_document(payload: dict) -> None:
     doc = await load_doc(doc_id)
     content = doc.content
 
-    splitter = Splitter(chunk_size=512, chunk_overlap=64, parent_chunk_size=1024)
+    cfg = get_settings()
+    splitter = Splitter(
+        chunk_size=cfg.splitter_chunk_size,
+        chunk_overlap=cfg.splitter_chunk_overlap,
+        parent_chunk_size=cfg.splitter_parent_chunk_size,
+    )
     chunks = splitter.split(content)
 
     indexable = [c for c in chunks if c.parent_id is None]

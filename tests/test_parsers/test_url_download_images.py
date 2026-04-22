@@ -168,9 +168,15 @@ async def test_rate_table_used_when_gating():
 async def test_http_exception_does_not_break_batch():
     """A failing URL shouldn't bring down the others — ensures we catch
     httpx exceptions per-URL rather than propagating.
+
+    Since W5-1, download_images also runs an SSRF re-check per URL;
+    this test stubs that to no-op so we're testing the httpx-error
+    path specifically, not the SSRF path.
     """
     async def _allow_all(*a, **kw):
         return True
+    async def _noop_ssrf(*a, **kw):
+        return None
 
     ok_resp = MagicMock(status_code=200, content=b"img")
     client = MagicMock()
@@ -182,6 +188,7 @@ async def test_http_exception_does_not_break_batch():
     with (
         patch("parsers.url._handlers.rl_acquire", new=_allow_all),
         patch("parsers.url._handlers.httpx.AsyncClient", return_value=client),
+        patch("api.url_validation.reresolve_and_check_ssrf", new=_noop_ssrf),
     ):
         result = await download_images([
             "https://broken.example.com/a.jpg",
