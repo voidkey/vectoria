@@ -123,8 +123,12 @@ PARSE_DURATION_SECONDS = Histogram(
 RATELIMIT_CHECKS_TOTAL = Counter(
     "vectoria_ratelimit_checks_total",
     "Distributed rate-limit decisions labelled by outcome. "
-    "error = Redis unreachable and caller received fail-closed False.",
-    labelnames=("key", "result"),  # result ∈ {allowed, blocked, error}
+    "allowed/blocked = shared Redis bucket decision; "
+    "local_fallback = Redis down, degraded to per-process bucket; "
+    "error = local fallback also failed (request was allowed to avoid "
+    "deadlocking ingestion).",
+    labelnames=("key", "result"),
+    # result ∈ {allowed, blocked, local_fallback, error}
 )
 
 # ---------------------------------------------------------------------------
