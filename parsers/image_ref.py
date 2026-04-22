@@ -32,8 +32,45 @@ Contract
     ``parsers.image_metadata.extract_metadata_into_refs`` after parsing —
     parsers leave them at their defaults.
 """
+import base64
 from dataclasses import dataclass, field
 from typing import Callable
+
+
+class BytesFactory:
+    """Picklable factory wrapping pre-materialized bytes.
+
+    Parsers running under ``parsers.isolation.run_isolated`` return
+    ``ParseResult`` across a ProcessPoolExecutor boundary, which pickles
+    the result. Nested/local ``def _factory`` closures fail to unpickle
+    in the parent with ``Can't get local object ...<locals>._factory``,
+    because pickle records functions by qualified name and local-scope
+    names aren't addressable from outside. This module-level callable
+    class pickles cleanly via its class path.
+    """
+    __slots__ = ("_data",)
+
+    def __init__(self, data: bytes) -> None:
+        self._data = data
+
+    def __call__(self) -> bytes:
+        return self._data
+
+
+class Base64Factory:
+    """Picklable factory that decodes a base64 payload on demand.
+
+    Holding the b64 string instead of decoded bytes is ~1.33× smaller;
+    the decoded bytes live only from ``materialize()`` through the
+    single upload call before ``release()`` drops this factory too.
+    """
+    __slots__ = ("_payload",)
+
+    def __init__(self, payload: str) -> None:
+        self._payload = payload
+
+    def __call__(self) -> bytes:
+        return base64.b64decode(self._payload)
 
 
 @dataclass
@@ -62,6 +99,11 @@ class ImageRef:
     markdown_pos: int | None = None
 
     # ---- Lazy bytes --------------------------------------------------------
+    # MUST be picklable — ``ParseResult`` crosses a ProcessPoolExecutor
+    # boundary when ``parser_isolation`` is on, and pickle records
+    # functions by qualified name. Use ``BytesFactory`` / ``Base64Factory``
+    # above (module-level callables) or any top-level function; never a
+    # nested ``def`` / lambda that closes over parser-local state.
     _factory: Callable[[], bytes] | None = field(default=None, repr=False)
 
     def materialize(self) -> bytes:

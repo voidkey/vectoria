@@ -40,7 +40,7 @@ from pathlib import Path
 from config import get_settings
 from parsers.base import BaseParser, ParseResult
 from parsers.convert import LEGACY_FORMAT_MAP, convert_legacy_format
-from parsers.image_ref import ImageRef
+from parsers.image_ref import BytesFactory, ImageRef
 from parsers.isolation import run_isolated
 
 logger = logging.getLogger(__name__)
@@ -117,13 +117,10 @@ class DocxParser(BaseParser):
             with image.open() as stream:
                 blob = stream.read()
 
-            def _factory(data=blob) -> bytes:
-                return data
-
             image_refs.append(ImageRef(
                 name=name,
                 mime=content_type,
-                _factory=_factory,
+                _factory=BytesFactory(blob),
             ))
             return {"src": name, "alt": ""}
 

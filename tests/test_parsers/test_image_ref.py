@@ -7,12 +7,15 @@ The whole streaming pipeline rests on two guarantees:
 
 If either of these breaks, memory-bounded upload semantics are gone.
 """
+import base64
 import gc
+import pickle
 import weakref
 
 import pytest
 
-from parsers.image_ref import ImageRef
+from parsers.base import ParseResult
+from parsers.image_ref import Base64Factory, BytesFactory, ImageRef
 
 
 def test_materialize_calls_factory_each_time():
@@ -70,3 +73,28 @@ def test_release_frees_closure_captures():
     assert big_ref() is None, (
         "release() must allow GC of factory-captured objects"
     )
+
+
+def test_parse_result_with_image_refs_survives_pickle_round_trip():
+    """Regression: parsers run under ``parser_isolation`` return
+    ``ParseResult`` across a ProcessPoolExecutor boundary. A nested
+    ``def _factory`` breaks this with ``Can't get local object
+    ...<locals>._factory`` on unpickle in the parent.
+    """
+    payload = b"payload-bytes"
+    b64 = base64.b64encode(payload).decode()
+    pr = ParseResult(
+        content="md",
+        title="t",
+        image_refs=[
+            ImageRef(name="a.png", mime="image/png", _factory=BytesFactory(payload)),
+            ImageRef(name="b.png", mime="image/png", _factory=Base64Factory(b64)),
+        ],
+    )
+
+    roundtripped = pickle.loads(pickle.dumps(pr))
+
+    assert roundtripped.content == "md"
+    assert [r.name for r in roundtripped.image_refs] == ["a.png", "b.png"]
+    assert roundtripped.image_refs[0].materialize() == payload
+    assert roundtripped.image_refs[1].materialize() == payload

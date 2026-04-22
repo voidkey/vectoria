@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 from config import get_settings
 from parsers.base import BaseParser, ParseResult
 from parsers.convert import LEGACY_FORMAT_MAP, convert_legacy_format
-from parsers.image_ref import ImageRef
+from parsers.image_ref import BytesFactory, ImageRef
 from parsers.isolation import run_isolated
 
 if TYPE_CHECKING:
@@ -124,15 +124,14 @@ class DoclingParser(BaseParser):
         return ParseResult(content=markdown, title=title, image_refs=image_refs)
 
     def _extract_image_refs(self, result) -> list[ImageRef]:
-        """Build lazy ImageRef list from Docling pictures.
+        """Materialise PNG bytes from Docling pictures into picklable refs.
 
-        The factory captures the docling ``picture`` + ``document`` by
-        default-arg; ``materialize()`` re-encodes to PNG on demand. This
-        keeps PNG bytes out of the heap until the upload pipeline asks
-        for them, and lets ``release()`` drop the capture afterwards.
-        Widths/heights are read eagerly (PIL.Image.size is cheap — the
-        image is already decoded in docling's internals) so metadata
-        extraction doesn't need to materialize bytes just for dims.
+        Why eager-encode: when ``parser_isolation`` is on (production
+        default), the returned ``ParseResult`` is pickled back from a
+        subprocess. Docling's ``picture`` / ``document`` objects are
+        not picklable, so a lazy closure capturing them would fail the
+        round-trip. Widths/heights come from PIL.Image.size (cheap — the
+        image is already decoded in docling's internals).
         """
         refs: list[ImageRef] = []
         try:
@@ -141,17 +140,11 @@ class DoclingParser(BaseParser):
                 if pil_img is None:
                     continue
                 w, h = pil_img.size
-                name = f"image_{idx:04d}.png"
-
-                def _factory(pic=picture, doc=result.document) -> bytes:
-                    img = pic.get_image(doc=doc)
-                    buf = io.BytesIO()
-                    img.save(buf, format="PNG")
-                    return buf.getvalue()
-
+                buf = io.BytesIO()
+                pil_img.save(buf, format="PNG")
                 refs.append(ImageRef(
-                    name=name, mime="image/png",
-                    width=w, height=h, _factory=_factory,
+                    name=f"image_{idx:04d}.png", mime="image/png",
+                    width=w, height=h, _factory=BytesFactory(buf.getvalue()),
                 ))
         except Exception:
             logger.exception("docling image extraction failed")

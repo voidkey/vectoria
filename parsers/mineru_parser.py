@@ -1,4 +1,3 @@
-import base64
 import logging
 import re
 from pathlib import Path
@@ -8,7 +7,7 @@ import httpx
 from config import get_settings
 from infra.circuit_breaker import CircuitOpenError, get_breaker
 from parsers.base import BaseParser, ParseResult
-from parsers.image_ref import ImageRef
+from parsers.image_ref import Base64Factory, ImageRef
 
 logger = logging.getLogger(__name__)
 
@@ -113,13 +112,13 @@ class MinerUParser(BaseParser):
             # mime sniffed from data URI prefix when present; plain
             # base64 strings assume PNG (MinerU's documented output).
             m = _B64_DATA_URI.match(b64str)
-            mime = f"image/{m.group(1).lower()}" if m else "image/png"
-
-            def _factory(s=b64str, match=m) -> bytes:
-                payload = match.group(2) if match else s
-                return base64.b64decode(payload)
-
+            if m:
+                mime = f"image/{m.group(1).lower()}"
+                payload = m.group(2)
+            else:
+                mime = "image/png"
+                payload = b64str
             refs.append(ImageRef(
-                name=fname, mime=mime, _factory=_factory,
+                name=fname, mime=mime, _factory=Base64Factory(payload),
             ))
         return refs

@@ -24,7 +24,7 @@ import io
 import logging
 from typing import TYPE_CHECKING
 
-from parsers.image_ref import ImageRef
+from parsers.image_ref import BytesFactory, ImageRef
 
 if TYPE_CHECKING:
     from pptx.slide import Slide  # noqa: F401
@@ -146,13 +146,10 @@ def _make_ref(
     }
     suffix = ext_map.get(content_type, ".png")
 
-    def _factory(data=blob) -> bytes:
-        return data
-
     return ImageRef(
         name=f"{name}{suffix}",
         mime=content_type,
         width=w,
         height=h,
-        _factory=_factory,
+        _factory=BytesFactory(blob),
     )
