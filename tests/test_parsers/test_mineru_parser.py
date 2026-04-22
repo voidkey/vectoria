@@ -57,7 +57,6 @@ async def test_parse_yields_lazy_image_refs():
         result = await parser.parse(b"%PDF fake", filename="test.pdf")
 
     # Dict field is empty (legacy shape unused); payload lives in refs.
-    assert result.images == {}
     assert len(result.image_refs) == 1
     ref = result.image_refs[0]
     assert ref.name == "fig1.png"

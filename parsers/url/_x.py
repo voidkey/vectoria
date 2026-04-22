@@ -96,7 +96,7 @@ class XHandler:
                 resp.raise_for_status()
                 data = resp.json()
         except Exception:
-            return ParseResult(content="", images={}, title="")
+            return ParseResult(content="", title="")
 
         user = data.get("user") or {}
         user_name = user.get("name") or ""
@@ -132,7 +132,6 @@ class XHandler:
         title = article_title or (text[:80] if text else f"Tweet by {user_name or handle}")
         return ParseResult(
             content="\n\n".join(parts),
-            images={},
-            title=title or url,
+                        title=title or url,
             image_urls=img_urls[:20],
         )

@@ -92,12 +92,6 @@ async def run_worker(*, max_iterations: int | None = None) -> int:
     cfg = get_settings()
     rss_limit = cfg.worker_rss_limit_bytes
     task_types = _parse_queues(cfg.worker_queues)
-    if cfg.worker_concurrency != 1:
-        logger.warning(
-            "WORKER_CONCURRENCY=%d ignored: current runner is serial; "
-            "concurrent execution lands in a later milestone.",
-            cfg.worker_concurrency,
-        )
 
     processed = 0
     last_reap = time.monotonic()

@@ -18,7 +18,7 @@ class FakeHandler:
         return urlparse(url).hostname in self.hosts
 
     async def parse(self, url: str) -> ParseResult:
-        return ParseResult(content="fake", images={}, title="Fake")
+        return ParseResult(content="fake", title="Fake")
 
     def download_headers(self, url: str) -> dict[str, str] | None:
         return None

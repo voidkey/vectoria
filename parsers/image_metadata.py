@@ -1,7 +1,6 @@
 import io
 import re
 import logging
-from dataclasses import dataclass
 from PIL import Image
 
 from parsers.image_ref import ImageRef
@@ -13,17 +12,6 @@ _HEADING_RE = re.compile(r"^(#{1,6})\s+(.+)$", re.MULTILINE)
 
 CONTEXT_CHARS = 200
 MIN_DIMENSION = 100
-
-
-@dataclass
-class ImageMeta:
-    filename: str
-    index: int
-    width: int | None
-    height: int | None
-    alt: str
-    context: str
-    section_title: str
 
 
 _PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
@@ -94,62 +82,6 @@ def _extract_context(markdown: str, start: int, end: int) -> str:
     after = markdown[end:after_end].strip()
     parts = [p for p in (before, after) if p]
     return "\n\n".join(parts)
-
-
-def extract_image_metadata(
-    markdown: str, images: dict[str, bytes]
-) -> list[ImageMeta]:
-    """Extract metadata for each image found in both the markdown and image dict.
-
-    Filters out images smaller than MIN_DIMENSION (100px) on either axis.
-    Returns a list of ImageMeta sorted by document order.
-
-    Legacy dict-based interface. New code should use
-    ``extract_metadata_into_refs`` which fills fields directly on
-    ``ImageRef`` objects — bytes stay under the streaming pipeline's
-    lifetime control instead of being held in an eagerly-materialised
-    dict for the entire ingest.
-    """
-    refs: list[tuple[str, int, int, str]] = []  # (filename, start, end, alt)
-    for m in _IMG_REF_RE.finditer(markdown):
-        alt = m.group(1)
-        ref_path = m.group(2)
-        for img_name in images:
-            if img_name in ref_path or ref_path in img_name or img_name == ref_path:
-                refs.append((img_name, m.start(), m.end(), alt))
-                break
-
-    # Also include images not referenced in markdown
-    referenced_names = {r[0] for r in refs}
-    for img_name in images:
-        if img_name not in referenced_names:
-            refs.append((img_name, len(markdown), len(markdown), ""))
-
-    result: list[ImageMeta] = []
-    idx = 0
-    for filename, start, end, alt in refs:
-        img_bytes = images[filename]
-        w, h = _get_dimensions(img_bytes)
-
-        if w is not None and h is not None:
-            if w < MIN_DIMENSION or h < MIN_DIMENSION:
-                continue
-
-        context = _extract_context(markdown, start, end)
-        section_title = _find_section_title(markdown, start)
-
-        result.append(ImageMeta(
-            filename=filename,
-            index=idx,
-            width=w,
-            height=h,
-            alt=alt,
-            context=context,
-            section_title=section_title,
-        ))
-        idx += 1
-
-    return result
 
 
 def extract_metadata_into_refs(

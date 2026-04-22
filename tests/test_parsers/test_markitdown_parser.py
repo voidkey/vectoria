@@ -16,7 +16,6 @@ async def test_parse_returns_text_content():
 
     assert "Hello" in result.content
     assert result.title == "doc"
-    assert result.images == {}
 
 
 @pytest.mark.asyncio

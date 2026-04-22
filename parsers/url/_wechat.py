@@ -129,7 +129,7 @@ class WechatHandler:
             html = resp.text
         except Exception:
             log.debug("WeChat httpx fetch failed: %s", url, exc_info=True)
-            return ParseResult(content="", images={}, title="")
+            return ParseResult(content="", title="")
 
         doc = lxml.html.fromstring(html)
 
@@ -160,7 +160,7 @@ class WechatHandler:
             img_urls = extract_datasrc_urls(js_content)
 
         if not content_html:
-            return ParseResult(content="", images={}, title="")
+            return ParseResult(content="", title="")
 
         wrapped = f"<html><body>{content_html}</body></html>"
         text = extract_with_trafilatura(wrapped)
@@ -169,7 +169,7 @@ class WechatHandler:
             title = extract_html_title(html, url)
 
         return ParseResult(
-            content=text, images={}, title=title,
+            content=text, title=title,
             image_urls=img_urls[:20],
         )
 
@@ -177,7 +177,7 @@ class WechatHandler:
         try:
             from parsers.url._browser import parse_session
         except ImportError:
-            return ParseResult(content="", images={}, title="")
+            return ParseResult(content="", title="")
 
         # Browser pool: one Chromium per worker process, fresh context
         # per call. ``block_heavy=False`` — WeChat pages sometimes
@@ -264,6 +264,6 @@ class WechatHandler:
         text = extract_with_trafilatura(wrapped)
 
         return ParseResult(
-            content=text, images={}, title=title,
+            content=text, title=title,
             image_urls=img_urls[:20],
         )

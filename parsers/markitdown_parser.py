@@ -61,7 +61,7 @@ class MarkitdownParser(BaseParser):
             if converted_path:
                 Path(converted_path).unlink(missing_ok=True)
 
-        return ParseResult(content=content, images={}, title=Path(filename).stem)
+        return ParseResult(content=content, title=Path(filename).stem)
 
 
 def _markitdown_parse_worker(source: bytes | str, filename: str) -> ParseResult:

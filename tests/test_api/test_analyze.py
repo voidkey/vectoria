@@ -54,7 +54,7 @@ async def test_analyze_url(client):
 
 @pytest.mark.asyncio
 async def test_analyze_file_upload(client):
-    fake_result = ParseResult(content="# PDF Content", images={}, title="test")
+    fake_result = ParseResult(content="# PDF Content", title="test")
 
     with patch("api.routes.analyze.registry") as mock_reg:
         mock_parser = AsyncMock()
@@ -77,7 +77,7 @@ async def test_analyze_file_upload(client):
 @pytest.mark.asyncio
 async def test_analyze_url_no_engine_param(client):
     """Verify the engine parameter is no longer accepted."""
-    fake_result = ParseResult(content="# Test", images={}, title="Test")
+    fake_result = ParseResult(content="# Test", title="Test")
 
     with patch("api.routes.analyze.registry") as mock_reg:
         mock_parser = AsyncMock()

@@ -151,7 +151,7 @@ async def test_handler_parse_image_message():
 async def test_handler_falls_back_to_playwright_on_empty():
     empty_html = "<html><body><p>no article</p></body></html>"
 
-    pw_result = ParseResult(content="playwright content", images={}, title="PW Title")
+    pw_result = ParseResult(content="playwright content", title="PW Title")
 
     with _patch_async_httpx(empty_html), \
          patch.object(WechatHandler, "_parse_with_playwright", new_callable=AsyncMock,

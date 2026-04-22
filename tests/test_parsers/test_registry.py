@@ -8,7 +8,7 @@ class FakePdfParser(BaseParser):
     supported_types = [".pdf"]
 
     async def parse(self, source, filename="", **kwargs):
-        return ParseResult(content="# Fake PDF", images={}, title="Fake")
+        return ParseResult(content="# Fake PDF", title="Fake")
 
 
 class FakeUrlParser(BaseParser):
@@ -16,7 +16,7 @@ class FakeUrlParser(BaseParser):
     supported_types = ["url"]
 
     async def parse(self, source, filename="", **kwargs):
-        return ParseResult(content="# Fake URL", images={}, title="URL")
+        return ParseResult(content="# Fake URL", title="URL")
 
 
 def test_register_and_get():
@@ -56,7 +56,7 @@ def test_unavailable_parser_skipped_in_auto():
             return False
 
         async def parse(self, source, filename="", **kwargs):
-            return ParseResult(content="", images={}, title="")
+            return ParseResult(content="", title="")
 
     reg = ParserRegistry()
     reg.register(UnavailableParser)

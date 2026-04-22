@@ -49,7 +49,7 @@ class UrlParser(BaseParser):
 
         handler = find_handler(url)
         if handler is None:
-            return ParseResult(content="", images={}, title="")
+            return ParseResult(content="", title="")
         return await handler.parse(url)
 
 

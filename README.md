@@ -135,7 +135,6 @@ All settings are configured via environment variables (see [`.env.example`](.env
 | `EMBEDDING_API_KEY` | *(falls back to OPENAI_API_KEY)* | Embedding API key |
 | `EMBEDDING_MODEL` | `text-embedding-3-small` | Embedding model |
 | `EMBEDDING_DIMENSIONS` | `1536` | Embedding vector dimensions |
-| `VECTOR_STORE` | `pgvector` | Vector store backend (`pgvector` or `chroma`) |
 | `DATABASE_URL` | `postgresql+asyncpg://...` | PostgreSQL connection string |
 | `STORAGE_TYPE` | `s3` | Object storage backend type |
 | `S3_ENDPOINT` | `http://localhost:9000` | S3-compatible endpoint URL |

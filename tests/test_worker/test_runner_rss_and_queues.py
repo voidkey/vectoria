@@ -28,7 +28,6 @@ async def test_runner_self_kills_when_rss_exceeds_limit(monkeypatch):
     settings = get_settings()
     monkeypatch.setattr(settings, "worker_rss_limit_bytes", 1024)  # 1 KiB
     monkeypatch.setattr(settings, "worker_queues", "")
-    monkeypatch.setattr(settings, "worker_concurrency", 1)
 
     with (
         patch("worker.runner.SessionLocal") as mock_sl,
@@ -54,7 +53,6 @@ async def test_runner_does_not_self_kill_when_rss_under_limit(monkeypatch):
     settings = get_settings()
     monkeypatch.setattr(settings, "worker_rss_limit_bytes", 10_000_000)  # 10 MB
     monkeypatch.setattr(settings, "worker_queues", "")
-    monkeypatch.setattr(settings, "worker_concurrency", 1)
 
     with (
         patch("worker.runner.SessionLocal") as mock_sl,
@@ -82,7 +80,6 @@ async def test_runner_disabled_rss_check_when_limit_zero(monkeypatch):
     settings = get_settings()
     monkeypatch.setattr(settings, "worker_rss_limit_bytes", 0)
     monkeypatch.setattr(settings, "worker_queues", "")
-    monkeypatch.setattr(settings, "worker_concurrency", 1)
 
     with (
         patch("worker.runner.SessionLocal") as mock_sl,
@@ -110,7 +107,6 @@ async def test_runner_propagates_worker_queues_to_dequeue(monkeypatch):
     settings = get_settings()
     monkeypatch.setattr(settings, "worker_queues", "url_render, embedding ")
     monkeypatch.setattr(settings, "worker_rss_limit_bytes", 0)
-    monkeypatch.setattr(settings, "worker_concurrency", 1)
 
     captured = {}
 
@@ -158,7 +154,6 @@ async def test_runner_empty_worker_queues_means_accept_all(monkeypatch):
     settings = get_settings()
     monkeypatch.setattr(settings, "worker_queues", "")
     monkeypatch.setattr(settings, "worker_rss_limit_bytes", 0)
-    monkeypatch.setattr(settings, "worker_concurrency", 1)
 
     captured = {}
 

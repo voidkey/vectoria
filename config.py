@@ -28,8 +28,9 @@ class Settings(BaseSettings):
         key = self.embedding_api_key.get_secret_value()
         return key if key else self.openai_api_key.get_secret_value()
 
-    # Vector store
-    vector_store: Literal["pgvector", "chroma"] = "pgvector"
+    # Vector store — pgvector is the only supported backend; removed
+    # the chroma enum option in W6-6 because no chroma adapter was
+    # ever implemented (vectorstore/ has only pgvector.py + base.py).
     database_url: SecretStr = SecretStr("postgresql+asyncpg://postgres:postgres@localhost/vectoria")
 
     # Object storage
@@ -73,11 +74,6 @@ class Settings(BaseSettings):
     # isolation; tests that rely on in-process patching (mocking
     # DocumentConverter etc.) flip this off via monkeypatch.
     parser_isolation: bool = True
-
-    # Legacy setting retained for config-shape compatibility. The API
-    # no longer parses in-process (W1 Task 4), so this semaphore no
-    # longer gates anything. Will be removed after one release cycle.
-    max_concurrent_ingestions: int = 3
 
     # POST /documents/{file,url}?wait=true polls the Document row for up
     # to this many seconds before returning so backward-compat clients
@@ -160,15 +156,10 @@ class Settings(BaseSettings):
 
     # Comma-separated list of ``task_type`` values this worker instance
     # will consume from the queue. Empty = accept all task types (default).
-    # Drives future multi-deployment sharding: e.g. ``WORKER_QUEUES=url_render``
-    # in one K8s Deployment, everything-else in another — same image, same code,
-    # different env. See docs for the roster.
+    # Drives multi-deployment sharding: e.g. ``WORKER_QUEUES=url_render``
+    # in one K8s Deployment, everything-else in another — same image, same
+    # code, different env.
     worker_queues: str = ""
-
-    # Reserved for W5 multi-deployment work. The current runner processes
-    # tasks serially; this value is stored only so env/config can be shaped
-    # ahead of the concurrent implementation.
-    worker_concurrency: int = 1
 
 
 @lru_cache

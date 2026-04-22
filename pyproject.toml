@@ -67,10 +67,6 @@ dependencies = [
     "onnxruntime>=1.17",
 ]
 
-[project.optional-dependencies]
-ocr    = ["paddleocr>=2.10", "paddlepaddle>=3.0"]
-chroma = ["chromadb>=0.6"]
-
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"

@@ -26,13 +26,6 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/knowledgebases")
 
 
-# Parse used to run synchronously in the API process; the concurrency
-# semaphore bounded peak memory during that era. As of W1 Task 4 the
-# API only uploads raw bytes to S3 and enqueues a ``parse_document``
-# job, so there is no longer anything to gate here. The legacy config
-# ``max_concurrent_ingestions`` remains readable but is ignored.
-
-
 def _doc_to_response(doc: Document) -> DocumentResponse:
     return DocumentResponse(
         id=doc.id, kb_id=doc.kb_id, title=doc.title, source=doc.source,

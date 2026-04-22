@@ -58,7 +58,7 @@ async def test_handler_parse_with_httpx():
 
 @pytest.mark.asyncio
 async def test_handler_falls_back_to_playwright_on_js_challenge():
-    pw_result = ParseResult(content="Real SPA content " * 25, images={}, title="SPA Page")
+    pw_result = ParseResult(content="Real SPA content " * 25, title="SPA Page")
 
     with _patch_async_httpx(
              html="<html><body>Just a moment...</body></html>",

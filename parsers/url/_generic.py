@@ -54,12 +54,12 @@ class GenericHandler:
             downloaded = resp.text
             final_url = str(resp.url)
         except Exception:
-            return ParseResult(content="", images={}, title="")
+            return ParseResult(content="", title="")
 
         text = extract_with_trafilatura(downloaded)
         title = extract_html_title(downloaded, final_url)
         img_urls = extract_image_urls(downloaded, final_url)
-        return ParseResult(content=text, images={}, title=title, image_urls=img_urls)
+        return ParseResult(content=text, title=title, image_urls=img_urls)
 
     async def _parse_with_playwright(self, url: str) -> ParseResult:
         """Browser-pool fallback for JS-challenge / SPA / anti-bot sites.
@@ -75,7 +75,7 @@ class GenericHandler:
         try:
             from parsers.url._browser import parse_session
         except ImportError:
-            return ParseResult(content="", images={}, title="")
+            return ParseResult(content="", title="")
 
         ua = (
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -119,8 +119,8 @@ class GenericHandler:
             # ``_browser.get_browser`` imports ``playwright.async_api`` on
             # first use; absent package surfaces here, not at the outer
             # try/except above.
-            return ParseResult(content="", images={}, title="")
+            return ParseResult(content="", title="")
 
         text = extract_with_trafilatura(html)
         img_urls = extract_image_urls(html, final_url)
-        return ParseResult(content=text, images={}, title=title, image_urls=img_urls)
+        return ParseResult(content=text, title=title, image_urls=img_urls)
