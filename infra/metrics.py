@@ -30,6 +30,13 @@ WORKER_RSS_KILLS = Counter(
     "Worker self-exits triggered by RSS exceeding the configured limit.",
 )
 
+WORKER_RSS_LIMIT_BYTES = Gauge(
+    "vectoria_worker_rss_limit_bytes",
+    "Configured RSS self-kill threshold (bytes). 0 when disabled. "
+    "Exported at worker startup so the 'near-limit' alert has a real "
+    "threshold to compare vectoria_worker_rss_bytes against.",
+)
+
 WORKER_TASKS_INFLIGHT = Gauge(
     "vectoria_worker_tasks_inflight",
     "Tasks currently being processed by this worker (0 or 1 under current serial model).",
@@ -112,8 +119,38 @@ CIRCUIT_TRANSITIONS = Counter(
 PARSE_DURATION_SECONDS = Histogram(
     "vectoria_parse_duration_seconds",
     "Wall-clock time spent in parser.parse().",
-    labelnames=("engine", "status"),  # status ∈ {ok, error, timeout, empty}
+    labelnames=("engine", "status"),  # status ∈ {ok, error, circuit_open}
     buckets=_TASK_BUCKETS,
+)
+
+PARSE_EMPTY_TOTAL = Counter(
+    "vectoria_parse_empty_total",
+    "Parses that returned empty / whitespace-only content despite no "
+    "exception. Different from ``status=error`` in parse_duration — "
+    "these completed cleanly but produced nothing useful (scanned "
+    "PDFs without OCR, corrupt Office files, CAPTCHA-blocked URLs).",
+    labelnames=("engine",),
+)
+
+# ---------------------------------------------------------------------------
+# Document lifecycle outcomes
+# ---------------------------------------------------------------------------
+# Counts documents by the state they settle in after the full ingest
+# pipeline. Complements the task-level metrics: a task can complete
+# successfully while its document ends up ``failed`` (empty content,
+# oversized, parse exception). ``completed`` is the happy-path counter.
+
+DOCUMENT_OUTCOMES = Counter(
+    "vectoria_documents_total",
+    "Documents by terminal outcome after the ingest pipeline.",
+    labelnames=("outcome",),
+    # outcome ∈ {
+    #   completed        — indexed successfully
+    #   empty_content    — parse returned nothing
+    #   too_large        — content exceeded max_content_chars
+    #   parse_error      — parser raised an exception
+    #   indexing_error   — embedding / vector insert failed
+    # }
 )
 
 # ---------------------------------------------------------------------------

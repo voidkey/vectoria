@@ -16,6 +16,136 @@
 groups:
 
   # ---------------------------------------------------------------
+  # API (RED — rate, errors, duration per endpoint)
+  # ---------------------------------------------------------------
+  # Data comes from prometheus_fastapi_instrumentator: per-handler
+  # labels on ``http_requests_total`` + ``http_request_duration_seconds``.
+  # ``handler`` is the route template (``/v1/knowledgebases/{kb_id}/
+  # documents/url``), ``status`` is the response code, ``method`` is
+  # the verb. Excluded: ``/metrics`` and ``/health`` (health spam).
+  - name: vectoria.api
+    rules:
+
+      - alert: VectoriaApiServerErrorRate
+        # >5% 5xx over 5 minutes on any single handler means that
+        # endpoint is broken for users. Per-handler so an error in
+        # /query doesn't mask a healthy /documents/file (or vice
+        # versa). Symptom-level alert — the operator doesn't need to
+        # know *why*, just that callers are seeing errors.
+        expr: |
+          sum by (handler) (rate(http_requests_total{status=~"5..",handler!~"/metrics|/health.*"}[5m]))
+          /
+          sum by (handler) (rate(http_requests_total{handler!~"/metrics|/health.*"}[5m]))
+          > 0.05
+        for: 5m
+        labels:
+          severity: critical
+          component: api
+        annotations:
+          summary: "API 5xx rate >5% on {{ $labels.handler }}"
+          description: >
+            5xx error rate on {{ $labels.handler }} exceeded 5% for 5
+            minutes. Callers see errors. Check worker logs for the
+            task_type that feeds this endpoint, and the parse /
+            external-API dashboards for correlating failures.
+
+      - alert: VectoriaApiClientErrorSpike
+        # Sustained 4xx spike usually means either (a) a new caller
+        # is misusing the API (missing auth / bad payload shape) or
+        # (b) a validation regression just shipped. Severity info
+        # because the service is doing its job — but somebody should
+        # still look.
+        expr: |
+          sum by (handler, status) (rate(http_requests_total{status=~"4..",status!="401",status!="404",handler!~"/metrics|/health.*"}[10m]))
+          > 0.5
+        for: 10m
+        labels:
+          severity: info
+          component: api
+        annotations:
+          summary: "API 4xx spike on {{ $labels.handler }} (status={{ $labels.status }})"
+          description: >
+            Sustained {{ $labels.status }} responses on
+            {{ $labels.handler }}. Often the first signal of a
+            validation regression or a frontend/client that just
+            started sending bad payloads. 401/404 excluded as noise.
+
+      - alert: VectoriaApiLatencyHigh
+        # p95 > 30 s means the callers who don't time out are
+        # waiting half a minute for a response. Wait=true ingest
+        # calls can legitimately take ~30 s (the config says
+        # ``ingest_wait_timeout_seconds=30``) so this threshold is
+        # tuned for the ingest path; tighten for pure-query deploys.
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (handler, le) (rate(http_request_duration_seconds_bucket{handler!~"/metrics|/health.*"}[5m]))
+          ) > 30
+        for: 5m
+        labels:
+          severity: warning
+          component: api
+        annotations:
+          summary: "API p95 latency >30s on {{ $labels.handler }}"
+          description: >
+            {{ $labels.handler }} p95 latency is above 30 seconds.
+            Check: worker backlog (queue_depth), external-API
+            latency (mineru / embedding), parser p95 per engine.
+
+  # ---------------------------------------------------------------
+  # Documents (ingest pipeline outcomes)
+  # ---------------------------------------------------------------
+  - name: vectoria.documents
+    rules:
+
+      - alert: VectoriaDocumentFailureRate
+        # Top-level "% of documents ending up broken". Covers every
+        # failure mode (parse_error, empty_content, too_large,
+        # indexing_error) without pinning the alert to a specific
+        # cause. Threshold 20% is deliberately generous — legitimate
+        # corrupt inputs happen; tighten if your traffic is curated.
+        expr: |
+          sum(rate(vectoria_documents_total{outcome!="completed"}[10m]))
+          /
+          sum(rate(vectoria_documents_total[10m])) > 0.2
+        for: 10m
+        labels:
+          severity: warning
+          component: documents
+        annotations:
+          summary: "Document ingest failure rate >20%"
+          description: >
+            >20% of documents ingested in the last 10 minutes
+            ended up in a failed terminal state. Break down by
+            ``outcome`` in Grafana to pinpoint: empty_content
+            points at a parser, too_large at upstream size bounds,
+            parse_error at a parser exception.
+
+      - alert: VectoriaParseEmptyRate
+        # Empty-content rate per engine — the parser reported no
+        # error but returned nothing useful. Typical causes: scanned
+        # PDFs going through pdfium (no OCR), CAPTCHA-walled URLs
+        # served by generic site handler, password-protected Office
+        # files that mammoth/python-pptx silently accept.
+        expr: |
+          sum by (engine) (rate(vectoria_parse_empty_total[10m]))
+          / ignoring() group_left
+          sum by (engine) (rate(vectoria_parse_duration_seconds_count[10m])) > 0.3
+        for: 10m
+        labels:
+          severity: warning
+          component: parser
+        annotations:
+          summary: "{{ $labels.engine }} empty-result rate >30%"
+          description: >
+            Parser {{ $labels.engine }} is returning empty content
+            on >30% of calls. Not an exception rate — these parses
+            completed cleanly but had nothing to extract. If engine
+            is ``ocr-native`` with image uploads, check rapidocr
+            model version / language config. If ``pdfium``, likely
+            scanned PDFs that need OCR — MinerU should own those.
+
+  # ---------------------------------------------------------------
   # Queue health
   # ---------------------------------------------------------------
   - name: vectoria.queue
@@ -69,14 +199,28 @@ groups:
   - name: vectoria.worker
     rules:
 
-      # Removed: VectoriaWorkerRssNearLimit. The intended expression
-      # needed the configured self-kill cap as a metric to compare
-      # against; without that, the previous formulation (dividing by
-      # ``max(rss_bytes)``) always evaluated to 1.0 for a single-worker
-      # deploy and fired permanently. Ongoing self-kills
-      # (VectoriaWorkerRssKillsOngoing below) cover the "RSS cap is
-      # being hit" case reliably. Bring this alert back with a real
-      # cap-metric once worker_rss_limit_bytes is exported.
+      - alert: VectoriaWorkerRssNearLimit
+        # Fires when current RSS sits above 80% of the configured
+        # self-kill threshold for 2 minutes — operators get a
+        # proactive warning before the worker actually restarts
+        # itself. The ``worker_rss_limit_bytes > 0`` filter skips
+        # deploys where the cap is disabled (config default is 0).
+        expr: |
+          vectoria_worker_rss_bytes
+          / on() vectoria_worker_rss_limit_bytes > 0.8
+          and on() vectoria_worker_rss_limit_bytes > 0
+        for: 2m
+        labels:
+          severity: warning
+          component: worker
+        annotations:
+          summary: "Worker RSS >80% of self-kill cap"
+          description: >
+            Worker resident memory is within 20% of the configured
+            self-kill threshold. A single large parse away from an
+            automatic restart. Likely causes: heavy document
+            in-flight (check parse_duration p95), RSS creep from a
+            parser leak, or the cap is too tight for current load.
 
       - alert: VectoriaWorkerRssKillsOngoing
         # Any RSS self-kill in the last hour is worth surfacing —

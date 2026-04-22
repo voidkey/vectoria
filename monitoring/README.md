@@ -85,21 +85,49 @@ is unavailable.
 
 ## Metric catalogue
 
+### RED per surface
+
+| Metric | Type | Labels | Meaning |
+|---|---|---|---|
+| `http_requests_total` | counter | handler, method, status | API requests by endpoint + HTTP status (via fastapi-instrumentator) |
+| `http_request_duration_seconds` | histogram | handler, method | API latency per endpoint |
+| `vectoria_tasks_total` | counter | task_type, status | Task outcomes (completed/failed/dead) |
+| `vectoria_task_duration_seconds` | histogram | task_type, status | Task wall-clock duration |
+| `vectoria_parse_duration_seconds` | histogram | engine, status | Parser latency (status ∈ ok/error/circuit_open) |
+| `vectoria_parse_empty_total` | counter | engine | Parses that returned empty content despite no exception |
+| `vectoria_external_api_calls_total` | counter | api, status | Mineru / vision / embedding call outcomes |
+| `vectoria_external_api_duration_seconds` | histogram | api | External API latency |
+
+### Document lifecycle
+
+| Metric | Type | Labels | Meaning |
+|---|---|---|---|
+| `vectoria_documents_total` | counter | outcome | Docs by terminal state (completed / empty_content / too_large / parse_error / indexing_error) |
+
+### USE per resource
+
 | Metric | Type | Labels | Meaning |
 |---|---|---|---|
 | `vectoria_worker_rss_bytes` | gauge | — | Current worker resident memory |
+| `vectoria_worker_rss_limit_bytes` | gauge | — | Configured self-kill threshold (0 = disabled) |
 | `vectoria_worker_rss_kills_total` | counter | — | Worker self-exits on RSS cap |
-| `vectoria_tasks_total` | counter | task_type, status | Task outcomes (completed/failed/dead) |
-| `vectoria_task_duration_seconds` | histogram | task_type, status | Task wall-clock duration |
 | `vectoria_queue_depth` | gauge | task_type | Pending queue size per type |
 | `vectoria_queue_oldest_age_seconds` | gauge | task_type | Age of oldest pending task |
-| `vectoria_queue_dead_tasks` | gauge | task_type | DLQ size per type (W5-6) |
-| `vectoria_parse_duration_seconds` | histogram | engine, status | Parser latency (status ∈ ok/error/timeout/empty) |
-| `vectoria_external_api_calls_total` | counter | api, status | Mineru / vision / embedding call outcomes |
-| `vectoria_external_api_duration_seconds` | histogram | api | External API latency |
+| `vectoria_queue_dead_tasks` | gauge | task_type | DLQ size per type |
+
+### Dependencies
+
+| Metric | Type | Labels | Meaning |
+|---|---|---|---|
 | `vectoria_circuit_state` | gauge | name | 0=closed, 1=half_open, 2=open |
 | `vectoria_circuit_transitions_total` | counter | name, to_state | Breaker state changes |
 | `vectoria_ratelimit_checks_total` | counter | key, result | Rate-limit decisions (allowed/blocked/local_fallback/error) |
+
+### Gaps (worth adding later, not in current set)
+
+- **DB connection pool utilization** — asyncpg doesn't expose this via prometheus natively; requires reaching into `pool._holders` or polling `pg_stat_activity`.
+- **S3/object storage errors** — put/get/delete result counters would surface transient S3 failures today hidden inside parser exceptions.
+- **Request-ID propagation / distributed tracing** — no OpenTelemetry wiring; log correlation across API→worker crossings is ad-hoc.
 
 ## Tuning
 

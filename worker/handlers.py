@@ -20,7 +20,9 @@ from config import get_settings
 from db.base import get_session
 from db.helpers import load_doc, update_doc
 from db.models import Document, DocumentImage
-from infra.metrics import observe_parse
+from infra.metrics import (
+    DOCUMENT_OUTCOMES, PARSE_EMPTY_TOTAL, observe_parse,
+)
 from parsers.image_metadata import extract_metadata_into_refs
 from parsers.registry import registry
 from rag.embedder import get_embedder
@@ -110,6 +112,7 @@ async def handle_parse_document(payload: dict) -> None:
             parse_result = await parser.parse(raw, filename=filename)
     except Exception as e:
         logger.exception("parse_document: parse failed doc=%s", doc_id)
+        DOCUMENT_OUTCOMES.labels(outcome="parse_error").inc()
         await update_doc(
             doc_id, status="failed",
             error_msg=f"Parsing failed: {e}"[:500],
@@ -143,6 +146,8 @@ async def handle_parse_document(payload: dict) -> None:
     # on retry, so mark terminal and return (don't re-raise).
     if not content or content.isspace():
         logger.warning("parse_document: empty content for doc %s", doc_id)
+        PARSE_EMPTY_TOTAL.labels(engine=selected_engine).inc()
+        DOCUMENT_OUTCOMES.labels(outcome="empty_content").inc()
         await update_doc(
             doc_id, status="failed",
             error_msg="Parsing returned empty content",
@@ -155,6 +160,7 @@ async def handle_parse_document(payload: dict) -> None:
             "parse_document: content too large (%d > %d) doc=%s",
             len(content), cfg.max_content_chars, doc_id,
         )
+        DOCUMENT_OUTCOMES.labels(outcome="too_large").inc()
         await update_doc(
             doc_id, status="failed",
             error_msg=(
@@ -220,19 +226,28 @@ async def handle_index_document(payload: dict) -> None:
     indexable = [c for c in chunks if c.parent_id is None]
     embedder = get_embedder()
     texts = [c.content for c in indexable]
-    embeddings = await embedder.embed_batch(texts) if texts else []
-
-    chunk_data = [
-        ChunkData(
-            id=c.id, doc_id=doc_id, kb_id=kb_id,
-            content=c.content, embedding=embeddings[i],
-            chunk_index=c.index, parent_id=c.parent_id,
+    try:
+        embeddings = await embedder.embed_batch(texts) if texts else []
+        chunk_data = [
+            ChunkData(
+                id=c.id, doc_id=doc_id, kb_id=kb_id,
+                content=c.content, embedding=embeddings[i],
+                chunk_index=c.index, parent_id=c.parent_id,
+            )
+            for i, c in enumerate(indexable)
+        ]
+        async with await PgVectorStore.create() as store:
+            await store.upsert(chunk_data)
+    except Exception as e:
+        logger.exception("index_document: indexing failed doc=%s", doc_id)
+        DOCUMENT_OUTCOMES.labels(outcome="indexing_error").inc()
+        await update_doc(
+            doc_id, status="failed",
+            error_msg=f"Indexing failed: {e}"[:500],
         )
-        for i, c in enumerate(indexable)
-    ]
-    async with await PgVectorStore.create() as store:
-        await store.upsert(chunk_data)
+        raise  # re-raise for queue retry/backoff
 
+    DOCUMENT_OUTCOMES.labels(outcome="completed").inc()
     await update_doc(
         doc_id, chunk_count=len(chunk_data), status="completed", error_msg="",
     )

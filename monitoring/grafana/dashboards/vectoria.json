@@ -1,5 +1,5 @@
 {
-  "__description": "Import via Grafana UI → Dashboards → New → Import → upload JSON. Requires a Prometheus datasource named 'Prometheus' (adjust in datasource blocks if yours is named differently). Panels are laid out in a 12-column grid. Extend by duplicating the panel blocks and adjusting PromQL.",
+  "__description": "Import via Grafana UI → Dashboards → New → Import → upload JSON. Requires a Prometheus datasource named 'Prometheus' (adjust in datasource blocks if yours is named differently). Panel layout follows the RED method for request-driven surfaces (API / tasks / parsers / external APIs) and USE for resources (worker RSS, queue saturation). Panels in a 12-column grid; drag-reorder as you wish.",
   "title": "Vectoria — Ingest & Retrieval",
   "uid": "vectoria-core",
   "tags": ["vectoria", "rag"],
@@ -9,233 +9,272 @@
   "time": {"from": "now-1h", "to": "now"},
   "panels": [
 
-    {
-      "id": 1,
-      "type": "row",
-      "title": "Queue",
-      "gridPos": {"x": 0, "y": 0, "w": 24, "h": 1}
-    },
+    { "id": 100, "type": "row", "title": "Overview (golden signals)", "gridPos": {"x": 0, "y": 0, "w": 24, "h": 1} },
 
     {
-      "id": 10,
-      "type": "timeseries",
-      "title": "Queue depth by task_type",
-      "gridPos": {"x": 0, "y": 1, "w": 12, "h": 8},
+      "id": 101, "type": "stat",
+      "title": "API error rate (5xx %)",
+      "gridPos": {"x": 0, "y": 1, "w": 6, "h": 4},
       "datasource": {"type": "prometheus", "uid": "Prometheus"},
-      "targets": [
-        {
-          "expr": "vectoria_queue_depth",
-          "legendFormat": "{{task_type}}",
-          "refId": "A"
-        }
-      ],
-      "fieldConfig": {"defaults": {"unit": "short"}}
-    },
-
-    {
-      "id": 11,
-      "type": "timeseries",
-      "title": "Oldest pending task age (s)",
-      "gridPos": {"x": 12, "y": 1, "w": 8, "h": 8},
-      "datasource": {"type": "prometheus", "uid": "Prometheus"},
-      "targets": [
-        {
-          "expr": "vectoria_queue_oldest_age_seconds",
-          "legendFormat": "{{task_type}}",
-          "refId": "A"
-        }
-      ],
-      "fieldConfig": {"defaults": {"unit": "s"}}
-    },
-
-    {
-      "id": 12,
-      "type": "stat",
-      "title": "Dead tasks (DLQ)",
-      "gridPos": {"x": 20, "y": 1, "w": 4, "h": 8},
-      "datasource": {"type": "prometheus", "uid": "Prometheus"},
-      "targets": [
-        {
-          "expr": "sum(vectoria_queue_dead_tasks)",
-          "refId": "A"
-        }
-      ],
+      "targets": [{
+        "refId": "A",
+        "expr": "sum(rate(http_requests_total{status=~\"5..\",handler!~\"/metrics|/health.*\"}[5m])) / clamp_min(sum(rate(http_requests_total{handler!~\"/metrics|/health.*\"}[5m])), 0.001)"
+      }],
       "fieldConfig": {
         "defaults": {
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {"color": "green", "value": null},
-              {"color": "red", "value": 1}
-            ]
-          }
+          "unit": "percentunit",
+          "thresholds": {"mode": "absolute", "steps": [
+            {"color": "green", "value": null},
+            {"color": "orange", "value": 0.01},
+            {"color": "red", "value": 0.05}
+          ]}
         }
       }
     },
 
     {
-      "id": 2,
-      "type": "row",
-      "title": "Worker",
-      "gridPos": {"x": 0, "y": 9, "w": 24, "h": 1}
+      "id": 102, "type": "stat",
+      "title": "API p95 latency",
+      "gridPos": {"x": 6, "y": 1, "w": 6, "h": 4},
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "targets": [{
+        "refId": "A",
+        "expr": "histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket{handler!~\"/metrics|/health.*\"}[5m])))"
+      }],
+      "fieldConfig": {"defaults": {"unit": "s"}}
     },
 
     {
-      "id": 20,
-      "type": "timeseries",
-      "title": "Worker RSS (bytes)",
+      "id": 103, "type": "stat",
+      "title": "Queue depth (all types)",
+      "gridPos": {"x": 12, "y": 1, "w": 6, "h": 4},
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "targets": [{"refId": "A", "expr": "sum(vectoria_queue_depth)"}],
+      "fieldConfig": {
+        "defaults": {"unit": "short", "thresholds": {"mode": "absolute", "steps": [
+          {"color": "green", "value": null}, {"color": "orange", "value": 50}, {"color": "red", "value": 200}
+        ]}}
+      }
+    },
+
+    {
+      "id": 104, "type": "stat",
+      "title": "Worker RSS vs cap",
+      "gridPos": {"x": 18, "y": 1, "w": 6, "h": 4},
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "targets": [{
+        "refId": "A",
+        "expr": "vectoria_worker_rss_bytes / clamp_min(vectoria_worker_rss_limit_bytes, 1)"
+      }],
+      "fieldConfig": {
+        "defaults": {"unit": "percentunit", "min": 0, "max": 1, "thresholds": {"mode": "absolute", "steps": [
+          {"color": "green", "value": null}, {"color": "orange", "value": 0.8}, {"color": "red", "value": 0.95}
+        ]}}
+      }
+    },
+
+    { "id": 200, "type": "row", "title": "API (RED per handler)", "gridPos": {"x": 0, "y": 9, "w": 24, "h": 1} },
+
+    {
+      "id": 201, "type": "timeseries",
+      "title": "Request rate by handler + status",
       "gridPos": {"x": 0, "y": 10, "w": 12, "h": 8},
       "datasource": {"type": "prometheus", "uid": "Prometheus"},
-      "targets": [{"expr": "vectoria_worker_rss_bytes", "refId": "A"}],
+      "targets": [{
+        "refId": "A",
+        "expr": "sum by (handler, status) (rate(http_requests_total{handler!~\"/metrics|/health.*\"}[5m]))",
+        "legendFormat": "{{handler}} {{status}}"
+      }],
+      "fieldConfig": {"defaults": {"unit": "ops"}}
+    },
+
+    {
+      "id": 202, "type": "timeseries",
+      "title": "Error rate (5xx %) by handler",
+      "gridPos": {"x": 12, "y": 10, "w": 12, "h": 8},
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "targets": [{
+        "refId": "A",
+        "expr": "sum by (handler) (rate(http_requests_total{status=~\"5..\",handler!~\"/metrics|/health.*\"}[5m])) / clamp_min(sum by (handler) (rate(http_requests_total{handler!~\"/metrics|/health.*\"}[5m])), 0.001)",
+        "legendFormat": "{{handler}}"
+      }],
+      "fieldConfig": {"defaults": {"unit": "percentunit", "min": 0}}
+    },
+
+    {
+      "id": 203, "type": "timeseries",
+      "title": "p95 latency by handler",
+      "gridPos": {"x": 0, "y": 18, "w": 12, "h": 8},
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "targets": [{
+        "refId": "A",
+        "expr": "histogram_quantile(0.95, sum by (handler, le) (rate(http_request_duration_seconds_bucket{handler!~\"/metrics|/health.*\"}[5m])))",
+        "legendFormat": "{{handler}}"
+      }],
+      "fieldConfig": {"defaults": {"unit": "s"}}
+    },
+
+    {
+      "id": 204, "type": "timeseries",
+      "title": "4xx rate by handler+status (401/404 excluded)",
+      "gridPos": {"x": 12, "y": 18, "w": 12, "h": 8},
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "targets": [{
+        "refId": "A",
+        "expr": "sum by (handler, status) (rate(http_requests_total{status=~\"4..\",status!=\"401\",status!=\"404\",handler!~\"/metrics|/health.*\"}[5m]))",
+        "legendFormat": "{{handler}} {{status}}"
+      }],
+      "fieldConfig": {"defaults": {"unit": "ops"}}
+    },
+
+    { "id": 300, "type": "row", "title": "Documents (ingest outcomes)", "gridPos": {"x": 0, "y": 26, "w": 24, "h": 1} },
+
+    {
+      "id": 301, "type": "timeseries",
+      "title": "Document outcome rate",
+      "gridPos": {"x": 0, "y": 27, "w": 12, "h": 8},
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "targets": [{
+        "refId": "A",
+        "expr": "sum by (outcome) (rate(vectoria_documents_total[5m]))",
+        "legendFormat": "{{outcome}}"
+      }],
+      "fieldConfig": {"defaults": {"unit": "ops"}}
+    },
+
+    {
+      "id": 302, "type": "timeseries",
+      "title": "Empty-content rate per engine",
+      "gridPos": {"x": 12, "y": 27, "w": 12, "h": 8},
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "targets": [{
+        "refId": "A",
+        "expr": "sum by (engine) (rate(vectoria_parse_empty_total[5m])) / clamp_min(sum by (engine) (rate(vectoria_parse_duration_seconds_count[5m])), 0.001)",
+        "legendFormat": "{{engine}}"
+      }],
+      "fieldConfig": {"defaults": {"unit": "percentunit", "min": 0}}
+    },
+
+    { "id": 400, "type": "row", "title": "Queue", "gridPos": {"x": 0, "y": 35, "w": 24, "h": 1} },
+
+    {
+      "id": 401, "type": "timeseries",
+      "title": "Queue depth by task_type",
+      "gridPos": {"x": 0, "y": 36, "w": 12, "h": 8},
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "targets": [{"refId": "A", "expr": "vectoria_queue_depth", "legendFormat": "{{task_type}}"}],
+      "fieldConfig": {"defaults": {"unit": "short"}}
+    },
+
+    {
+      "id": 402, "type": "timeseries",
+      "title": "Oldest pending task age (s)",
+      "gridPos": {"x": 12, "y": 36, "w": 8, "h": 8},
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "targets": [{"refId": "A", "expr": "vectoria_queue_oldest_age_seconds", "legendFormat": "{{task_type}}"}],
+      "fieldConfig": {"defaults": {"unit": "s"}}
+    },
+
+    {
+      "id": 403, "type": "stat",
+      "title": "Dead tasks (DLQ)",
+      "gridPos": {"x": 20, "y": 36, "w": 4, "h": 8},
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "targets": [{"refId": "A", "expr": "sum(vectoria_queue_dead_tasks)"}],
+      "fieldConfig": {"defaults": {"thresholds": {"mode": "absolute", "steps": [
+        {"color": "green", "value": null}, {"color": "red", "value": 1}
+      ]}}}
+    },
+
+    { "id": 500, "type": "row", "title": "Worker", "gridPos": {"x": 0, "y": 44, "w": 24, "h": 1} },
+
+    {
+      "id": 501, "type": "timeseries",
+      "title": "Worker RSS vs cap",
+      "gridPos": {"x": 0, "y": 45, "w": 12, "h": 8},
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "targets": [
+        {"refId": "A", "expr": "vectoria_worker_rss_bytes", "legendFormat": "rss"},
+        {"refId": "B", "expr": "vectoria_worker_rss_limit_bytes", "legendFormat": "cap"}
+      ],
       "fieldConfig": {"defaults": {"unit": "bytes"}}
     },
 
     {
-      "id": 21,
-      "type": "timeseries",
+      "id": 502, "type": "timeseries",
       "title": "Task rate by status",
-      "gridPos": {"x": 12, "y": 10, "w": 12, "h": 8},
+      "gridPos": {"x": 12, "y": 45, "w": 12, "h": 8},
       "datasource": {"type": "prometheus", "uid": "Prometheus"},
-      "targets": [
-        {
-          "expr": "sum by (status) (rate(vectoria_tasks_total[5m]))",
-          "legendFormat": "{{status}}",
-          "refId": "A"
-        }
-      ],
+      "targets": [{"refId": "A", "expr": "sum by (status) (rate(vectoria_tasks_total[5m]))", "legendFormat": "{{status}}"}],
       "fieldConfig": {"defaults": {"unit": "ops"}}
     },
 
-    {
-      "id": 3,
-      "type": "row",
-      "title": "Parser",
-      "gridPos": {"x": 0, "y": 18, "w": 24, "h": 1}
-    },
+    { "id": 600, "type": "row", "title": "Parser", "gridPos": {"x": 0, "y": 53, "w": 24, "h": 1} },
 
     {
-      "id": 30,
-      "type": "timeseries",
+      "id": 601, "type": "timeseries",
       "title": "Parse p95 (s) by engine",
-      "gridPos": {"x": 0, "y": 19, "w": 12, "h": 8},
+      "gridPos": {"x": 0, "y": 54, "w": 12, "h": 8},
       "datasource": {"type": "prometheus", "uid": "Prometheus"},
-      "targets": [
-        {
-          "expr": "histogram_quantile(0.95, sum by (engine, le) (rate(vectoria_parse_duration_seconds_bucket[5m])))",
-          "legendFormat": "{{engine}}",
-          "refId": "A"
-        }
-      ],
+      "targets": [{"refId": "A", "expr": "histogram_quantile(0.95, sum by (engine, le) (rate(vectoria_parse_duration_seconds_bucket[5m])))", "legendFormat": "{{engine}}"}],
       "fieldConfig": {"defaults": {"unit": "s"}}
     },
 
     {
-      "id": 31,
-      "type": "timeseries",
+      "id": 602, "type": "timeseries",
       "title": "Parse status rate by engine",
-      "gridPos": {"x": 12, "y": 19, "w": 12, "h": 8},
+      "gridPos": {"x": 12, "y": 54, "w": 12, "h": 8},
       "datasource": {"type": "prometheus", "uid": "Prometheus"},
-      "targets": [
-        {
-          "expr": "sum by (engine, status) (rate(vectoria_parse_duration_seconds_count[5m]))",
-          "legendFormat": "{{engine}} {{status}}",
-          "refId": "A"
-        }
-      ],
+      "targets": [{"refId": "A", "expr": "sum by (engine, status) (rate(vectoria_parse_duration_seconds_count[5m]))", "legendFormat": "{{engine}} {{status}}"}],
       "fieldConfig": {"defaults": {"unit": "ops"}}
     },
 
-    {
-      "id": 4,
-      "type": "row",
-      "title": "External APIs",
-      "gridPos": {"x": 0, "y": 27, "w": 24, "h": 1}
-    },
+    { "id": 700, "type": "row", "title": "External APIs", "gridPos": {"x": 0, "y": 62, "w": 24, "h": 1} },
 
     {
-      "id": 40,
-      "type": "timeseries",
+      "id": 701, "type": "timeseries",
       "title": "Circuit breaker state (0=closed 1=half 2=open)",
-      "gridPos": {"x": 0, "y": 28, "w": 8, "h": 8},
+      "gridPos": {"x": 0, "y": 63, "w": 8, "h": 8},
       "datasource": {"type": "prometheus", "uid": "Prometheus"},
-      "targets": [
-        {
-          "expr": "vectoria_circuit_state",
-          "legendFormat": "{{name}}",
-          "refId": "A"
-        }
-      ],
+      "targets": [{"refId": "A", "expr": "vectoria_circuit_state", "legendFormat": "{{name}}"}],
       "fieldConfig": {"defaults": {"min": 0, "max": 2}}
     },
 
     {
-      "id": 41,
-      "type": "timeseries",
+      "id": 702, "type": "timeseries",
       "title": "External API p95 latency (s)",
-      "gridPos": {"x": 8, "y": 28, "w": 8, "h": 8},
+      "gridPos": {"x": 8, "y": 63, "w": 8, "h": 8},
       "datasource": {"type": "prometheus", "uid": "Prometheus"},
-      "targets": [
-        {
-          "expr": "histogram_quantile(0.95, sum by (api, le) (rate(vectoria_external_api_duration_seconds_bucket[5m])))",
-          "legendFormat": "{{api}}",
-          "refId": "A"
-        }
-      ],
+      "targets": [{"refId": "A", "expr": "histogram_quantile(0.95, sum by (api, le) (rate(vectoria_external_api_duration_seconds_bucket[5m])))", "legendFormat": "{{api}}"}],
       "fieldConfig": {"defaults": {"unit": "s"}}
     },
 
     {
-      "id": 42,
-      "type": "timeseries",
+      "id": 703, "type": "timeseries",
       "title": "External API error rate",
-      "gridPos": {"x": 16, "y": 28, "w": 8, "h": 8},
+      "gridPos": {"x": 16, "y": 63, "w": 8, "h": 8},
       "datasource": {"type": "prometheus", "uid": "Prometheus"},
-      "targets": [
-        {
-          "expr": "sum by (api) (rate(vectoria_external_api_calls_total{status!=\"success\"}[5m])) / ignoring(status) group_left sum by (api) (rate(vectoria_external_api_calls_total[5m]))",
-          "legendFormat": "{{api}}",
-          "refId": "A"
-        }
-      ],
+      "targets": [{"refId": "A", "expr": "sum by (api) (rate(vectoria_external_api_calls_total{status!=\"success\"}[5m])) / clamp_min(sum by (api) (rate(vectoria_external_api_calls_total[5m])), 0.001)", "legendFormat": "{{api}}"}],
       "fieldConfig": {"defaults": {"unit": "percentunit", "min": 0, "max": 1}}
     },
 
-    {
-      "id": 5,
-      "type": "row",
-      "title": "Rate limiting",
-      "gridPos": {"x": 0, "y": 36, "w": 24, "h": 1}
-    },
+    { "id": 800, "type": "row", "title": "Rate limiting", "gridPos": {"x": 0, "y": 71, "w": 24, "h": 1} },
 
     {
-      "id": 50,
-      "type": "timeseries",
+      "id": 801, "type": "timeseries",
       "title": "Rate limit decisions (result)",
-      "gridPos": {"x": 0, "y": 37, "w": 12, "h": 8},
+      "gridPos": {"x": 0, "y": 72, "w": 12, "h": 8},
       "datasource": {"type": "prometheus", "uid": "Prometheus"},
-      "targets": [
-        {
-          "expr": "sum by (result) (rate(vectoria_ratelimit_checks_total[5m]))",
-          "legendFormat": "{{result}}",
-          "refId": "A"
-        }
-      ],
+      "targets": [{"refId": "A", "expr": "sum by (result) (rate(vectoria_ratelimit_checks_total[5m]))", "legendFormat": "{{result}}"}],
       "fieldConfig": {"defaults": {"unit": "ops"}}
     },
 
     {
-      "id": 51,
-      "type": "timeseries",
+      "id": 802, "type": "timeseries",
       "title": "Blocked rate by key",
-      "gridPos": {"x": 12, "y": 37, "w": 12, "h": 8},
+      "gridPos": {"x": 12, "y": 72, "w": 12, "h": 8},
       "datasource": {"type": "prometheus", "uid": "Prometheus"},
-      "targets": [
-        {
-          "expr": "sum by (key) (rate(vectoria_ratelimit_checks_total{result=\"blocked\"}[5m]))",
-          "legendFormat": "{{key}}",
-          "refId": "A"
-        }
-      ],
+      "targets": [{"refId": "A", "expr": "sum by (key) (rate(vectoria_ratelimit_checks_total{result=\"blocked\"}[5m]))", "legendFormat": "{{key}}"}],
       "fieldConfig": {"defaults": {"unit": "ops"}}
     }
   ]
