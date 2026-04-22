@@ -54,7 +54,10 @@ async def build_digest(
     ``ix_documents_status_created_at`` index so they're O(failed rows
     in window), not O(table).
     """
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+    # documents.created_at is TIMESTAMP WITHOUT TIME ZONE (schema default);
+    # asyncpg refuses to compare it against a tz-aware value. Strip to naive
+    # UTC — the server clock is UTC in prod, so "now() - 24h" stays correct.
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).replace(tzinfo=None)
 
     async with get_session() as session:
         # Total count.
