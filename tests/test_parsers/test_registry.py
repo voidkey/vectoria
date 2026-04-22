@@ -91,10 +91,31 @@ def test_office_auto_select_is_native_only(filename, expected):
     assert registry.auto_select(filename=filename) == expected
 
 
-def test_docling_no_longer_claims_office_types():
-    from parsers.docling_parser import DoclingParser
-    for ext in (".docx", ".doc", ".pptx", ".ppt", ".xlsx", ".xls"):
-        assert ext not in DoclingParser.supported_types, (
-            f"docling still claims {ext} — trim supported_types so "
-            f"registry.supported_types() doesn't advertise Office via docling"
-        )
+def test_docling_parser_fully_removed():
+    """W6-2: docling is no longer a registered parser. The PDF fallback
+    slot is now ``pdfium`` (pypdfium2) and image OCR is ``ocr-native``
+    (rapidocr). This test fails if someone re-adds docling without
+    justifying the ~1.5 GB of torch/transformers it drags in.
+    """
+    from parsers.registry import registry
+    engines = {cls.engine_name for cls in registry._engines.values()}
+    assert "docling" not in engines, (
+        "docling parser re-registered — that drags the torch stack "
+        "back into the image; use pdfium / ocr-native instead"
+    )
+
+
+def test_docling_module_removed():
+    """W6-2: parsers/docling_parser.py is deleted. Importing it should
+    fail; this test makes the deletion explicit so a merge conflict
+    that restores the file is caught."""
+    with pytest.raises(ModuleNotFoundError):
+        import parsers.docling_parser  # noqa: F401
+
+    # Also nothing in the registry module should still import it.
+    import parsers.registry
+    assert "docling_parser" not in str(parsers.registry.__dict__), (
+        "registry.py still imports parsers.docling_parser"
+    )
+
+

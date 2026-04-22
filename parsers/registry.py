@@ -5,31 +5,31 @@ from parsers.base import BaseParser
 # Office (.docx/.doc/.pptx/.ppt/.xlsx/.xls): native-only. The native
 # parsers' deps (mammoth+python-docx, python-pptx, openpyxl) are hard
 # pins in pyproject so is_available() always returns True — any
-# trailing docling/markitdown entry here was dead code. Native parsers
-# catch exceptions internally and return empty content, matching what
-# a fallback would produce on a file mammoth/python-pptx/openpyxl
-# can't load anyway.
+# trailing fallback entry here would be dead code. Native parsers
+# catch exceptions internally and return empty content.
 #
-# PDF: mineru is primary (VLM layout parsing). docling stays as a
-# fallback for cases where mineru is unavailable (model not
-# downloaded, etc.); markitdown is a text-only last resort.
+# PDF: mineru is primary (VLM layout parsing). pdfium is the
+# lightweight fallback (pure pypdfium2, no ML models) for cases where
+# mineru is unavailable. markitdown is the text-only last resort.
 #
-# Images (.png/.jpg/.jpeg/.tiff/.bmp): docling is the only engine —
-# its OCR path has no native equivalent in the stack today. A future
-# rapidocr/paddleocr-based parser could replace it.
+# Images (.png/.jpg/.jpeg/.tiff/.bmp/.webp): ocr-native via rapidocr
+# (ONNX runtime, CJK+English). Replaced docling's image OCR path
+# in W6-2 — rapidocr is purpose-built, ~10× smaller on disk, and
+# no torch/transformers stack to maintain.
 _EXT_PREFERENCE: dict[str, list[str]] = {
-    ".pdf":  ["mineru", "docling", "markitdown"],
+    ".pdf":  ["mineru", "pdfium", "markitdown"],
     ".docx": ["docx-native"],
     ".doc":  ["docx-native"],
     ".pptx": ["pptx-native"],
     ".ppt":  ["pptx-native"],
     ".xlsx": ["xlsx-native"],
     ".xls":  ["xlsx-native"],
-    ".png":  ["docling"],
-    ".jpg":  ["docling"],
-    ".jpeg": ["docling"],
-    ".tiff": ["docling"],
-    ".bmp":  ["docling"],
+    ".png":  ["ocr-native"],
+    ".jpg":  ["ocr-native"],
+    ".jpeg": ["ocr-native"],
+    ".tiff": ["ocr-native"],
+    ".bmp":  ["ocr-native"],
+    ".webp": ["ocr-native"],
     ".csv":  ["markitdown"],
     ".md":   ["markitdown"],
     ".txt":  ["markitdown"],
@@ -108,8 +108,10 @@ from parsers.pptx_parser import PptxParser  # noqa: E402
 registry.register(PptxParser)
 from parsers.xlsx_parser import XlsxParser  # noqa: E402
 registry.register(XlsxParser)
-from parsers.docling_parser import DoclingParser  # noqa: E402
-registry.register(DoclingParser)
+from parsers.pdfium_parser import PdfiumParser  # noqa: E402
+registry.register(PdfiumParser)
+from parsers.ocr_parser import OcrParser  # noqa: E402
+registry.register(OcrParser)
 from parsers.mineru_parser import MinerUParser  # noqa: E402
 registry.register(MinerUParser)
 from parsers.url import UrlParser  # noqa: E402

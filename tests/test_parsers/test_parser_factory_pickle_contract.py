@@ -41,31 +41,6 @@ def _assert_refs_pickle(refs: list[ImageRef]) -> None:
         assert isinstance(data, bytes) and len(data) > 0
 
 
-def test_docling_extract_image_refs_produces_picklable_refs():
-    """Docling path: ``_extract_image_refs`` must eagerly materialize
-    PNG bytes because the closure-captured ``picture`` / ``document``
-    objects are not picklable.
-    """
-    from parsers.docling_parser import DoclingParser
-
-    # Minimal PIL image so size + PNG encode both work.
-    try:
-        from PIL import Image
-    except ImportError:
-        pytest.skip("PIL not available")
-    img = Image.new("RGB", (4, 4), color="red")
-
-    pic = MagicMock()
-    pic.get_image.return_value = img
-    doc = MagicMock()
-    doc.pictures = [pic]
-    result = MagicMock()
-    result.document = doc
-
-    refs = DoclingParser()._extract_image_refs(result)
-    _assert_refs_pickle(refs)
-
-
 def test_mineru_build_image_refs_produces_picklable_refs():
     """MinerU path: base64 payload factory must hold only the payload
     string, not a nested closure or an ``re.Match`` object."""

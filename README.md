@@ -10,7 +10,7 @@ A lightweight RAG (Retrieval-Augmented Generation) backend service built with Fa
 - **Hybrid search** — combines vector similarity search with BM25 keyword search via Reciprocal Rank Fusion
 - **Modular RAG pipeline** — Query Rewrite → Retrieve → Fusion → Rerank → Context Expand → Generate
 - **OpenAI-compatible** — works with any OpenAI-compatible LLM/embedding endpoint (OpenAI, DeepSeek, Ollama, etc.)
-- **Pluggable parsers** — [docling](https://github.com/DS4SD/docling), [markitdown](https://github.com/microsoft/markitdown), MinerU (optional GPU-based OCR); heavy parsers run isolated in subprocesses to prevent OOM
+- **Pluggable parsers** — native Office (mammoth/python-pptx/openpyxl), [pypdfium2](https://github.com/pypdfium2-team/pypdfium2) PDF fallback, [rapidocr](https://github.com/RapidAI/RapidOCR) image OCR, MinerU remote API for layout-heavy PDFs, [markitdown](https://github.com/microsoft/markitdown) as last resort; heavy parsers run isolated in subprocesses
 - **Multiple vector stores** — pgvector (default), ChromaDB (optional)
 
 ## Requirements
@@ -145,7 +145,7 @@ All settings are configured via environment variables (see [`.env.example`](.env
 | `S3_BUCKET` | `vectoria` | Bucket name |
 | `S3_ADDRESSING_STYLE` | `auto` | `auto`, `virtual`, or `path` |
 | `S3_PRESIGN_EXPIRES` | `3600` | Presigned URL expiry (seconds) |
-| `DEFAULT_PARSE_ENGINE` | `auto` | Parser engine (`auto`, `docling`, `markitdown`, `mineru`) |
+| `DEFAULT_PARSE_ENGINE` | `auto` | Parser engine (`auto`, `docx-native`, `pptx-native`, `xlsx-native`, `pdfium`, `ocr-native`, `markitdown`, `mineru`, `url`) |
 | `ENABLE_QUERY_REWRITE` | `true` | Rewrite queries with LLM before retrieval |
 | `ENABLE_RERANKER` | `false` | Enable cross-encoder reranking |
 | `RERANKER_BASE_URL` | — | Reranker API URL |

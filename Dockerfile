@@ -20,13 +20,12 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv run playwright install chromium
 
-# Pre-download docling layout/OCR models so the first real request doesn't
-# balloon memory and latency while fetching weights from HuggingFace.
-# HF_HOME pins the cache into the image layer; docling reads from the same root.
-ENV HF_HOME=/opt/hf-cache
+# Pre-download rapidocr ONNX models so the first OCR request doesn't
+# block on a ~150 MB model fetch. RapidOCR caches to its package dir
+# by default; touching it once at build time seeds the image layer.
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv run python -c "from docling.utils.model_downloader import download_models; download_models()" \
-    || echo "docling model preload skipped"
+    uv run python -c "from rapidocr import RapidOCR; RapidOCR()" \
+    || echo "rapidocr model preload skipped"
 
 
 # --- Stage 2: runtime ---
@@ -46,8 +45,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers \
-    HF_HOME=/opt/hf-cache
+    PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers
 
 RUN groupadd --system --gid 1000 app \
     && useradd --system --uid 1000 --gid app --home-dir /app --shell /sbin/nologin app \
@@ -58,7 +56,6 @@ WORKDIR /app
 
 COPY --from=builder --chown=app:app /app/.venv /app/.venv
 COPY --from=builder --chown=app:app /opt/pw-browsers /opt/pw-browsers
-COPY --from=builder --chown=app:app /opt/hf-cache /opt/hf-cache
 
 COPY --chown=app:app . .
 
