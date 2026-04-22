@@ -12,7 +12,11 @@ Shape of a digest
 -----------------
 {
     "window_hours": 24,
-    "total": 47,
+    "total": 47,                          # total failures (all source kinds)
+    "by_source_kind": [                   # call-count + failure count split by
+        {"kind": "file", "total": 42, "failed": 3},   # input type: storage_key
+        {"kind": "url",  "total": 18, "failed": 6},   # present → file upload
+    ],                                                # else → URL submission
     "by_type": [{"error_type": "parse_error", "count": 18}, ...],
     "by_engine": [{"engine": "pdfium", "count": 20}, ...],
     "samples": [
@@ -38,7 +42,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import case as sa_case, func, select
 
 from db.base import get_session
 from db.models import Document
@@ -49,24 +53,52 @@ async def build_digest(
 ) -> dict[str, Any]:
     """Query the documents table for failures in the last ``hours``.
 
-    Returns a dict ready to format or serve as JSON. Three aggregations
-    + one sample list in separate queries; all run against the
-    ``ix_documents_status_created_at`` index so they're O(failed rows
-    in window), not O(table).
+    Returns a dict ready to format or serve as JSON. Four aggregations
+    + one sample list in separate queries; the failure-specific ones
+    run against the ``ix_documents_status_created_at`` index. The
+    source-kind breakdown walks all rows in the window (not just
+    failed), which is O(docs created in window) — cheap at normal
+    traffic, and the ``created_at`` lookup is index-eligible.
     """
     # documents.created_at is TIMESTAMP WITHOUT TIME ZONE (schema default);
     # asyncpg refuses to compare it against a tz-aware value. Strip to naive
     # UTC — the server clock is UTC in prod, so "now() - 24h" stays correct.
     cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).replace(tzinfo=None)
 
+    # SQL: CASE classifies each row as 'file' (has non-empty storage_key)
+    # or 'url' (no storage_key). Keep this logic in one place — the
+    # discriminator shows up in samples, breakdowns, and eventually the
+    # Grafana panel. Treat empty string as NULL since some historic
+    # rows may have '' rather than real NULL.
+    _SOURCE_KIND = sa_case(
+        (Document.storage_key.isnot(None) & (Document.storage_key != ""), "file"),
+        else_="url",
+    ).label("kind")
+
     async with get_session() as session:
-        # Total count.
+        # Total failed count.
         total = (await session.execute(
             select(func.count()).select_from(Document).where(
                 Document.status == "failed",
                 Document.created_at >= cutoff,
             )
         )).scalar_one()
+
+        # NEW: totals + failed-counts split by source kind (url vs file).
+        # One query, two aggregations — so we can show "18 URLs (6 failed)"
+        # without a second roundtrip.
+        source_kind_rows = (await session.execute(
+            select(
+                _SOURCE_KIND,
+                func.count().label("total"),
+                func.sum(
+                    sa_case((Document.status == "failed", 1), else_=0)
+                ).label("failed"),
+            )
+            .where(Document.created_at >= cutoff)
+            .group_by(_SOURCE_KIND)
+            .order_by(func.count().desc())
+        )).all()
 
         # Breakdown by error_type.
         by_type_rows = (await session.execute(
@@ -113,6 +145,10 @@ async def build_digest(
     return {
         "window_hours": hours,
         "total": int(total),
+        "by_source_kind": [
+            {"kind": r.kind, "total": int(r.total), "failed": int(r.failed or 0)}
+            for r in source_kind_rows
+        ],
         "by_type": [
             {"error_type": r.error_type, "count": int(r.count)}
             for r in by_type_rows
@@ -156,45 +192,81 @@ def _truncate_source(source: str, limit: int = 80) -> str:
     return source if len(source) <= limit else source[: limit - 1] + "…"
 
 
+# Markers for the per-source-kind summary line. Neutral shapes — this
+# section runs on a healthy day too, not just incidents.
+_KIND_MARKER = {"file": "📄 文件", "url": "🔗 链接"}
+
+
+def _format_kind_line(kind: str, total: int, failed: int) -> str:
+    """One line per source kind.
+
+    On a healthy day → "✅ 全部成功". When there were failures, include
+    the success-rate so the operator can tell '6/18 bad URLs' from
+    '6/6000 bad URLs' without doing mental arithmetic.
+    """
+    label = _KIND_MARKER.get(kind, f"• {kind}")
+    if total == 0:
+        return f"{label}：0（无新增）"
+    if failed == 0:
+        return f"{label} {total} 个 ✅ 全部成功"
+    rate = (total - failed) / total
+    return f"{label} {total} 个（失败 {failed}，成功率 {rate:.0%}）"
+
+
 def format_digest_text(digest: dict[str, Any], env: str = "") -> str:
     """Render a digest dict as a wecom group-bot text body.
 
-    The format mirrors the alert-relay style: env-prefixed header,
-    breakdowns as single lines, samples as a bulleted block. Kept under
-    2000 chars in practice because we cap sample_limit at 10 and
-    truncate sources at 80 chars.
+    Section order: header → per-source-kind summary → failure
+    breakdowns (only if there were failures) → recent samples.
+    Kept under 2000 chars in practice because we cap sample_limit at 10
+    and truncate sources at 80 chars.
     """
     hours = digest["window_hours"]
     total = digest["total"]
+    kinds = digest.get("by_source_kind") or []
+    total_ingests = sum(k["total"] for k in kinds)
     prefix = f"[{env}] " if env else ""
 
-    if total == 0:
-        return f"{prefix}过去 {hours} 小时入库失败样本：0 ✅"
+    # Zero traffic: single line, don't pretend we have data.
+    if total_ingests == 0:
+        return f"{prefix}过去 {hours} 小时入库样本：0（无新增）"
 
-    lines = [f"{prefix}过去 {hours} 小时入库失败样本 {total} 条"]
+    lines = [f"{prefix}过去 {hours} 小时入库样本"]
 
-    # Breakdowns — "18 parse_error · 12 empty_content · ..." fits one
-    # line for the normal 3-5 category case.
-    by_type_bits = [
-        f"{_TYPE_MARKER.get(b['error_type'], '•')} {b['error_type']}×{b['count']}"
-        for b in digest["by_type"]
-    ]
-    if by_type_bits:
-        lines.append("按类型：" + "  ".join(by_type_bits))
-    by_engine_bits = [f"{b['engine']}×{b['count']}" for b in digest["by_engine"]]
-    if by_engine_bits:
-        lines.append("按引擎：" + "  ".join(by_engine_bits))
+    # Always show the per-source-kind line so ops sees call volume even
+    # on clean days — that's often the signal they want most.
+    for kind in ("file", "url"):
+        row = next((k for k in kinds if k["kind"] == kind), None)
+        if row:
+            lines.append(_format_kind_line(kind, row["total"], row["failed"]))
+        else:
+            # No rows of this kind in window — skip cleanly (don't fake a 0).
+            continue
 
-    samples = digest.get("samples") or []
-    if samples:
+    # Failure-specific breakdowns: skip entirely on a clean day rather
+    # than printing empty sections.
+    if total > 0:
         lines.append("")
-        lines.append(f"最近 {len(samples)} 个样本：")
-        for s in samples:
-            marker = _TYPE_MARKER.get(s["error_type"], "•")
-            source = _truncate_source(s["source"])
-            lines.append(
-                f"{marker} [{s['engine']}] {source}\n"
-                f"   {s['error_msg'][:120]}"
-            )
+        by_type_bits = [
+            f"{_TYPE_MARKER.get(b['error_type'], '•')} {b['error_type']}×{b['count']}"
+            for b in digest["by_type"]
+        ]
+        if by_type_bits:
+            lines.append("按类型：" + "  ".join(by_type_bits))
+        by_engine_bits = [f"{b['engine']}×{b['count']}" for b in digest["by_engine"]]
+        if by_engine_bits:
+            lines.append("按引擎：" + "  ".join(by_engine_bits))
+
+        samples = digest.get("samples") or []
+        if samples:
+            lines.append("")
+            lines.append(f"最近 {len(samples)} 个样本：")
+            for s in samples:
+                marker = _TYPE_MARKER.get(s["error_type"], "•")
+                source = _truncate_source(s["source"])
+                lines.append(
+                    f"{marker} [{s['engine']}] {source}\n"
+                    f"   {s['error_msg'][:120]}"
+                )
 
     return "\n".join(lines)

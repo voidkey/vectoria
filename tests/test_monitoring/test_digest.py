@@ -19,22 +19,50 @@ from monitoring.digest import build_digest, format_digest_text
 # format_digest_text: pure function, exhaustive cases
 # ---------------------------------------------------------------------------
 
-def test_format_digest_zero_failures_shows_allclear():
-    """Empty window → single-line "0 ✅" (doesn't spam wecom with empty
-    breakdown headers on a quiet day)."""
+def test_format_digest_zero_ingests_shows_empty_window():
+    """No ingests at all → single compact line, no fake zeros per kind."""
     text = format_digest_text(
-        {"window_hours": 24, "total": 0, "by_type": [], "by_engine": [], "samples": []},
+        {
+            "window_hours": 24, "total": 0,
+            "by_source_kind": [], "by_type": [], "by_engine": [], "samples": [],
+        },
         env="test",
     )
-    assert text == "[test] 过去 24 小时入库失败样本：0 ✅"
+    assert text == "[test] 过去 24 小时入库样本：0（无新增）"
+
+
+def test_format_digest_clean_day_shows_call_counts_with_allclear():
+    """Traffic but zero failures → show per-kind totals, each marked
+    '全部成功 ✅'. This is the most common 'healthy' daily digest."""
+    text = format_digest_text(
+        {
+            "window_hours": 24, "total": 0,
+            "by_source_kind": [
+                {"kind": "file", "total": 42, "failed": 0},
+                {"kind": "url",  "total": 18, "failed": 0},
+            ],
+            "by_type": [], "by_engine": [], "samples": [],
+        },
+        env="test",
+    )
+    assert "过去 24 小时入库样本" in text
+    assert "📄 文件 42 个 ✅ 全部成功" in text
+    assert "🔗 链接 18 个 ✅ 全部成功" in text
+    # On a clean day, no failure-specific sections.
+    assert "按类型" not in text
+    assert "最近" not in text
 
 
 def test_format_digest_breakdown_by_type_and_engine():
-    """With samples, the breakdown lines should name every type +
-    engine seen; samples list should follow."""
+    """With failures, emit per-kind summary (with success-rate) plus the
+    type + engine breakdowns + recent samples."""
     digest = {
         "window_hours": 24,
         "total": 3,
+        "by_source_kind": [
+            {"kind": "file", "total": 10, "failed": 2},
+            {"kind": "url",  "total":  5, "failed": 1},
+        ],
         "by_type": [
             {"error_type": "parse_error", "count": 2},
             {"error_type": "empty_content", "count": 1},
@@ -54,11 +82,16 @@ def test_format_digest_breakdown_by_type_and_engine():
         ],
     }
     text = format_digest_text(digest, env="test")
-    assert "[test] 过去 24 小时入库失败样本 3 条" in text
+    assert "[test] 过去 24 小时入库样本" in text
+    # Per-kind totals with success-rate math (80% for file: 8/10 ok).
+    assert "📄 文件 10 个（失败 2，成功率 80%）" in text
+    assert "🔗 链接 5 个（失败 1，成功率 80%）" in text
+    # Failure breakdowns (unchanged from before).
     assert "parse_error×2" in text
     assert "empty_content×1" in text
     assert "pdfium×2" in text
     assert "url×1" in text
+    # Recent sample block.
     assert "scan.pdf" in text
     assert "Parsing failed: bad PDF header" in text
 
@@ -70,6 +103,7 @@ def test_format_digest_truncates_long_sources():
     digest = {
         "window_hours": 24,
         "total": 1,
+        "by_source_kind": [{"kind": "url", "total": 1, "failed": 1}],
         "by_type": [{"error_type": "parse_error", "count": 1}],
         "by_engine": [{"engine": "url", "count": 1}],
         "samples": [{
@@ -92,11 +126,14 @@ def test_format_digest_truncates_long_sources():
 def test_format_digest_no_env_prefix_when_empty():
     """Empty env string → no `[]` prefix (avoids ugly `[] 过去 24…`)."""
     text = format_digest_text(
-        {"window_hours": 24, "total": 0, "by_type": [], "by_engine": [], "samples": []},
+        {
+            "window_hours": 24, "total": 0,
+            "by_source_kind": [], "by_type": [], "by_engine": [], "samples": [],
+        },
         env="",
     )
     assert not text.startswith("[")
-    assert text == "过去 24 小时入库失败样本：0 ✅"
+    assert text == "过去 24 小时入库样本：0（无新增）"
 
 
 def test_format_digest_unknown_error_type_gets_bullet_marker():
@@ -105,6 +142,7 @@ def test_format_digest_unknown_error_type_gets_bullet_marker():
     digest = {
         "window_hours": 1,
         "total": 1,
+        "by_source_kind": [{"kind": "file", "total": 1, "failed": 1}],
         "by_type": [{"error_type": "some_future_type", "count": 1}],
         "by_engine": [{"engine": "unknown", "count": 1}],
         "samples": [{
@@ -127,12 +165,16 @@ def test_format_digest_unknown_error_type_gets_bullet_marker():
 
 @pytest.mark.asyncio
 async def test_build_digest_assembles_aggregations_and_samples():
-    """Verify build_digest runs the four queries and shapes the result
+    """Verify build_digest runs all five queries and shapes the result
     dict correctly. We don't care about SQL correctness (that's Postgres's
     job) — we care that aggregation rows and sample rows get wired into
     the documented output shape."""
     # Synthetic DB rows.
     total = 3
+    source_kind_rows = [
+        MagicMock(kind="file", total=10, failed=2),
+        MagicMock(kind="url",  total=5,  failed=1),
+    ]
     type_rows = [
         MagicMock(error_type="parse_error", count=2),
         MagicMock(error_type="empty_content", count=1),
@@ -154,12 +196,16 @@ async def test_build_digest_assembles_aggregations_and_samples():
     ]
 
     # Each session.execute call returns a different result shape:
-    #   1st: scalar total count
-    #   2nd: .all() rows for by_type
-    #   3rd: .all() rows for by_engine
-    #   4th: .scalars().all() for sample rows
+    #   1st: scalar total-failed count
+    #   2nd: .all() rows for by_source_kind (new)
+    #   3rd: .all() rows for by_type
+    #   4th: .all() rows for by_engine
+    #   5th: .scalars().all() for sample rows
     count_result = MagicMock()
     count_result.scalar_one.return_value = total
+
+    kind_result = MagicMock()
+    kind_result.all.return_value = source_kind_rows
 
     type_result = MagicMock()
     type_result.all.return_value = type_rows
@@ -174,7 +220,7 @@ async def test_build_digest_assembles_aggregations_and_samples():
 
     session = AsyncMock()
     session.execute = AsyncMock(
-        side_effect=[count_result, type_result, engine_result, sample_result]
+        side_effect=[count_result, kind_result, type_result, engine_result, sample_result]
     )
 
     with patch("monitoring.digest.get_session") as mock_sess:
@@ -183,6 +229,10 @@ async def test_build_digest_assembles_aggregations_and_samples():
 
     assert digest["window_hours"] == 24
     assert digest["total"] == 3
+    assert digest["by_source_kind"] == [
+        {"kind": "file", "total": 10, "failed": 2},
+        {"kind": "url",  "total": 5,  "failed": 1},
+    ]
     assert digest["by_type"] == [
         {"error_type": "parse_error", "count": 2},
         {"error_type": "empty_content", "count": 1},
