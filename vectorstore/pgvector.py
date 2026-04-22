@@ -15,19 +15,17 @@ CREATE TABLE IF NOT EXISTS chunks (
     content     TEXT NOT NULL,
     embedding   vector({dim}),
     chunk_index INTEGER NOT NULL DEFAULT 0,
-    parent_id   TEXT,
-    content_tsv tsvector GENERATED ALWAYS AS (to_tsvector('simple', content)) STORED
+    parent_id   TEXT
 )
 """
 _CREATE_INDEXES = [
     "CREATE INDEX IF NOT EXISTS chunks_kb_id_idx ON chunks (kb_id)",
     "CREATE INDEX IF NOT EXISTS chunks_doc_id_idx ON chunks (doc_id)",
-    # Legacy tsvector index — kept for rollback safety; keyword_search
-    # no longer queries it. Removed in a follow-up migration.
-    "CREATE INDEX IF NOT EXISTS chunks_tsv_idx ON chunks USING GIN (content_tsv)",
-    # W6-1a: trigram index serves the real keyword path. Works for
-    # CJK content where the 'simple' tokenizer produced one token per
-    # paragraph.
+    # W6-1a: trigram index serves the keyword path. Works for CJK
+    # content where the 'simple' tsvector tokenizer collapsed every
+    # Chinese paragraph into a single unmatchable token. (Legacy
+    # ``content_tsv`` column + ``chunks_tsv_idx`` dropped in W6-6
+    # migration b8c9d0e1f2a3.)
     "CREATE INDEX IF NOT EXISTS chunks_content_trgm_idx ON chunks USING GIN (content gin_trgm_ops)",
     # W6-1a: HNSW keeps vector search latency flat as the KB grows.
     # vector_cosine_ops matches the <=> distance operator used below.
