@@ -213,6 +213,84 @@ async def test_relay_refuses_without_webhook_url(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_relay_formats_resolved_distinctly_from_firing(monkeypatch):
+    """Resolved alerts must render visibly different from firing ones —
+    same emoji + same description would make operators think the alert
+    is still active. Checks the '已恢复' prefix, ✅ marker, duration
+    computation, and that the (now-irrelevant) description is dropped.
+    """
+    relay = _reload_relay(
+        monkeypatch, WECOM_WEBHOOK_URL="https://qyapi.test/webhook?key=fake",
+    )
+    payload = _alertmanager_payload(1, "resolved")
+    # endsAt 5m37s after startsAt
+    payload["alerts"][0]["startsAt"] = "2026-04-22T15:29:43Z"
+    payload["alerts"][0]["endsAt"] = "2026-04-22T15:35:20Z"
+
+    captured: dict = {}
+
+    class _MockClient:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return None
+        async def post(self, url, json):
+            captured["json"] = json
+            class _Resp:
+                def raise_for_status(self): pass
+                def json(self): return {"errcode": 0}
+            return _Resp()
+
+    with patch("monitoring.alert_relay.httpx.AsyncClient", return_value=_MockClient()):
+        async with AsyncClient(
+            transport=ASGITransport(app=relay.app),
+            base_url="http://test",
+        ) as c:
+            await c.post("/alert", json=payload)
+
+    content = captured["json"]["text"]["content"]
+    assert "[RESOLVED]" in content           # header carries the status
+    assert "✅" in content                   # all-clear emoji, not 🔴/🟡/🔵
+    assert "已恢复" in content
+    assert "TestAlert0" in content
+    assert "结束：" in content
+    assert "持续：5 分 37 秒" in content      # duration math, CST rendering
+    # Resolved alerts should NOT carry the firing-time runbook.
+    assert "description for alert 0" not in content
+
+
+@pytest.mark.asyncio
+async def test_relay_firing_includes_start_time(monkeypatch):
+    """Firing alerts carry startsAt so operators know when it started
+    (the wecom timestamp is delivery time, not incident time).
+    """
+    relay = _reload_relay(
+        monkeypatch, WECOM_WEBHOOK_URL="https://qyapi.test/webhook?key=fake",
+    )
+    captured: dict = {}
+
+    class _MockClient:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return None
+        async def post(self, url, json):
+            captured["json"] = json
+            class _Resp:
+                def raise_for_status(self): pass
+                def json(self): return {"errcode": 0}
+            return _Resp()
+
+    with patch("monitoring.alert_relay.httpx.AsyncClient", return_value=_MockClient()):
+        async with AsyncClient(
+            transport=ASGITransport(app=relay.app),
+            base_url="http://test",
+        ) as c:
+            await c.post("/alert", json=_alertmanager_payload(1, "firing"))
+
+    content = captured["json"]["text"]["content"]
+    assert "开始：" in content
+    # 12:00 UTC = 20:00 CST; renderer must convert to local.
+    assert "20:00:00" in content
+
+
+@pytest.mark.asyncio
 async def test_relay_health_reports_config_status(monkeypatch):
     relay = _reload_relay(monkeypatch, WECOM_WEBHOOK_URL="https://test")
     async with AsyncClient(

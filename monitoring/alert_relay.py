@@ -24,6 +24,13 @@ from __future__ import annotations
 
 import logging
 import os
+from datetime import datetime, timezone
+
+try:
+    from zoneinfo import ZoneInfo
+    _LOCAL_TZ = ZoneInfo("Asia/Shanghai")
+except Exception:  # pragma: no cover — alpine base without tzdata
+    _LOCAL_TZ = timezone.utc
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request
@@ -41,14 +48,65 @@ _SEVERITY_EMOJI = {
     "warning":  "🟡",
     "info":     "🔵",
 }
+# Resolved alerts use a single "all-clear" marker regardless of the original
+# severity — the point of the notification is "it's over", not "it was bad".
+_RESOLVED_EMOJI = "✅"
+
+
+def _parse_ts(s: str) -> datetime | None:
+    """Parse Alertmanager's RFC3339 timestamp into local tz.
+
+    Returns None for empty / zero-sentinel / unparseable input. Zero sentinel
+    is ``0001-01-01T00:00:00Z`` (Go's time.Time{} marshalled), which
+    Alertmanager sends for ``endsAt`` on still-firing alerts.
+    """
+    if not s:
+        return None
+    # Py 3.11+ accepts 'Z', but nanosecond precision (9 fractional digits)
+    # still trips fromisoformat — cap to microseconds.
+    s = s.replace("Z", "+00:00")
+    if "." in s:
+        dot = s.index(".")
+        tz_start = max(s.rfind("+"), s.rfind("-"))
+        if tz_start > dot:
+            frac = s[dot + 1 : tz_start]
+            if len(frac) > 6:
+                s = s[: dot + 1] + frac[:6] + s[tz_start:]
+    try:
+        dt = datetime.fromisoformat(s)
+    except ValueError:
+        return None
+    if dt.year < 1970:
+        return None
+    return dt.astimezone(_LOCAL_TZ)
+
+
+def _format_duration(seconds: float) -> str:
+    """Human-friendly Chinese duration: 47秒 / 5分37秒 / 1小时23分."""
+    s = int(max(seconds, 0))
+    if s < 60:
+        return f"{s} 秒"
+    m, s = divmod(s, 60)
+    if m < 60:
+        return f"{m} 分 {s} 秒" if s else f"{m} 分"
+    h, m = divmod(m, 60)
+    return f"{h} 小时 {m} 分" if m else f"{h} 小时"
 
 
 def _format_alert(a: dict) -> str:
-    """Render one alert as a short human-readable block."""
+    """Render one alert as a short human-readable block.
+
+    Firing and resolved get visibly different shapes so they're not confused
+    at a glance: resolved uses the ✅ marker, a '已恢复' prefix, and shows
+    start/end/duration instead of the runbook description (排查步骤 on a
+    resolved alert is noise, not signal).
+    """
     labels = a.get("labels", {}) or {}
     annotations = a.get("annotations", {}) or {}
     name = labels.get("alertname", "?")
     severity = labels.get("severity", "info")
+    status = (a.get("status") or "firing").lower()
+
     # Label hints that operators actually want to see at a glance.
     hint_bits = []
     for k in ("task_type", "name", "api", "engine", "key", "component"):
@@ -58,15 +116,34 @@ def _format_alert(a: dict) -> str:
     hint = f" [{' '.join(hint_bits)}]" if hint_bits else ""
 
     summary = (annotations.get("summary") or "").strip()
+    starts = _parse_ts(a.get("startsAt", ""))
+
+    if status == "resolved":
+        ends = _parse_ts(a.get("endsAt", ""))
+        lines = [f"{_RESOLVED_EMOJI} 已恢复 {name}{hint}"]
+        if summary:
+            lines.append(summary)
+        if starts:
+            lines.append(f"开始：{starts.strftime('%m-%d %H:%M:%S')}")
+        if ends:
+            lines.append(f"结束：{ends.strftime('%m-%d %H:%M:%S')}")
+        if starts and ends:
+            lines.append(f"持续：{_format_duration((ends - starts).total_seconds())}")
+        return "\n".join(lines)
+
     description = (annotations.get("description") or "").strip()
     # Wecom hard-caps total message length; keep description short.
     if len(description) > 240:
         description = description[:237] + "…"
-
     emoji = _SEVERITY_EMOJI.get(severity, "⚪")
-    # ``{name}{hint}`` carries the machine-readable bits; summary +
-    # description explain what to do.
-    return f"{emoji} {name}{hint}\n{summary}\n{description}".rstrip()
+    lines = [f"{emoji} {name}{hint}"]
+    if summary:
+        lines.append(summary)
+    if starts:
+        lines.append(f"开始：{starts.strftime('%m-%d %H:%M:%S')}")
+    if description:
+        lines.append(description)
+    return "\n".join(lines)
 
 
 def _build_content(payload: dict) -> str:
