@@ -2,7 +2,7 @@
 
 Invoked by an OS cron (or any scheduler):
 
-    python -m scripts.send_daily_digest --hours 24 --top 10
+    python -m monitoring.send_digest --hours 24 --top 10
 
 It queries the documents table for failed ingests in the last N hours,
 formats a wecom-ready message, and POSTs to WECOM_WEBHOOK_URL.
@@ -12,14 +12,19 @@ Environment variables
 * ``WECOM_WEBHOOK_URL`` — required, same as alert-relay reads
 * ``DIGEST_ENV_LABEL`` — optional, e.g. "test" / "prod". Prefixed into
   the message header so multi-env deployments don't mix up digests.
-  Falls back to the first word of ``ENV`` or empty.
 
-Why a standalone script instead of extending alert-relay
---------------------------------------------------------
-alert-relay's container intentionally doesn't have DB credentials — its
-only job is reshaping webhook payloads. Digests need DB access (read
-from ``documents``), which belongs in the app/worker image. Keeping
-them separate means a relay compromise can't read the database.
+Why a module inside ``monitoring/`` rather than ``scripts/``
+------------------------------------------------------------
+``scripts/`` is .dockerignored — those are host-side wrappers (build,
+deploy). The digest sender runs *inside* the app container (needs DB
+creds, needs SQLAlchemy models), so it belongs in ``monitoring/``
+alongside the rest of the monitoring Python code.
+
+Why a one-off process instead of extending alert-relay
+------------------------------------------------------
+alert-relay's container intentionally has no DB credentials — its only
+job is reshaping webhook payloads. Digests need DB access, so we reuse
+the app image (has models + config) and run as a one-off via cron.
 """
 from __future__ import annotations
 

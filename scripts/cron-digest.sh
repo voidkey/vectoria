@@ -37,4 +37,4 @@ exec docker compose \
     --env-file "$ENV_FILE" \
     run --rm --no-deps \
     -e DIGEST_ENV_LABEL="${DIGEST_ENV_LABEL:-test}" \
-    app python -m scripts.send_daily_digest "$@"
+    app python -m monitoring.send_digest "$@"
