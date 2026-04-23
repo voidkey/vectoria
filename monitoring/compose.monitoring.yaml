@@ -2,7 +2,7 @@
 # compose network so they can scrape app:8000 and worker:9001 by
 # service name.
 #
-# Usage (on deploy-host / any host running the main stack):
+# Usage (on any host running the main stack):
 #
 #   cd /root/app/src/vectoria
 #   docker compose \

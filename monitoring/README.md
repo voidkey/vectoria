@@ -41,7 +41,7 @@ That brings up:
 
 ```bash
 # Fire a test alert directly through Alertmanager (bypasses Prometheus):
-ssh deploy-host 'curl -H "Content-Type: application/json" -d "[{\"labels\":{\"alertname\":\"ManualTest\",\"severity\":\"warning\"},\"annotations\":{\"summary\":\"pipeline test\",\"description\":\"if you see this in wecom, the alerting path works\"}}]" http://127.0.0.1:9093/api/v2/alerts'
+ssh your-host 'curl -H "Content-Type: application/json" -d "[{\"labels\":{\"alertname\":\"ManualTest\",\"severity\":\"warning\"},\"annotations\":{\"summary\":\"pipeline test\",\"description\":\"if you see this in wecom, the alerting path works\"}}]" http://127.0.0.1:9093/api/v2/alerts'
 ```
 
 A text message should land in the wecom group within ~30s (the

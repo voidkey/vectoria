@@ -3,7 +3,7 @@
 Real OCR in tests is slow (~500ms for model load + inference) and
 non-deterministic across CPU architectures, so we mock the engine
 instead of running real inference. The unmocked path is exercised
-end-to-end on deploy-host deploy smoke tests.
+end-to-end in deployment smoke tests.
 """
 import io
 from unittest.mock import patch, MagicMock

@@ -24,8 +24,8 @@ Lifecycle
 Tests
 -----
 Unit tests patch ``async_playwright`` and assert the singleton
-contract. Real end-to-end playwright exercise is deferred to deploy-host
-smoke runs — headless Chromium in CI is slow and brittle.
+contract. Real end-to-end playwright exercise is deferred to
+deployment smoke runs — headless Chromium in CI is slow and brittle.
 """
 from __future__ import annotations
 

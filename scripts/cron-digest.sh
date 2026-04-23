@@ -9,8 +9,8 @@
 #
 # Install on the host (one line per env):
 #
-#   # On deploy-host (test env): every day at 09:00 CST
-#   0 9 * * *  /root/app/src/vectoria/scripts/cron-digest.sh >> /var/log/vectoria-digest.log 2>&1
+#   # Every day at 09:00 CST on your deploy host:
+#   0 9 * * *  /path/to/vectoria/scripts/cron-digest.sh >> /var/log/vectoria-digest.log 2>&1
 #
 # Env vars read by the digest script:
 #   * WECOM_WEBHOOK_URL  (required — same value the alert-relay uses)

@@ -109,7 +109,7 @@ class QueryRequest(BaseModel):
     rerank: bool = False
     # Default flipped to False in W6-8 after eval/reports/baseline-2026-04-22.json
     # showed the LLM-driven query rewrite dropped CJK hit@1 from 0.70
-    # → 0.55 on the deploy-host Jaspers KB. Left as a per-request opt-in for
+    # → 0.55 on the Jaspers-philosophy test KB. Left as a per-request opt-in for
     # cases where the caller has evidence it helps (very short queries,
     # non-Chinese traffic, …).
     query_rewrite: bool = False

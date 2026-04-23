@@ -31,11 +31,11 @@ Example decisions you can now make with data instead of guessing:
 
 ## Usage
 
-Against deploy-host through an SSH tunnel:
+Against a remote deploy through an SSH tunnel:
 
 ```bash
-# In one terminal — tunnel the API:
-ssh -L 8000:localhost:8000 deploy-host
+# In one terminal — tunnel the API (replace `your-host` with your deploy host):
+ssh -L 8000:localhost:8000 your-host
 
 # In another:
 export VECTORIA_URL=http://localhost:8000

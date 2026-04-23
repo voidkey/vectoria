@@ -7,8 +7,8 @@ Create Date: 2026-04-22 14:30:00.000000
 W6-6 cleanup. The ``content_tsv`` generated column + ``chunks_tsv_idx``
 GIN index were kept through W6-1a as a rollback safety net — in case
 the new trigram-based ``keyword_search`` turned out worse in
-production. After several days of live traffic on deploy-host with the
-trigram path proving out on real CJK queries, the legacy tsvector
+production. After several days of live traffic with the trigram
+path proving out on real CJK queries, the legacy tsvector
 surface is pure storage waste (every chunk carries a second tokenized
 representation nothing reads).
 
