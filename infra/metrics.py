@@ -75,10 +75,12 @@ QUEUE_OLDEST_AGE_SECONDS = Gauge(
 
 QUEUE_DEAD_TASKS = Gauge(
     "vectoria_queue_dead_tasks",
-    "Tasks in terminal failure state per task type "
-    "(status='dead', i.e. max_attempts exhausted). "
-    "A non-zero here deserves an alert — retries already gave up.",
-    labelnames=("task_type",),
+    "One series per dead task (status='dead', i.e. max_attempts exhausted). "
+    "Value is always 1 — the count of dead tasks is the number of active series. "
+    "Labels carry enough context (task_id, source) to decide requeue-vs-delete "
+    "from the alert alone. Cardinality is bounded by how many dead tasks an "
+    "operator has yet to clear — typically < 10.",
+    labelnames=("task_type", "task_id", "source"),
 )
 
 # ---------------------------------------------------------------------------

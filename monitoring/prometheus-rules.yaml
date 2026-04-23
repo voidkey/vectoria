@@ -264,12 +264,17 @@ groups:
           service: vectoria
           component: queue
         annotations:
-          summary: "[{{ $externalLabels.env }}] 死信队列出现 {{ $labels.task_type }} 任务"
+          summary: "[{{ $externalLabels.env }}] 死信 {{ $labels.task_type }}"
+          # One series per dead task → one alert per task. source/task_id
+          # come from labels on the gauge emitted in worker/queue.py, so
+          # operators can decide requeue-vs-delete from the wecom message
+          # alone without opening psql.
           description: |
-            task_type={{ $labels.task_type }}：{{ $value }} 条已耗尽重试
-            进入死信队列。需要人工决策：
-              SELECT * FROM tasks WHERE status='dead';
-            决定重入队还是删除。
+            来源: {{ $labels.source }}
+            任务: {{ $labels.task_id }}
+            已耗尽重试，人工决策重入队或删除：
+              UPDATE tasks SET status='pending',attempts=0 WHERE id='{{ $labels.task_id }}';
+              DELETE FROM tasks WHERE id='{{ $labels.task_id }}';
 
   # -------------------------------------------------------------------
   # Worker 资源

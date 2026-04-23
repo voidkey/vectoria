@@ -132,9 +132,12 @@ def _format_alert(a: dict) -> str:
         return "\n".join(lines)
 
     description = (annotations.get("description") or "").strip()
-    # Wecom hard-caps total message length; keep description short.
-    if len(description) > 240:
-        description = description[:237] + "…"
+    # Wecom hard-caps total message length; keep individual descriptions
+    # bounded. 400 chars fits a realistic DLQ alert (source URL up to
+    # 160 chars + task_id + actionable SQL snippets) without chopping
+    # the command operators need to copy.
+    if len(description) > 400:
+        description = description[:397] + "…"
     emoji = _SEVERITY_EMOJI.get(severity, "⚪")
     lines = [f"{emoji} {name}{hint}"]
     if summary:

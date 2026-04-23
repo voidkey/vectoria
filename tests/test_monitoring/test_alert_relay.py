@@ -127,7 +127,7 @@ async def test_relay_caps_long_descriptions(monkeypatch):
     content = captured["json"]["text"]["content"]
     # Truncated with ellipsis marker so operator knows there was more.
     assert "…" in content
-    assert len(content) < 500  # single alert, reasonable total length
+    assert len(content) < 700  # single alert, reasonable total length
 
 
 @pytest.mark.asyncio
@@ -288,6 +288,72 @@ async def test_relay_firing_includes_start_time(monkeypatch):
     assert "开始：" in content
     # 12:00 UTC = 20:00 CST; renderer must convert to local.
     assert "20:00:00" in content
+
+
+@pytest.mark.asyncio
+async def test_relay_preserves_dlq_description_with_source_and_task_id(monkeypatch):
+    """The DLQ alert carries enough context for operator to decide
+    requeue-vs-delete: source URL/filename, task_id, and SQL snippets.
+    A realistic-length (~320 char) description must pass through the
+    relay intact — truncating it in the middle would chop the URL or
+    the SQL the operator needs to copy.
+    """
+    relay = _reload_relay(
+        monkeypatch, WECOM_WEBHOOK_URL="https://qyapi.test/webhook?key=fake",
+    )
+    payload = _alertmanager_payload(1, "firing")
+    alert = payload["alerts"][0]
+    alert["labels"] = {
+        "alertname": "VectoriaDeadTaskAccumulating",
+        "severity": "warning",
+        "task_type": "parse_document",
+        "component": "queue",
+        "task_id": "edad5df0-f588-46ec-a623-d0b02848126c",
+        "source": "https://www.bbc.com/news/articles/cdrm8k7lzmko",
+    }
+    # Shape matches what Prometheus will emit after the rule template is
+    # updated: source + task_id interpolated into a runbook-ish body.
+    alert["annotations"] = {
+        "summary": "[test] 死信：parse_document",
+        "description": (
+            "来源: https://www.bbc.com/news/articles/cdrm8k7lzmko\n"
+            "任务: edad5df0-f588-46ec-a623-d0b02848126c\n"
+            "已耗尽重试，需人工决策重入队或删除：\n"
+            "  UPDATE tasks SET status='pending',attempts=0 "
+            "WHERE id='edad5df0-f588-46ec-a623-d0b02848126c';\n"
+            "  DELETE FROM tasks WHERE id='edad5df0-f588-46ec-a623-d0b02848126c';"
+        ),
+    }
+
+    captured: dict = {}
+
+    class _MockClient:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return None
+        async def post(self, url, json):
+            captured["json"] = json
+            class _Resp:
+                def raise_for_status(self): pass
+                def json(self): return {"errcode": 0}
+            return _Resp()
+
+    with patch("monitoring.alert_relay.httpx.AsyncClient", return_value=_MockClient()):
+        async with AsyncClient(
+            transport=ASGITransport(app=relay.app),
+            base_url="http://test",
+        ) as c:
+            await c.post("/alert", json=payload)
+
+    content = captured["json"]["text"]["content"]
+    # Full URL and full task_id both present — these are the two things
+    # that let the operator identify the failure without psql access.
+    assert "https://www.bbc.com/news/articles/cdrm8k7lzmko" in content
+    assert "edad5df0-f588-46ec-a623-d0b02848126c" in content
+    # Full actionable SQL snippets both present (operator chooses one).
+    assert "UPDATE tasks SET status='pending'" in content
+    assert "DELETE FROM tasks WHERE id=" in content
+    # No mid-description truncation.
+    assert "…" not in content
 
 
 @pytest.mark.asyncio

@@ -198,20 +198,37 @@ async def reap_dead_tasks() -> int:
         return len(dead_ids)
 
 
-# Task types we've ever observed in a DLQ gauge sample. Tracked so we
-# can re-emit ``0`` for any type that dropped to zero between samples
-# — otherwise the gauge retains its last non-zero value forever and
-# ``vectoria_queue_dead_tasks > 0`` alerts never clear after operator
-# cleanup. Module-level because sample_queue_metrics runs from a loop,
-# not a class instance.
-_SEEN_DEAD_TYPES: set[str] = set()
+# Cap for the ``source`` label on the dead-task gauge. Keeps one pathological
+# long URL / filename from bloating Prometheus label storage, while still
+# leaving enough characters to identify the target at a glance.
+_SOURCE_LABEL_MAX = 160
+
+
+def _dead_task_source(payload: dict) -> str:
+    """Pick a human-meaningful pointer from a dead task's payload.
+
+    Priority mirrors what parse_document records in ``documents.source``:
+    an external URL if we have one, else the original filename, else the
+    object-store key. Empty string when none apply — the task_id label
+    is always sufficient to find the row.
+    """
+    if not isinstance(payload, dict):
+        return ""
+    for key in ("source", "filename", "storage_key"):
+        val = payload.get(key)
+        if val:
+            s = str(val)
+            if len(s) > _SOURCE_LABEL_MAX:
+                s = s[: _SOURCE_LABEL_MAX - 1] + "…"
+            return s
+    return ""
 
 
 async def sample_queue_metrics() -> None:
     """Update ``QUEUE_DEPTH``, ``QUEUE_OLDEST_AGE_SECONDS``, and
     ``QUEUE_DEAD_TASKS`` gauges.
 
-    One aggregated SELECT per call per worker. Cheap enough to run every
+    One SELECT per category per call per worker. Cheap enough to run every
     few polling iterations in the worker loop — not on every 1 s tick.
     Operators rely on these for queue-backlog alerts; leaving them
     unobserved is the single biggest gap in the W1 observability story.
@@ -232,25 +249,23 @@ async def sample_queue_metrics() -> None:
             age = (now - oldest).total_seconds() if oldest else 0
             QUEUE_OLDEST_AGE_SECONDS.labels(task_type=task_type).set(max(age, 0))
 
-        # Separate pass for dead tasks so the pending-query index (on
-        # status='pending') can't be misread as "all statuses". The
-        # dead table is small-cardinality in practice — once retries
-        # exhaust, those rows sit there until ops intervenes.
+        # Per-task rows (not aggregated) so each dead task becomes its own
+        # Prometheus series carrying task_id + source labels. That's what
+        # lets the DLQ alert annotation show the actual URL / filename,
+        # so operators can decide requeue-vs-delete without opening psql.
+        # ``.clear()`` before re-emitting drops series for tasks that were
+        # deleted since the last sample — otherwise the alert never resolves.
         dead_result = await session.execute(
-            select(Task.task_type, func.count(Task.id))
+            select(Task.id, Task.task_type, Task.payload)
             .where(Task.status == "dead")
-            .group_by(Task.task_type)
         )
-        current: dict[str, int] = dict(dead_result.all())
-        # Re-zero previously-seen types that dropped to zero so the
-        # gauge reflects reality and alerts resolve. Without this the
-        # gauge keeps its last non-zero value and downstream
-        # ``> 0`` alerts stay firing forever.
-        for task_type in _SEEN_DEAD_TYPES - current.keys():
-            QUEUE_DEAD_TASKS.labels(task_type=task_type).set(0)
-        for task_type, count in current.items():
-            QUEUE_DEAD_TASKS.labels(task_type=task_type).set(count)
-            _SEEN_DEAD_TYPES.add(task_type)
+        QUEUE_DEAD_TASKS.clear()
+        for task_id, task_type, payload in dead_result.all():
+            QUEUE_DEAD_TASKS.labels(
+                task_type=task_type,
+                task_id=task_id,
+                source=_dead_task_source(payload),
+            ).set(1)
 
 
 async def fail(task_id: str, error: str) -> None:
