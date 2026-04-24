@@ -18,6 +18,7 @@ class ErrorCode:
     UPLOAD_TOO_LARGE = 1204
     PARSE_TIMEOUT = 1205
     INGEST_BUSY = 1206
+    MIME_MISMATCH = 1207
 
     # Resource not found (1301-1399)
     NOT_FOUND = 1301

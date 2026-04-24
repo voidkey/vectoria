@@ -1,5 +1,6 @@
 import asyncio
 import hashlib
+import os
 import time
 import uuid
 import logging
@@ -225,6 +226,29 @@ async def ingest_file(
         raise AppError(
             413, ErrorCode.UPLOAD_TOO_LARGE,
             f"File exceeds {cfg.max_upload_bytes} bytes",
+        )
+
+    # MIME sniff gate: reject cross-family magic/extension mismatch when
+    # STRICT_MIME_CHECK=True. In non-strict mode we still bump the counter
+    # so operators can observe mismatches before flipping the flag on.
+    from api.mime_sniff import check_mime
+    from infra.metrics import UPLOAD_MIME_MISMATCH_TOTAL
+    ok, detected = check_mime(filename, raw[:2048])
+    if not ok:
+        _, claimed_ext = os.path.splitext(filename.lower())
+        UPLOAD_MIME_MISMATCH_TOTAL.labels(
+            claimed_ext=claimed_ext or "(none)",
+            detected=detected or "(none)",
+        ).inc()
+        if cfg.strict_mime_check:
+            raise AppError(
+                400, ErrorCode.MIME_MISMATCH,
+                f"File content doesn't match extension {claimed_ext!r} "
+                f"(detected family: {detected})",
+            )
+        logger.warning(
+            "mime_mismatch (non-strict, allowed): filename=%s detected=%s",
+            filename, detected,
         )
 
     # Per-KB file-hash dedup. Idempotency for accidental retries and

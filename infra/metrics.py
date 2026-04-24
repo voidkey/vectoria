@@ -167,6 +167,14 @@ URL_IMAGES_TRUNCATED_TOTAL = Counter(
     labelnames=("handler",),  # generic, xhs, x, wechat
 )
 
+UPLOAD_MIME_MISMATCH_TOTAL = Counter(
+    "vectoria_upload_mime_mismatch_total",
+    "Uploads where sniffed magic-byte family did not match the "
+    "claimed file extension. Incremented in both strict and "
+    "non-strict modes; in strict mode the upload is also rejected.",
+    labelnames=("claimed_ext", "detected"),
+)
+
 # ---------------------------------------------------------------------------
 # Rate limiting (infra/ratelimit.py)
 # ---------------------------------------------------------------------------
