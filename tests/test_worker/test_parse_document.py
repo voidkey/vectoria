@@ -362,3 +362,57 @@ async def test_content_exactly_at_threshold_passes():
 
     assert "index_document" in enqueue_calls
     assert all(u.get("error_type") != "empty_content" for u in update_calls)
+
+
+@pytest.mark.asyncio
+async def test_rollback_min_content_chars_one_accepts_single_char():
+    """MIN_CONTENT_CHARS=1 rollback: content of length 1 is accepted.
+
+    Locks the spec's rollback guarantee — setting the env var to 1
+    restores near-prior behavior where only fully-empty/whitespace
+    content failed. A 1-char body should pass the threshold and
+    proceed to indexing.
+    """
+    from config import get_settings
+
+    # Save + restore the real setting on the lru-cached singleton.
+    real_settings = get_settings()
+    original_value = real_settings.min_content_chars
+    real_settings.min_content_chars = 1
+    try:
+        fake_parser = MagicMock()
+        fake_parser.parse = AsyncMock(
+            return_value=ParseResult(content="x", title="t"),  # 1 char
+        )
+        doc = MagicMock(); doc.status = "queued"
+        update_calls: list[dict] = []
+        enqueue_calls: list[str] = []
+
+        async def _update(doc_id, **fields):
+            update_calls.append(fields)
+        async def _enqueue(task_type, payload, *_a, **_kw):
+            enqueue_calls.append(task_type)
+
+        with (
+            patch("worker.handlers.get_session") as mock_sess,
+            patch("worker.handlers.registry") as mock_reg,
+            patch("worker.handlers.get_storage") as mock_storage,
+            patch("worker.handlers.update_doc", new=_update),
+            patch("worker.queue.enqueue", new=_enqueue),
+        ):
+            mock_sess.return_value.__aenter__.return_value = _build_session(doc)
+            mock_reg.get_by_engine.return_value = fake_parser
+            mock_storage.return_value = AsyncMock(get=AsyncMock(return_value=b"x"))
+            from worker.handlers import handle_parse_document
+            await handle_parse_document({
+                "doc_id": "d", "kb_id": "k", "storage_key": "s",
+                "source": "x.md", "filename": "x.md",
+                "selected_engine": "markitdown",
+            })
+
+        # Under rollback, single-char content passes the threshold and
+        # proceeds to indexing — no empty_content classification.
+        assert "index_document" in enqueue_calls
+        assert all(u.get("error_type") != "empty_content" for u in update_calls)
+    finally:
+        real_settings.min_content_chars = original_value
