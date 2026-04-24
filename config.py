@@ -75,6 +75,23 @@ class Settings(BaseSettings):
     # DocumentConverter etc.) flip this off via monkeypatch.
     parser_isolation: bool = True
 
+    # --- Phase 1 ingest-quality knobs -----------------------------------
+    # Min extracted content length (chars, post-.strip()) for a document
+    # to count as "non-empty". Shorter → fail (or image_only rescue if
+    # a structured-source URL handler flagged allow_image_only=True and
+    # image_urls is non-empty). Rule is strict-less-than, so a value
+    # exactly equal to this threshold passes.
+    min_content_chars: int = 50
+
+    # Cap on number of image URLs any URL handler will carry per
+    # document. Set to a large number (e.g. 9999) to effectively disable.
+    url_image_cap: int = 20
+
+    # When True, reject uploads whose magic-byte-sniffed MIME family
+    # does NOT match the claimed file extension. When False, log +
+    # metric but let the upload through (safe rollback during rollout).
+    strict_mime_check: bool = True
+
     # POST /documents/{file,url}?wait=true polls the Document row for up
     # to this many seconds before returning so backward-compat clients
     # can still receive content in the response body. Past the timeout
