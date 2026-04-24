@@ -179,6 +179,7 @@ async def build_digest(
 _TYPE_MARKER = {
     "parse_error":    "⚠️",
     "empty_content":  "📭",
+    "image_only":     "🖼️",
     "too_large":      "📦",
     "indexing_error": "💾",
     "url_fetch_error": "🔗",
