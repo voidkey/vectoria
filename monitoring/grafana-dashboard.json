@@ -254,7 +254,7 @@
       "title": "External API error rate",
       "gridPos": {"x": 16, "y": 63, "w": 8, "h": 8},
       "datasource": {"type": "prometheus", "uid": "Prometheus"},
-      "targets": [{"refId": "A", "expr": "sum by (api) (rate(vectoria_external_api_calls_total{status!=\"success\"}[5m])) / clamp_min(sum by (api) (rate(vectoria_external_api_calls_total[5m])), 0.001)", "legendFormat": "{{api}}"}],
+      "targets": [{"refId": "A", "expr": "sum by (api) (rate(vectoria_external_api_calls_total{status!=\"ok\"}[5m])) / clamp_min(sum by (api) (rate(vectoria_external_api_calls_total[5m])), 0.001)", "legendFormat": "{{api}}"}],
       "fieldConfig": {"defaults": {"unit": "percentunit", "min": 0, "max": 1}}
     },
 

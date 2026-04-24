@@ -353,9 +353,11 @@ groups:
       - alert: VectoriaExternalAPIErrorRate
         # 外部 API 失败率 > 10% 持续 5 分钟，闸门 >0.05/s
         # （5 分钟 ≥15 次调用）。再恶化会触发 VectoriaCircuitOpen。
+        # circuit_breaker._observe 只打 status ∈ {ok, error, circuit_open}，
+        # 所以"失败"定义为 !="ok"（error + circuit_open 都算）。
         expr: |
           (
-            sum by (api) (rate(vectoria_external_api_calls_total{status!="success"}[5m]))
+            sum by (api) (rate(vectoria_external_api_calls_total{status!="ok"}[5m]))
             /
             sum by (api) (rate(vectoria_external_api_calls_total[5m]))
           ) > 0.1
@@ -372,7 +374,8 @@ groups:
             外部 API：{{ $labels.api }}
             失败率：{{ $value | humanizePercentage }}（阈值 10%）
             持续恶化会触发熔断器，届时该功能完全失败。
-            看 Grafana 上 status 标签拆分，定位是 timeout / 5xx / 连接错误。
+            status 拆分：error = 下游抛异常；circuit_open = 熔断器已打开导致 fail-fast。
+            具体报错去 worker 日志里搜 api={{ $labels.api }}。
 
   # -------------------------------------------------------------------
   # 解析器
