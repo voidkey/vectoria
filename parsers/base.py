@@ -17,8 +17,9 @@ class ParseResult:
     # bounded-concurrency release-as-you-go loop so peak memory stays
     # O(concurrency × avg_image_size) instead of O(total_image_bytes).
     image_refs: list[ImageRef] = field(default_factory=list)
-    # When True + empty body + non-empty image_urls, the worker treats
-    # the doc as ``image_only`` (completed, but index_document skipped)
+    # When True AND content length (post-.strip()) is below
+    # cfg.min_content_chars AND image_urls is non-empty, the worker
+    # treats the doc as ``image_only`` (completed, but index_document skipped)
     # instead of ``failed``. Only handlers whose data source is
     # structured (API-backed or reliable structured DOM) should opt in;
     # HTML-scraped handlers must keep this False so silent anti-bot

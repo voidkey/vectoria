@@ -127,21 +127,59 @@ async def handle_parse_document(payload: dict) -> None:
     raw = None  # noqa: F841
 
     content = parse_result.content
+    cfg = get_settings()
 
     # Permanent failures: empty or oversized content won't become valid
-    # on retry, so mark terminal and return (don't re-raise).
-    if not content or content.isspace():
-        logger.warning("parse_document: empty content for doc %s", doc_id)
+    # on retry. Three outcomes depending on what the parser produced and
+    # whether the handler is a structured source that legitimately
+    # yields image-first posts:
+    if len(content.strip()) < cfg.min_content_chars:
+        has_image_urls = bool(parse_result.image_urls)
+        if parse_result.allow_image_only and has_image_urls:
+            # Structured-source handler (xhs / x syndication API)
+            # returned a post whose body is below threshold but has
+            # images. Treat as image_only: completed + index skipped,
+            # but still run the image download + vision pipeline so
+            # figures are stored. Retrieval on these docs will match
+            # by title / metadata only; image semantics are not fed
+            # into the embedding index in Phase 1 (see Phase 3).
+            logger.info(
+                "parse_document: image_only doc=%s (body %d < %d, images=%d)",
+                doc_id, len(content.strip()), cfg.min_content_chars,
+                len(parse_result.image_urls or []),
+            )
+            DOCUMENT_OUTCOMES.labels(outcome="image_only").inc()
+            await update_doc(
+                doc_id,
+                title=parse_result.title or source,
+                content=content,
+                status="completed",
+                error_type="image_only",
+                error_msg="",
+                error_trace=None,
+                image_status="pending",
+            )
+            from worker.queue import enqueue
+            await enqueue("download_and_store_images", {
+                "kb_id": kb_id, "doc_id": doc_id,
+                "source_url": source,
+                "image_urls": parse_result.image_urls,
+            })
+            return
+
+        logger.warning(
+            "parse_document: empty content for doc %s (len=%d < %d)",
+            doc_id, len(content.strip()), cfg.min_content_chars,
+        )
         PARSE_EMPTY_TOTAL.labels(engine=selected_engine).inc()
         DOCUMENT_OUTCOMES.labels(outcome="empty_content").inc()
         await update_doc(
             doc_id, status="failed",
-            error_msg="Parsing returned empty content",
+            error_msg="Parsing returned empty or below-threshold content",
             error_type="empty_content",
         )
         return
 
-    cfg = get_settings()
     if len(content) > cfg.max_content_chars:
         logger.warning(
             "parse_document: content too large (%d > %d) doc=%s",

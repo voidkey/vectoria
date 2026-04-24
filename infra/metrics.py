@@ -148,7 +148,11 @@ DOCUMENT_OUTCOMES = Counter(
     labelnames=("outcome",),
     # outcome ∈ {
     #   completed        — indexed successfully
-    #   empty_content    — parse returned nothing
+    #   empty_content    — parse returned nothing above threshold
+    #   image_only       — body below threshold but image_urls present
+    #                      and handler allowed image-only rescue;
+    #                      status=completed, index_document skipped,
+    #                      download_and_store_images still runs
     #   too_large        — content exceeded max_content_chars
     #   parse_error      — parser raised an exception
     #   indexing_error   — embedding / vector insert failed
