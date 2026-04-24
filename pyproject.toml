@@ -25,6 +25,7 @@ dependencies = [
     "aioboto3>=13.0",
     "pyjwt>=2.8",
     "prometheus-client>=0.20",
+    "puremagic>=1.28",
     "prometheus-fastapi-instrumentator>=7.0",
     "redis[hiredis]>=5.0",
     # ``coredis`` is what ``limits.aio.storage.RedisStorage`` speaks
