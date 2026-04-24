@@ -235,9 +235,15 @@ async def ingest_file(
     from infra.metrics import UPLOAD_MIME_MISMATCH_TOTAL
     ok, detected = check_mime(filename, raw[:2048])
     if not ok:
+        from api.mime_sniff import EXT_FAMILIES
         _, claimed_ext = os.path.splitext(filename.lower())
+        # Bucket the extension label to a bounded set — anything outside
+        # the known-good EXT_FAMILIES keys (including empty string) maps
+        # to "other" so an attacker can't blow up Prom series cardinality
+        # by sending unlimited distinct extensions.
+        claimed_label = claimed_ext if claimed_ext in EXT_FAMILIES else "other"
         UPLOAD_MIME_MISMATCH_TOTAL.labels(
-            claimed_ext=claimed_ext or "(none)",
+            claimed_ext=claimed_label,
             detected=detected or "(none)",
         ).inc()
         if cfg.strict_mime_check:
