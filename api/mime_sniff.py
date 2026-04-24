@@ -82,6 +82,12 @@ _MIME_TO_FAMILY: list[tuple[str, str]] = [
 ]
 
 
+# Families we never accept regardless of claimed extension. Even if the
+# user names their file ``foo.exe`` (so the extension has no declared
+# family), a PE executable in the payload is still rejected here.
+_BLOCKED_FAMILIES: frozenset[str] = frozenset({"executable"})
+
+
 class _BytesFile:
     """Minimal file-like wrapper so puremagic can seek on in-memory head bytes."""
     def __init__(self, data: bytes):
@@ -140,11 +146,20 @@ def check_mime(filename: str, head: bytes) -> tuple[bool, str | None]:
 
     ``ok=True`` when detected family matches the extension family OR
     detection is ambiguous (returns None — we don't block what we
-    can't identify). ``ok=False`` on confirmed cross-family mismatch.
+    can't identify). ``ok=False`` when:
+      * detected family is in ``_BLOCKED_FAMILIES`` (executable, …) —
+        rejected regardless of the claimed extension.
+      * detected family is known but does not match the claimed
+        extension family (e.g. PE disguised as ``.pdf``).
     """
     _, ext = os.path.splitext(filename.lower())
     claimed = EXT_FAMILIES.get(ext)
     detected = detect_family(head)
+
+    # Unconditional reject on blocked families — an executable is never
+    # a valid upload, no matter what the user named it.
+    if detected in _BLOCKED_FAMILIES:
+        return False, detected
 
     if detected is None:
         return True, None
