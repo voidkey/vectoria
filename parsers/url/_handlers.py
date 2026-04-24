@@ -9,6 +9,8 @@ from urllib.parse import urljoin, urlparse
 import httpx
 import trafilatura
 
+from config import get_settings
+from infra.metrics import URL_IMAGES_TRUNCATED_TOTAL
 from infra.ratelimit import acquire as rl_acquire
 from parsers.base import ParseResult
 
@@ -133,14 +135,23 @@ def find_handler(url: str) -> SiteHandler | None:
 
 
 def extract_image_urls(html: str, base_url: str) -> list[str]:
-    """Extract image URLs from HTML, resolve relative URLs, cap at 20."""
+    """Extract image URLs from HTML, resolve relative URLs, cap at settings.url_image_cap.
+
+    Generic-handler path. Emits URL_IMAGES_TRUNCATED_TOTAL{handler="generic"}
+    once if the cap is hit (not once per dropped image).
+    """
+    cap = get_settings().url_image_cap
     urls: list[str] = []
+    truncated = False
     for src in _IMG_TAG.findall(html):
         abs_url = urljoin(base_url, src)
         if not abs_url.startswith("data:"):
             urls.append(abs_url)
-        if len(urls) >= 20:
+        if len(urls) >= cap:
+            truncated = True
             break
+    if truncated:
+        URL_IMAGES_TRUNCATED_TOTAL.labels(handler="generic").inc()
     return urls
 
 
@@ -209,10 +220,11 @@ async def download_images(
     from api.errors import AppError
 
     images: dict[str, bytes] = {}
+    cap = get_settings().url_image_cap
     async with httpx.AsyncClient(
         timeout=10, follow_redirects=True, headers=headers or {},
     ) as client:
-        for original in urls[:20]:
+        for original in urls[:cap]:
             fetch_url = canonicalize(original) if canonicalize else original
             try:
                 await reresolve_and_check_ssrf(fetch_url)

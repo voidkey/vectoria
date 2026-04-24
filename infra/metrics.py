@@ -159,6 +159,14 @@ DOCUMENT_OUTCOMES = Counter(
     # }
 )
 
+URL_IMAGES_TRUNCATED_TOTAL = Counter(
+    "vectoria_url_images_truncated_total",
+    "URL handler parses where the pre-cap image list exceeded "
+    "url_image_cap, forcing truncation. Incremented once per parse, "
+    "not once per dropped image.",
+    labelnames=("handler",),  # generic, xhs, x, wechat
+)
+
 # ---------------------------------------------------------------------------
 # Rate limiting (infra/ratelimit.py)
 # ---------------------------------------------------------------------------

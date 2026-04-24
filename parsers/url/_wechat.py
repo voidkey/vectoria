@@ -14,6 +14,8 @@ from urllib.parse import urlparse, urlunparse, parse_qsl, urlencode
 import httpx
 import lxml.html
 
+from config import get_settings
+from infra.metrics import URL_IMAGES_TRUNCATED_TOTAL
 from parsers.base import ParseResult
 from parsers.url._handlers import extract_html_title, extract_with_trafilatura
 
@@ -168,9 +170,12 @@ class WechatHandler:
         if not title:
             title = extract_html_title(html, url)
 
+        cap = get_settings().url_image_cap
+        if len(img_urls) > cap:
+            URL_IMAGES_TRUNCATED_TOTAL.labels(handler="wechat").inc()
         return ParseResult(
             content=text, title=title,
-            image_urls=img_urls[:20],
+            image_urls=img_urls[:cap],
         )
 
     async def _parse_with_playwright(self, url: str) -> ParseResult:
@@ -263,7 +268,10 @@ class WechatHandler:
         wrapped = f"<html><body>{content_html}</body></html>"
         text = extract_with_trafilatura(wrapped)
 
+        cap = get_settings().url_image_cap
+        if len(img_urls) > cap:
+            URL_IMAGES_TRUNCATED_TOTAL.labels(handler="wechat").inc()
         return ParseResult(
             content=text, title=title,
-            image_urls=img_urls[:20],
+            image_urls=img_urls[:cap],
         )
