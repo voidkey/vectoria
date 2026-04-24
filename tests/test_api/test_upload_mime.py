@@ -56,6 +56,21 @@ def test_check_mime_rejects_pdf_as_docx():
     assert detected == "pdf"
 
 
+def test_check_mime_rejects_exe_as_exe():
+    """An executable uploaded as .exe must be rejected even though .exe
+    isn't in EXT_FAMILIES — blocked family wins over pass-through."""
+    ok, detected = check_mime("malware.exe", _EXE_HEAD)
+    assert ok is False
+    assert detected == "executable"
+
+
+def test_check_mime_rejects_exe_as_unknown_ext():
+    """Same hole, confirmed for any unknown/odd extension."""
+    ok, detected = check_mime("weird.xyz", _EXE_HEAD)
+    assert ok is False
+    assert detected == "executable"
+
+
 # -- Endpoint-level tests --------------------------------------------------
 # Fixtures (client, kb) reuse the pattern from
 # tests/test_api/test_upload_limits_and_dedup.py — the `client` fixture is
@@ -204,3 +219,26 @@ async def test_upload_non_strict_allows_mismatch(monkeypatch, client):
     # Counter must have been incremented even in non-strict mode.
     mock_counter.labels.assert_called_once()
     mock_labels.inc.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_upload_exe_as_exe_rejected(client):
+    """Executable with true .exe name still rejected — blocked family wins."""
+    exe_content = _EXE_HEAD + b"\x00" * 64
+
+    with (
+        patch("api.routes.documents._validate_kb", new=AsyncMock()),
+        patch("api.routes.documents.get_storage") as mock_storage,
+        patch("api.routes.documents.registry") as mock_registry,
+    ):
+        mock_storage.return_value = AsyncMock()
+        mock_registry.auto_select.return_value = "markitdown"
+
+        resp = await client.post(
+            "/v1/knowledgebases/kb-x/documents/file",
+            files={"file": ("actually.exe", exe_content, "application/octet-stream")},
+        )
+
+    assert resp.status_code == 400, resp.text
+    body = resp.json()
+    assert body["code"] == 1207  # MIME_MISMATCH
