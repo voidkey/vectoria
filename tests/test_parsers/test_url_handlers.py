@@ -104,3 +104,46 @@ async def test_download_images_with_headers():
         assert sent_headers.get("Referer") == "https://mp.weixin.qq.com/"
     finally:
         ratelimit._reset_for_tests()
+
+
+def _counter_sum(counter, **labels):
+    """Sum the current value of a labelled Counter for given label set."""
+    return counter.labels(**labels)._value.get()
+
+
+def test_extract_image_urls_respects_url_image_cap(monkeypatch):
+    from parsers.url._handlers import extract_image_urls
+    from infra import metrics
+
+    # Override settings without touching .env — construct a minimal
+    # stub for the two attributes the code path needs.
+    class _Stub:
+        url_image_cap = 3
+    monkeypatch.setattr("parsers.url._handlers.get_settings", lambda: _Stub(), raising=False)
+
+    html = "".join(f'<img src="https://x/{i}.jpg">' for i in range(10))
+
+    before = _counter_sum(metrics.URL_IMAGES_TRUNCATED_TOTAL, handler="generic")
+    urls = extract_image_urls(html, "https://x/")
+    after = _counter_sum(metrics.URL_IMAGES_TRUNCATED_TOTAL, handler="generic")
+
+    assert len(urls) == 3
+    assert after - before == 1  # inc once per parse, not per dropped image
+
+
+def test_extract_image_urls_no_truncation_below_cap(monkeypatch):
+    from parsers.url._handlers import extract_image_urls
+    from infra import metrics
+
+    class _Stub:
+        url_image_cap = 50
+    monkeypatch.setattr("parsers.url._handlers.get_settings", lambda: _Stub(), raising=False)
+
+    html = '<img src="https://x/1.jpg"><img src="https://x/2.jpg">'
+
+    before = _counter_sum(metrics.URL_IMAGES_TRUNCATED_TOTAL, handler="generic")
+    urls = extract_image_urls(html, "https://x/")
+    after = _counter_sum(metrics.URL_IMAGES_TRUNCATED_TOTAL, handler="generic")
+
+    assert len(urls) == 2
+    assert after == before

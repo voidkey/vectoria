@@ -31,6 +31,8 @@ from __future__ import annotations
 import logging
 from urllib.parse import urlparse
 
+from config import get_settings
+from infra.metrics import URL_IMAGES_TRUNCATED_TOTAL
 from parsers.base import ParseResult
 
 log = logging.getLogger(__name__)
@@ -222,7 +224,11 @@ class XhsHandler:
 
         title = (extract.get("title") or "").strip()
         body = (extract.get("body") or "").strip()
-        img_urls = list(extract.get("imgs") or [])[:20]
+        cap = get_settings().url_image_cap
+        raw_imgs = list(extract.get("imgs") or [])
+        if len(raw_imgs) > cap:
+            URL_IMAGES_TRUNCATED_TOTAL.labels(handler="xhs").inc()
+        img_urls = raw_imgs[:cap]
 
         content = f"# {title}\n\n{body}" if title and body else (body or title)
 

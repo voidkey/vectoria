@@ -10,6 +10,8 @@ from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 import httpx
 
+from config import get_settings
+from infra.metrics import URL_IMAGES_TRUNCATED_TOTAL
 from parsers.base import ParseResult
 
 _X_HOSTS = {"x.com", "twitter.com"}
@@ -130,9 +132,12 @@ class XHandler:
                 img_urls.append(u)
 
         title = article_title or (text[:80] if text else f"Tweet by {user_name or handle}")
+        cap = get_settings().url_image_cap
+        if len(img_urls) > cap:
+            URL_IMAGES_TRUNCATED_TOTAL.labels(handler="x").inc()
         return ParseResult(
             content="\n\n".join(parts),
             title=title or url,
-            image_urls=img_urls[:20],
+            image_urls=img_urls[:cap],
             allow_image_only=True,
         )
