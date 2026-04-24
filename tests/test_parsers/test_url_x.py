@@ -127,3 +127,30 @@ async def test_handler_parse_returns_empty_on_api_failure():
         result = await h.parse("https://x.com/user/status/99999")
 
     assert result.content == ""
+
+
+@pytest.mark.asyncio
+async def test_x_success_sets_allow_image_only_true():
+    """Syndication API is structured — X handler opts into image_only."""
+    api_response = {
+        "user": {"name": "Test User", "screen_name": "testuser"},
+        "text": "Hello world tweet",
+        "mediaDetails": [
+            {"media_url_https": "https://pbs.twimg.com/media/img1.jpg"},
+        ],
+    }
+
+    mock_resp = MagicMock()
+    mock_resp.json.return_value = api_response
+    mock_resp.raise_for_status = MagicMock()
+
+    mock_client = AsyncMock()
+    mock_client.get = AsyncMock(return_value=mock_resp)
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+
+    with patch("parsers.url._x.httpx.AsyncClient", return_value=mock_client):
+        handler = XHandler()
+        result = await handler.parse("https://x.com/testuser/status/123")
+
+    assert result.allow_image_only is True

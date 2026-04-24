@@ -160,3 +160,23 @@ async def test_handler_falls_back_to_playwright_on_empty():
         result = await h.parse("https://mp.weixin.qq.com/s/fallback123")
 
     assert result.content == "playwright content"
+
+
+@pytest.mark.asyncio
+async def test_wechat_success_allow_image_only_stays_false():
+    """HTML-scraped handler — empty body is a failure signal, stay strict."""
+    fake_html = """
+    <html><head><title>文章标题-微信公众号</title></head><body>
+    <h2 id="activity-name"><span class="js_title_inner">标题</span></h2>
+    <div id="js_content" style="visibility: hidden;">
+        <p>正文内容</p>
+        <img data-src="https://mmbiz.qpic.cn/img1.jpg" src="" />
+    </div>
+    </body></html>
+    """
+    with _patch_async_httpx(fake_html), \
+         patch("parsers.url._wechat.extract_with_trafilatura", return_value="正文内容"):
+        handler = WechatHandler()
+        result = await handler.parse("https://mp.weixin.qq.com/s/abc")
+
+    assert result.allow_image_only is False

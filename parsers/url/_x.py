@@ -132,6 +132,7 @@ class XHandler:
         title = article_title or (text[:80] if text else f"Tweet by {user_name or handle}")
         return ParseResult(
             content="\n\n".join(parts),
-                        title=title or url,
+            title=title or url,
             image_urls=img_urls[:20],
+            allow_image_only=True,
         )

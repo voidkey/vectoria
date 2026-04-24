@@ -189,3 +189,31 @@ async def test_download_images_for_url_sends_xhs_referer():
 
     hdrs = captured.get("headers") or {}
     assert hdrs.get("Referer") == "https://www.xiaohongshu.com/explore/xyz"
+
+
+# ---------------------------------------------------------------------------
+# allow_image_only opt-in
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_xhs_success_sets_allow_image_only_true():
+    """Structured-source handler opts into image_only rescue."""
+    mock_page = AsyncMock()
+    mock_page.goto = AsyncMock()
+    mock_page.wait_for_timeout = AsyncMock()
+    mock_page.evaluate = AsyncMock(return_value={
+        "title": "note title",
+        "body": "hello world",
+        "imgs": ["https://sns-webpic-qc.xhscdn.com/a.jpg"],
+    })
+
+    mock_ctx = AsyncMock()
+    mock_ctx.new_page = AsyncMock(return_value=mock_page)
+    mock_ctx.__aenter__ = AsyncMock(return_value=mock_ctx)
+    mock_ctx.__aexit__ = AsyncMock(return_value=None)
+
+    with patch("parsers.url._browser.parse_session", return_value=mock_ctx):
+        h = XhsHandler()
+        result = await h.parse("https://www.xiaohongshu.com/explore/abc")
+
+    assert result.allow_image_only is True
