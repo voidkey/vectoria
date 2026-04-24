@@ -69,9 +69,13 @@ async def handle_parse_document(payload: dict) -> None:
     instead of holding the request open while MinerU/docling chew on
     a large PDF.
 
-    Failures are classified:
-      * empty content / content too large → terminal ``failed`` (no retry —
-        the input won't fix itself on retry)
+    Terminal outcomes are classified:
+      * content below threshold (``min_content_chars``) + no images
+        OR handler didn't opt in → ``failed`` / ``empty_content``
+      * content below threshold + images + handler opted in via
+        ``ParseResult.allow_image_only`` → ``completed`` /
+        ``image_only`` (indexing skipped, image pipeline still runs)
+      * content above ``max_content_chars`` → ``failed`` / ``too_large``
       * other exceptions → re-raised so the queue retries with backoff
     """
     doc_id = payload["doc_id"]
@@ -128,12 +132,19 @@ async def handle_parse_document(payload: dict) -> None:
 
     content = parse_result.content
     cfg = get_settings()
+    stripped_len = len(content.strip())
+
+    download_payload = {
+        "kb_id": kb_id, "doc_id": doc_id,
+        "source_url": source,
+        "image_urls": parse_result.image_urls,
+    } if parse_result.image_urls else None
 
     # Permanent failures: empty or oversized content won't become valid
     # on retry. Three outcomes depending on what the parser produced and
     # whether the handler is a structured source that legitimately
     # yields image-first posts:
-    if len(content.strip()) < cfg.min_content_chars:
+    if stripped_len < cfg.min_content_chars:
         has_image_urls = bool(parse_result.image_urls)
         if parse_result.allow_image_only and has_image_urls:
             # Structured-source handler (xhs / x syndication API)
@@ -145,10 +156,12 @@ async def handle_parse_document(payload: dict) -> None:
             # into the embedding index in Phase 1 (see Phase 3).
             logger.info(
                 "parse_document: image_only doc=%s (body %d < %d, images=%d)",
-                doc_id, len(content.strip()), cfg.min_content_chars,
+                doc_id, stripped_len, cfg.min_content_chars,
                 len(parse_result.image_urls or []),
             )
             DOCUMENT_OUTCOMES.labels(outcome="image_only").inc()
+            # error_type here is a terminal-outcome label (matches
+            # DOCUMENT_OUTCOMES labels), not an error; status stays completed.
             await update_doc(
                 doc_id,
                 title=parse_result.title or source,
@@ -160,16 +173,12 @@ async def handle_parse_document(payload: dict) -> None:
                 image_status="pending",
             )
             from worker.queue import enqueue
-            await enqueue("download_and_store_images", {
-                "kb_id": kb_id, "doc_id": doc_id,
-                "source_url": source,
-                "image_urls": parse_result.image_urls,
-            })
+            await enqueue("download_and_store_images", download_payload)
             return
 
         logger.warning(
             "parse_document: empty content for doc %s (len=%d < %d)",
-            doc_id, len(content.strip()), cfg.min_content_chars,
+            doc_id, stripped_len, cfg.min_content_chars,
         )
         PARSE_EMPTY_TOTAL.labels(engine=selected_engine).inc()
         DOCUMENT_OUTCOMES.labels(outcome="empty_content").inc()
@@ -223,10 +232,7 @@ async def handle_parse_document(payload: dict) -> None:
     await enqueue("index_document", {"doc_id": doc_id, "kb_id": kb_id})
 
     if has_image_urls:
-        await enqueue("download_and_store_images", {
-            "kb_id": kb_id, "doc_id": doc_id,
-            "source_url": source, "image_urls": parse_result.image_urls,
-        })
+        await enqueue("download_and_store_images", download_payload)
     elif has_inline_images and vision_configured:
         await enqueue("analyze_images", {"kb_id": kb_id, "doc_id": doc_id})
 
