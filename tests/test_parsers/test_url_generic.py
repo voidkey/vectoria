@@ -83,3 +83,17 @@ async def test_handler_returns_empty_on_total_failure():
         result = await h.parse("https://bad-url.example")
 
     assert result.content == ""
+
+
+@pytest.mark.asyncio
+async def test_generic_allow_image_only_stays_false():
+    """Generic handler is HTML-scraped — stay strict."""
+    html = "<html><head><title>Test</title></head><body><p>Content</p></body></html>"
+    long_content = "Extracted content. " * 25
+
+    with _patch_async_httpx(html=html, url="https://example.com/post"), \
+         patch("parsers.url._handlers.trafilatura.extract", return_value=long_content):
+        handler = GenericHandler()
+        result = await handler.parse("https://example.com/post")
+
+    assert result.allow_image_only is False

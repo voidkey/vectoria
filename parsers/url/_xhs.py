@@ -230,4 +230,5 @@ class XhsHandler:
             content=content,
             title=title or urlparse(url).netloc,
             image_urls=img_urls,
+            allow_image_only=True,
         )
