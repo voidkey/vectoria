@@ -47,13 +47,20 @@ def get_wechat_headers(url: str) -> dict[str, str] | None:
 
 
 def extract_datasrc_urls(container: lxml.html.HtmlElement) -> list[str]:
-    """Extract image URLs from data-src attributes within a DOM container."""
+    """Extract image URLs from data-src attributes within a DOM container.
+
+    Cap is ``settings.url_image_cap``. This is the DOM-level extraction
+    cap; the WeChat handler then applies the same cap again at
+    ParseResult construction (idempotent but kept for clarity).
+    The truncation counter is emitted at the handler call site, not here.
+    """
+    cap = get_settings().url_image_cap
     urls: list[str] = []
     for img in container.findall(".//img[@data-src]"):
         src = img.get("data-src", "")
         if src and not src.startswith("data:") and src not in urls:
             urls.append(src)
-        if len(urls) >= 20:
+        if len(urls) >= cap:
             break
     return urls
 

@@ -153,8 +153,8 @@ class XhsHandler:
                 await page.goto(url, wait_until="domcontentloaded", timeout=30000)
                 await page.wait_for_timeout(2000)  # soft hydration wait
 
-                extract = await page.evaluate(
-                        """
+                cap = get_settings().url_image_cap
+                js = """
                         () => {
                             const pickText = sels => {
                                 for (const s of sels) {
@@ -194,9 +194,9 @@ class XhsHandler:
                                 )?.content || '';
                             }
 
-                            // Images: hero carousel + inline. Cap at 20
-                            // to match download_images default. Exclude
-                            // avatars / qrcodes / icons — they live on
+                            // Images: hero carousel + inline. Cap matches
+                            // ``settings.url_image_cap`` (injected from Python).
+                            // Exclude avatars / qrcodes / icons — they live on
                             // sns-avatar-qc.* or carry those words in
                             // the URL, and only add noise to vision /
                             // phash downstream.
@@ -211,12 +211,12 @@ class XhsHandler:
                             const uniq = [];
                             for (const u of imgs) {
                                 if (!seen.has(u)) { seen.add(u); uniq.push(u); }
-                                if (uniq.length >= 20) break;
+                                if (uniq.length >= __IMAGE_CAP__) break;
                             }
                             return { title, body, imgs: uniq };
                         }
-                        """,
-                )
+                        """.replace("__IMAGE_CAP__", str(cap))
+                extract = await page.evaluate(js)
                 # Context closes at async-with exit.
         except Exception:
             log.exception("xhs playwright parse failed for %s", url)
@@ -224,7 +224,6 @@ class XhsHandler:
 
         title = (extract.get("title") or "").strip()
         body = (extract.get("body") or "").strip()
-        cap = get_settings().url_image_cap
         raw_imgs = list(extract.get("imgs") or [])
         if len(raw_imgs) > cap:
             URL_IMAGES_TRUNCATED_TOTAL.labels(handler="xhs").inc()
