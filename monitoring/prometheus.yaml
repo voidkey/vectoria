@@ -11,10 +11,16 @@ global:
   scrape_interval: 15s
   evaluation_interval: 15s
   # 所有从这个 Prometheus 发出的告警/远程写入自动带上这些标签。
-  # 线上部署时把 env 改成 prod —— 只需换这一行即可区分两套告警来源。
+  # env 由 ${ENV_LABEL} 启动时注入，方便不同部署各自标记告警来源——
+  # 在该部署的 .env 里设 ENV_LABEL=prod / test 即可，默认 test。
+  # 需要 prometheus 启动参数带 --enable-feature=expand-external-labels
+  # （已在 compose 里配好）。
   # $externalLabels.env 在 rules.yaml 的 summary/description 模板里被引用。
   external_labels:
-    env: test
+    # 默认值 (test) 由 compose.monitoring.yaml 的 environment 兜底；
+    # prometheus 的 expand-external-labels 是 Go os.Expand，不支持
+    # ${VAR:-default} bash-style 语法，所以这里只能纯 ${ENV_LABEL}。
+    env: ${ENV_LABEL}
     service: vectoria
 
 rule_files:

@@ -40,11 +40,17 @@ services:
       - ./monitoring/prometheus.yaml:/etc/prometheus/prometheus.yml:ro
       - ./monitoring/prometheus-rules.yaml:/etc/prometheus/rules.yaml:ro
       - vectoria_prom_data:/prometheus
+    # ENV_LABEL is read from the compose env-file and substituted into
+    # prometheus.yaml's external_labels.env at startup.
+    environment:
+      ENV_LABEL: ${ENV_LABEL:-test}
     command:
       - --config.file=/etc/prometheus/prometheus.yml
       - --storage.tsdb.path=/prometheus
       - --storage.tsdb.retention.time=30d
       - --web.enable-lifecycle
+      # Required for ${ENV_LABEL} substitution in external_labels.
+      - --enable-feature=expand-external-labels
     ports:
       # Loopback-only by default — Prometheus has no auth. Override
       # PROM_BIND=0.0.0.0 once a proper auth proxy is in front.

@@ -183,6 +183,46 @@ async def test_parse_handles_malformed_bytes():
     assert result.image_refs == []
 
 
+@pytest.mark.asyncio
+async def test_parse_handles_picture_shape_without_embedded_image():
+    """Regression: real-world decks contain Picture shapes whose
+    blipFill has no r:embed attribute (linked picture, broken
+    template asset, etc.). python-pptx's Picture.image is a
+    @property that raises ``ValueError("no embedded image")`` when
+    rId is None. Pre-fix, the picture walk used
+    ``getattr(shape, 'image', None)`` which only swallows
+    AttributeError, so this ValueError bubbled up and killed parse
+    for the whole deck on the very first such slide.
+    """
+    from pptx import Presentation
+    from pptx.util import Inches
+    from pptx.oxml.ns import qn
+    from PIL import Image
+    from parsers.pptx_parser import PptxParser
+
+    png = io.BytesIO()
+    Image.new("RGB", (8, 8), color="red").save(png, format="PNG")
+    png.seek(0)
+
+    prs = Presentation()
+    slide = prs.slides.add_slide(prs.slide_layouts[6])  # blank
+    pic = slide.shapes.add_picture(
+        png, Inches(1), Inches(1), Inches(1), Inches(1),
+    )
+    # Strip the r:embed attribute — same shape we hit in production
+    # decks where the original asset is missing/linked.
+    blip = pic._pic.find(qn("p:blipFill") + "/" + qn("a:blip"))
+    del blip.attrib[qn("r:embed")]
+    assert pic._pic.blip_rId is None
+    buf = io.BytesIO()
+    prs.save(buf)
+
+    result = await PptxParser().parse(buf.getvalue(), filename="bad_pic.pptx")
+    # No usable image, so no ImageRef. The whole deck still parses.
+    assert result.image_refs == []
+    assert "## Slide 1" in result.content
+
+
 # ---------------------------------------------------------------------------
 # Registry dispatch
 # ---------------------------------------------------------------------------

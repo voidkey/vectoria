@@ -253,13 +253,18 @@ def _collect_picture_refs(
         if shape.shape_type == 6:  # MSO_SHAPE_TYPE.GROUP
             _collect_picture_refs(shape.shapes, out, name_prefix=name_prefix)
             continue
-        image = getattr(shape, "image", None)
-        if image is None:
-            continue
+        # Picture.image is a property that raises ValueError("no embedded
+        # image") when the picture placeholder has no rId yet (e.g. an
+        # unfilled "Picture with Caption" layout). getattr-with-default
+        # only swallows AttributeError, not ValueError, so that path used
+        # to bubble out and kill the whole slide walk. Wrap the access
+        # itself; AttributeError covers shapes without .image at all
+        # (text frames, tables, lines, ...).
         try:
+            image = shape.image
             blob = image.blob
             content_type = image.content_type or "image/png"
-        except Exception:
+        except (AttributeError, ValueError):
             continue
 
         n = len(out)
