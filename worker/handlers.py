@@ -245,7 +245,16 @@ async def handle_parse_document(payload: dict) -> None:
 async def handle_index_document(payload: dict) -> None:
     doc_id = payload["doc_id"]
     kb_id = payload["kb_id"]
-    doc = await load_doc(doc_id)
+    try:
+        doc = await load_doc(doc_id)
+    except ValueError:
+        # Doc was deleted between enqueue and dequeue. Idempotent skip
+        # — same outcome as parse_document's `if doc is None: return`
+        # at line 95-97 (parse_document uses inline select instead of
+        # load_doc, so its check is None-shaped rather than exception-
+        # shaped, but the behaviour is the same).
+        logger.info("index_document: doc %s missing, skipping", doc_id)
+        return
     content = doc.content
 
     cfg = get_settings()
@@ -363,7 +372,15 @@ async def handle_download_and_store_images(payload: dict) -> None:
     doc_id = payload["doc_id"]
     source_url = payload["source_url"]
     image_urls = payload["image_urls"]
-    doc = await load_doc(doc_id)
+    try:
+        doc = await load_doc(doc_id)
+    except ValueError:
+        # Doc was deleted between enqueue and dequeue. Skip silently —
+        # mirrors parse_document's missing-doc behaviour at line 95-97.
+        logger.info(
+            "download_and_store_images: doc %s missing, skipping", doc_id,
+        )
+        return
     content = doc.content
 
     from api.image_stream import refs_from_dict, stream_upload_and_store_refs
