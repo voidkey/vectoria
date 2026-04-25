@@ -264,7 +264,7 @@ groups:
           service: vectoria
           component: queue
         annotations:
-          summary: "[{{ $externalLabels.env }}] 死信 {{ $labels.task_type }}"
+          summary: "[{{ $externalLabels.env }}] 死信 {{ $labels.task_type }}: {{ $labels.source }}"
           # One series per dead task → one alert per task. source/task_id
           # come from labels on the gauge emitted in worker/queue.py, so
           # operators can decide requeue-vs-delete from the wecom message
