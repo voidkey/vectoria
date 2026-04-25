@@ -244,6 +244,12 @@ async def sample_queue_metrics() -> None:
             .where(Task.status == "pending")
             .group_by(Task.task_type)
         )
+        # .clear() before re-emitting drops series for task_types
+        # whose last pending task just completed — otherwise the
+        # VectoriaQueueTaskAging alert never resolves once tripped.
+        # Same trap as the dead-task gauge handled below.
+        QUEUE_DEPTH.clear()
+        QUEUE_OLDEST_AGE_SECONDS.clear()
         for task_type, count, oldest in result.all():
             QUEUE_DEPTH.labels(task_type=task_type).set(count)
             age = (now - oldest).total_seconds() if oldest else 0

@@ -132,3 +132,61 @@ async def test_stale_series_cleared_when_dead_task_gone():
         await sample_queue_metrics()
 
     assert _dead_series() == {}, "stale series still present after dead task removed"
+
+
+@pytest.mark.asyncio
+async def test_sample_clears_stale_pending_gauges_for_vanished_task_types():
+    """Regression: when a task_type previously had pending tasks but
+    now has zero, the GROUP BY query doesn't return a row for it,
+    the for-loop skips it, and the old value lingers forever — driving
+    the VectoriaQueueTaskAging alert into a permanent false fire.
+
+    The fix calls .clear() on QUEUE_DEPTH and QUEUE_OLDEST_AGE_SECONDS
+    before the for loop, so vanished types are dropped from the
+    registry and Prometheus stops emitting their series.
+    """
+    from infra.metrics import QUEUE_DEPTH, QUEUE_OLDEST_AGE_SECONDS
+
+    # Pre-set both gauges as if a previous sampler call saw 5 pending
+    # tasks of type "ghost" with oldest age 999 seconds.
+    QUEUE_DEPTH.labels(task_type="ghost").set(5)
+    QUEUE_OLDEST_AGE_SECONDS.labels(task_type="ghost").set(999.0)
+
+    # Sanity check: the ghost values are present before sampling.
+    def _depth_labels() -> set[str]:
+        return {
+            sample.labels.get("task_type")
+            for metric in QUEUE_DEPTH.collect()
+            for sample in metric.samples
+        }
+
+    def _age_labels() -> set[str]:
+        return {
+            sample.labels.get("task_type")
+            for metric in QUEUE_OLDEST_AGE_SECONDS.collect()
+            for sample in metric.samples
+        }
+
+    assert "ghost" in _depth_labels()
+    assert "ghost" in _age_labels()
+
+    # Reset the dead gauge so this test doesn't interact with prior
+    # tests' leftover dead series.
+    _reset_dead_gauge()
+
+    # _mock_session() returns empty pending_result + empty dead_result.
+    # The GROUP BY query yields zero rows; without .clear(), "ghost"
+    # series persists. With .clear(), it's dropped.
+    session = _mock_session([])
+
+    with patch("worker.queue.get_session") as mock_gs:
+        mock_gs.return_value.__aenter__.return_value = session
+        from worker.queue import sample_queue_metrics
+        await sample_queue_metrics()
+
+    assert "ghost" not in _depth_labels(), (
+        "QUEUE_DEPTH still has stale ghost series after sample"
+    )
+    assert "ghost" not in _age_labels(), (
+        "QUEUE_OLDEST_AGE_SECONDS still has stale ghost series after sample"
+    )
