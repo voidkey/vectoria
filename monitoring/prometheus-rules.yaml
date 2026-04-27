@@ -129,6 +129,35 @@ groups:
               • 某个客户端版本有 bug
             401/404 已排除（常规噪音）。
 
+      - alert: VectoriaUploadRejected
+        # 上传被 API 网关 4xx 拒（mime sniff / 大小超限），10m 内累计 ≥3 次。
+        # 阈值偏松：每条 mismatch 都是真实用户在被 400/413 拦下，3 次足够冒头通知。
+        # 比 VectoriaApiClientErrorSpike 更早：那个要 0.5/s（10m ≥ 300 次）才烧，
+        # 5 个真实用户在踩同一个 sniff bug 永远到不了那个阈值。
+        # 与 dead-task / digest 那一路（管线内失败）正交：管线那边告警是"已建 doc
+        # 后处理失败"，这个告警是"上传当场拒，没建 doc"——两类失败路径互补。
+        expr: |
+          sum by (reason, claimed_ext) (
+            increase(vectoria_upload_rejected_total[10m])
+          ) >= 3
+        for: 0m
+        labels:
+          severity: warning
+          service: vectoria
+          component: api
+        annotations:
+          summary: "[{{ $externalLabels.env }}] 上传被 4xx 拒：{{ $labels.reason }} on {{ $labels.claimed_ext }}（{{ $value | humanize }} 次/10m）"
+          description: |
+            过去 10 分钟有 {{ $value | humanize }} 个上传被 4xx 拒。
+            原因：{{ $labels.reason }}    声明扩展名：{{ $labels.claimed_ext }}
+            可能：
+              • mime_mismatch：sniff 规则对该家族有 bug → 拿文件复现修
+                          / 客户端传了错的后缀 → 反馈用户
+                          / 真实跨家族伪造（detected=executable 等）→ 拦得对
+              • too_large：用户文件超 max_upload_bytes，看是否需要调高 limit
+            排查具体文件名（cardinality 没法上 metric，只能从日志取）：
+              docker logs vectoria-app-1 --since 30m | grep upload_rejected
+
       - alert: VectoriaApiLatencyHigh
         # p95 > 30s 持续 5 分钟。30s 对齐 ingest_wait_timeout_seconds
         # （见 config.py），按最慢的 ingest 接口调。纯查询服务可调严到 5s。

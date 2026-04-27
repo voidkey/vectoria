@@ -290,3 +290,94 @@ async def test_upload_exe_as_exe_rejected(client):
     assert resp.status_code == 400, resp.text
     body = resp.json()
     assert body["code"] == 1207  # MIME_MISMATCH
+
+
+# ---------------------------------------------------------------------------
+# upload_rejected log + counter — operator visibility for 4xx rejects
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_mime_reject_emits_upload_rejected_log_and_counter(client, caplog):
+    """Strict-mode MIME reject must (a) WARN-log ``upload_rejected ...``
+    so operators can grep for it, and (b) bump
+    ``UPLOAD_REJECTED_TOTAL{reason="mime_mismatch", claimed_ext=".pdf"}``
+    so a single alert rule can fire on cumulative rejection rate.
+    The HTTP access log only carries the status code — without this
+    pair you can't tell which file got rejected.
+    """
+    import logging
+    exe_content = _EXE_HEAD + b"\x00" * 64
+
+    with (
+        patch("api.routes.documents._validate_kb", new=AsyncMock()),
+        patch("api.routes.documents.get_storage") as mock_storage,
+        patch("api.routes.documents.registry") as mock_registry,
+        patch("infra.metrics.UPLOAD_REJECTED_TOTAL") as mock_rejected,
+    ):
+        mock_storage.return_value = AsyncMock()
+        mock_registry.auto_select.return_value = "markitdown"
+        mock_labels = MagicMock()
+        mock_rejected.labels.return_value = mock_labels
+
+        with caplog.at_level(logging.WARNING, logger="api.routes.documents"):
+            resp = await client.post(
+                "/v1/knowledgebases/kb-evil/documents/file",
+                files={"file": ("evil.pdf", exe_content, "application/pdf")},
+            )
+
+    assert resp.status_code == 400
+    # Counter: bounded labels only.
+    mock_rejected.labels.assert_called_once_with(
+        reason="mime_mismatch", claimed_ext=".pdf",
+    )
+    mock_labels.inc.assert_called_once()
+    # Log: the unbounded specifics live here so we never blow up Prom
+    # cardinality but still recover the filename for forensics.
+    rejects = [r for r in caplog.records if "upload_rejected" in r.getMessage()]
+    assert len(rejects) == 1
+    msg = rejects[0].getMessage()
+    assert "kb=kb-evil" in msg
+    assert "filename=evil.pdf" in msg
+    assert "reason=mime_mismatch" in msg
+    assert "detected=executable" in msg
+
+
+@pytest.mark.asyncio
+async def test_too_large_reject_emits_upload_rejected_log_and_counter(client, caplog):
+    """Same pair (log + counter) for the 413 size-gate rejection path,
+    so all 4xx upload rejects are uniformly observable from one place.
+    """
+    import logging
+    from config import get_settings
+    limit = get_settings().max_upload_bytes
+    oversized = b"a" * (limit + 1)
+
+    with (
+        patch("api.routes.documents._validate_kb", new=AsyncMock()),
+        patch("api.routes.documents.get_storage") as mock_storage,
+        patch("api.routes.documents.registry") as mock_reg,
+        patch("infra.metrics.UPLOAD_REJECTED_TOTAL") as mock_rejected,
+    ):
+        mock_storage.return_value = AsyncMock()
+        mock_reg.auto_select.return_value = "markitdown"
+        mock_labels = MagicMock()
+        mock_rejected.labels.return_value = mock_labels
+
+        with caplog.at_level(logging.WARNING, logger="api.routes.documents"):
+            resp = await client.post(
+                "/v1/knowledgebases/kb-big/documents/file",
+                files={"file": ("huge.bin", oversized, "application/octet-stream")},
+            )
+
+    assert resp.status_code == 413
+    mock_rejected.labels.assert_called_once_with(
+        reason="too_large", claimed_ext="other",  # .bin not in EXT_FAMILIES
+    )
+    mock_labels.inc.assert_called_once()
+    rejects = [r for r in caplog.records if "upload_rejected" in r.getMessage()]
+    assert len(rejects) == 1
+    msg = rejects[0].getMessage()
+    assert "kb=kb-big" in msg
+    assert "filename=huge.bin" in msg
+    assert "reason=too_large" in msg
+    assert f"limit={limit}" in msg

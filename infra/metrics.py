@@ -175,6 +175,19 @@ UPLOAD_MIME_MISMATCH_TOTAL = Counter(
     labelnames=("claimed_ext", "detected"),
 )
 
+UPLOAD_REJECTED_TOTAL = Counter(
+    "vectoria_upload_rejected_total",
+    "Uploads rejected at the API gate (4xx returned, no document row "
+    "created). Distinct from UPLOAD_MIME_MISMATCH_TOTAL which counts "
+    "sniff disagreements regardless of outcome — this counts actual "
+    "rejections only. The filename / detected family / size land in "
+    "the paired ``upload_rejected`` log line; only bounded labels go "
+    "on the metric to keep cardinality safe.",
+    # reason ∈ {mime_mismatch, too_large}
+    # claimed_ext bucketed against EXT_FAMILIES; anything else → "other"
+    labelnames=("reason", "claimed_ext"),
+)
+
 # ---------------------------------------------------------------------------
 # Rate limiting (infra/ratelimit.py)
 # ---------------------------------------------------------------------------

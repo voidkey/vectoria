@@ -191,6 +191,40 @@ async def _validate_kb(kb_id: str):
             raise AppError(404, ErrorCode.NOT_FOUND, "KnowledgeBase not found")
 
 
+def _claimed_ext_label(filename: str) -> str:
+    """Bucket a filename's extension into the bounded EXT_FAMILIES key
+    set so it's safe to use as a Prometheus label without inviting
+    cardinality blowups from arbitrary attacker-supplied extensions.
+    """
+    from api.mime_sniff import EXT_FAMILIES
+    _, ext = os.path.splitext(filename.lower())
+    return ext if ext in EXT_FAMILIES else "other"
+
+
+def _record_upload_reject(
+    *, kb_id: str, filename: str, size: int, reason: str, **extra: object,
+) -> None:
+    """Single source of truth for upload-time 4xx rejections.
+
+    Emits a WARN log with the unbounded specifics (kb / filename /
+    size / detected family / limit) so operators can grep
+    ``upload_rejected`` to recover the exact file behind a 4xx — the
+    HTTP access log only has status code, not filename. Bumps the
+    bounded ``UPLOAD_REJECTED_TOTAL`` counter so alert rules can fire
+    on sustained rejection rate.
+    """
+    from infra.metrics import UPLOAD_REJECTED_TOTAL
+    extra_str = " ".join(f"{k}={v}" for k, v in extra.items())
+    logger.warning(
+        "upload_rejected kb=%s filename=%s size=%d reason=%s %s",
+        kb_id, filename, size, reason, extra_str,
+    )
+    UPLOAD_REJECTED_TOTAL.labels(
+        reason=reason,
+        claimed_ext=_claimed_ext_label(filename),
+    ).inc()
+
+
 @router.post("/{kb_id}/documents/file", response_model=DocumentIngestResponse, status_code=201)
 async def ingest_file(
     kb_id: str,
@@ -211,6 +245,10 @@ async def ingest_file(
     # Size gate #1: use Starlette's reported size if present. Cheapest rejection
     # path — fail before we even call .read() on multipart body.
     if file.size is not None and file.size > cfg.max_upload_bytes:
+        _record_upload_reject(
+            kb_id=kb_id, filename=file.filename or "upload",
+            size=file.size, reason="too_large", limit=cfg.max_upload_bytes,
+        )
         raise AppError(
             413, ErrorCode.UPLOAD_TOO_LARGE,
             f"File exceeds {cfg.max_upload_bytes} bytes",
@@ -223,6 +261,10 @@ async def ingest_file(
     # Size gate #2: some clients / transports don't set Content-Length reliably,
     # so re-check after the read in case file.size was None.
     if len(raw) > cfg.max_upload_bytes:
+        _record_upload_reject(
+            kb_id=kb_id, filename=filename, size=len(raw),
+            reason="too_large", limit=cfg.max_upload_bytes,
+        )
         raise AppError(
             413, ErrorCode.UPLOAD_TOO_LARGE,
             f"File exceeds {cfg.max_upload_bytes} bytes",
@@ -235,18 +277,16 @@ async def ingest_file(
     from infra.metrics import UPLOAD_MIME_MISMATCH_TOTAL
     ok, detected = check_mime(filename, raw[:2048])
     if not ok:
-        from api.mime_sniff import EXT_FAMILIES
-        _, claimed_ext = os.path.splitext(filename.lower())
-        # Bucket the extension label to a bounded set — anything outside
-        # the known-good EXT_FAMILIES keys (including empty string) maps
-        # to "other" so an attacker can't blow up Prom series cardinality
-        # by sending unlimited distinct extensions.
-        claimed_label = claimed_ext if claimed_ext in EXT_FAMILIES else "other"
         UPLOAD_MIME_MISMATCH_TOTAL.labels(
-            claimed_ext=claimed_label,
+            claimed_ext=_claimed_ext_label(filename),
             detected=detected or "(none)",
         ).inc()
         if cfg.strict_mime_check:
+            _record_upload_reject(
+                kb_id=kb_id, filename=filename, size=len(raw),
+                reason="mime_mismatch", detected=detected or "(none)",
+            )
+            _, claimed_ext = os.path.splitext(filename.lower())
             raise AppError(
                 400, ErrorCode.MIME_MISMATCH,
                 f"File content doesn't match extension {claimed_ext!r} "
