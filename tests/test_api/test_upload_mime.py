@@ -64,6 +64,54 @@ def test_check_mime_rejects_exe_as_exe():
     assert detected == "executable"
 
 
+def test_check_mime_accepts_real_pptx_against_multimatch_ambiguity():
+    """Regression: puremagic returns ~8 equal-confidence guesses for any
+    OOXML zip (docx/pptx/xlsx variants all share the same magic). The
+    old detect_family() returned the *first* match's family, which for
+    a real .pptx happened to be office-doc — so legitimate .pptx
+    uploads were rejected with MIME_MISMATCH. check_mime now allows as
+    long as the claim shows up *anywhere* in puremagic's candidate set.
+    """
+    import io
+    from pptx import Presentation
+
+    prs = Presentation()
+    prs.slides.add_slide(prs.slide_layouts[1]).shapes.title.text = "hi"
+    buf = io.BytesIO(); prs.save(buf)
+    head = buf.getvalue()[:2048]
+
+    ok_pptx, fam_pptx = check_mime("deck.pptx", head)
+    assert ok_pptx is True, f"pptx rejected, detected={fam_pptx}"
+
+    # Symmetry: the same OOXML head, claimed as .docx, must also pass —
+    # puremagic can't tell docx from pptx from this head.
+    ok_docx, _ = check_mime("paper.docx", head)
+    assert ok_docx is True
+
+
+def test_check_mime_still_rejects_pdf_claimed_as_pptx():
+    """Sanity: the multi-match relaxation must NOT allow real
+    cross-family forgeries. A PDF head claimed as .pptx still fails.
+    """
+    ok, detected = check_mime("forgery.pptx", _PDF_HEAD)
+    assert ok is False
+    assert detected == "pdf"
+
+
+def test_detect_families_returns_all_ooxml_candidates():
+    from api.mime_sniff import detect_families
+    import io
+    from pptx import Presentation
+
+    prs = Presentation()
+    prs.slides.add_slide(prs.slide_layouts[1])
+    buf = io.BytesIO(); prs.save(buf)
+    fams = detect_families(buf.getvalue()[:2048])
+    # Real pptx surfaces as multiple OOXML sub-families simultaneously.
+    assert "office-slide" in fams
+    assert len(set(fams)) >= 2  # at minimum slide + one of doc/sheet
+
+
 def test_check_mime_rejects_exe_as_unknown_ext():
     """Same hole, confirmed for any unknown/odd extension."""
     ok, detected = check_mime("weird.xyz", _EXE_HEAD)

@@ -115,54 +115,92 @@ class _BytesFile:
         return self._pos
 
 
-def detect_family(head: bytes) -> str | None:
-    """Return coarse family label for the given file head, or None (ambiguous).
+def detect_families(head: bytes) -> list[str]:
+    """Return all coarse family labels detectable in ``head``, in the
+    order puremagic returns them, deduped.
 
-    None → "couldn't identify" → callers treat as pass-through so that
-    legitimate plain-text / niche formats aren't blocked.
+    For OOXML files (.docx/.pptx/.xlsx) puremagic returns up to a dozen
+    candidate matches at the same confidence — they all share the
+    "ZIP-with-ContentTypes.xml" magic and only differ at the OOXML
+    sub-format level. Returning the *set* lets callers verify their
+    claimed extension against any of the candidates instead of
+    arbitrarily latching onto the first one (which used to make
+    legit .pptx uploads sniff as office-doc and get rejected).
+
+    Empty list → puremagic identified nothing we map to a family;
+    callers should pass-through (don't block what we can't classify).
     """
     if not head:
-        return None
+        return []
     try:
         matches = puremagic.magic_stream(_BytesFile(head))
     except puremagic.PureError:
-        return None
+        return []
     except Exception as exc:  # pragma: no cover
         log.warning("mime_sniff: puremagic raised %s", exc)
-        return None
+        return []
 
+    families: list[str] = []
+    seen: set[str] = set()
     for m in matches:
         mime = (getattr(m, "mime_type", "") or "").lower()
         ext = (getattr(m, "extension", "") or "").lower()
         haystack = f"{mime} {ext}"
         for needle, family in _MIME_TO_FAMILY:
-            if needle in haystack:
-                return family
-    return None
+            if needle in haystack and family not in seen:
+                families.append(family)
+                seen.add(family)
+                break  # one family per match is enough
+    return families
+
+
+def detect_family(head: bytes) -> str | None:
+    """Highest-priority detected family, or None.
+
+    Convenience wrapper kept for the metric / log line that wants a
+    single label. Use ``detect_families`` for any logic that needs to
+    handle OOXML's multi-match ambiguity.
+    """
+    fams = detect_families(head)
+    return fams[0] if fams else None
 
 
 def check_mime(filename: str, head: bytes) -> tuple[bool, str | None]:
     """Return ``(ok, detected_family)``.
 
-    ``ok=True`` when detected family matches the extension family OR
-    detection is ambiguous (returns None — we don't block what we
-    can't identify). ``ok=False`` when:
-      * detected family is in ``_BLOCKED_FAMILIES`` (executable, …) —
+    ``ok=True`` when *any* detected family matches the extension's
+    declared family — handles OOXML's docx/pptx/xlsx multi-match — OR
+    when detection is ambiguous (no families recognised). ``ok=False``
+    when:
+      * any detected family is in ``_BLOCKED_FAMILIES`` (executable, …):
         rejected regardless of the claimed extension.
-      * detected family is known but does not match the claimed
-        extension family (e.g. PE disguised as ``.pdf``).
+      * detected families are known but none matches the claimed
+        extension (e.g. PE disguised as ``.pdf``).
+
+    The returned ``detected_family`` is a representative label for
+    metrics/logs: the blocked family if reject-by-block, else the
+    first detected (which is what the legacy single-family code
+    reported).
     """
     _, ext = os.path.splitext(filename.lower())
     claimed = EXT_FAMILIES.get(ext)
-    detected = detect_family(head)
+    detected_list = detect_families(head)
 
     # Unconditional reject on blocked families — an executable is never
     # a valid upload, no matter what the user named it.
-    if detected in _BLOCKED_FAMILIES:
-        return False, detected
+    blocked = next((f for f in detected_list if f in _BLOCKED_FAMILIES), None)
+    if blocked is not None:
+        return False, blocked
 
-    if detected is None:
+    if not detected_list:
         return True, None
     if claimed is None:
-        return True, detected  # unknown extension, can't compare
-    return (claimed == detected), detected
+        return True, detected_list[0]  # unknown extension, can't compare
+
+    # Allow as long as the claim shows up anywhere in puremagic's
+    # candidate list. For OOXML the list is e.g.
+    # [office-doc, office-slide, office-sheet] and the claim may be
+    # any one of them — we only care that the family family agrees.
+    if claimed in detected_list:
+        return True, claimed
+    return False, detected_list[0]
