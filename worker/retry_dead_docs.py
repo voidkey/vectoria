@@ -17,13 +17,14 @@ Eligibility (intentionally narrow):
   * no parse_document task created in the last ``--retry-lockout-minutes``
     (default 60m) — caps retry frequency to once per hour even if
     the cron fires more often
-  * fewer than ``--max-retry-cycles`` dead tasks already exist for
-    this doc (default 1) — cap the auto-retry attempts so docs whose
+  * fewer than ``--max-dead-tasks`` dead tasks already exist for
+    this doc (default 2) — cap the auto-retry attempts so docs whose
     failure is content-intrinsic (URL site is down, file genuinely
     malformed) don't get reborn and re-killed every hour, flooding
-    the dead-task alert. The original task that put the doc in
-    ``failed`` counts as cycle 1; one retry is allowed (cycle 2);
-    beyond that the doc waits for manual intervention.
+    the dead-task alert. A failed doc usually already carries 1 dead
+    task (the original failure); the default of 2 means "allow
+    exactly one auto-retry" (after which dead task count = 2 and
+    we stop). Beyond that the doc waits for manual intervention.
 
 Each eligible doc gets:
   1. parse_engine reset via ``registry.auto_select`` so ancient docs
@@ -60,7 +61,7 @@ async def find_eligible_docs(
     *,
     max_age_hours: int,
     retry_lockout_minutes: int,
-    max_retry_cycles: int,
+    max_dead_tasks: int,
     limit: int,
 ) -> list[Document]:
     """Failed parse_error docs eligible for re-enqueue.
@@ -92,11 +93,13 @@ async def find_eligible_docs(
     )
 
     # Subquery 2: how many parse_document tasks have already died for
-    # this doc within the window. We cap at ``max_retry_cycles`` so a
+    # this doc within the window. We cap at ``max_dead_tasks`` so a
     # doc whose failure is content-intrinsic (BBC playwright timeout,
     # 404 URL, malformed file) doesn't get reborn-and-re-killed every
     # hour, polluting the dead-task alert. The original task that
-    # put the doc in 'failed' counts as cycle 1.
+    # put the doc in 'failed' typically counts as 1 — default cap 2
+    # means "auto-retry once", after which the doc has 2 dead tasks
+    # and is excluded.
     dead_task_count = (
         select(func.count())
         .select_from(Task)
@@ -116,7 +119,7 @@ async def find_eligible_docs(
             Document.error_type == "parse_error",
             Document.created_at > age_floor,
             not_(exists(inflight_or_recent)),
-            dead_task_count < max_retry_cycles,
+            dead_task_count < max_dead_tasks,
         )
         .order_by(Document.created_at.desc())
         .limit(limit)
@@ -156,7 +159,7 @@ async def retry_dead_docs(
     *,
     max_age_hours: int = 24 * 7,
     retry_lockout_minutes: int = 60,
-    max_retry_cycles: int = 1,
+    max_dead_tasks: int = 2,
     limit: int = 50,
     dry_run: bool = False,
 ) -> tuple[int, int]:
@@ -168,7 +171,7 @@ async def retry_dead_docs(
             session,
             max_age_hours=max_age_hours,
             retry_lockout_minutes=retry_lockout_minutes,
-            max_retry_cycles=max_retry_cycles,
+            max_dead_tasks=max_dead_tasks,
             limit=limit,
         )
 
@@ -228,11 +231,13 @@ def _parse_args() -> argparse.Namespace:
         "within this window (default 60m)",
     )
     p.add_argument(
-        "--max-retry-cycles", type=int, default=1,
-        help="Skip docs whose parse_document task has already died this "
-        "many times within max-age-hours (default 1: original "
-        "failure + at most 1 auto-retry; beyond that doc waits for "
-        "manual triage to avoid reviving content-intrinsic failures)",
+        "--max-dead-tasks", type=int, default=2,
+        help="Skip docs whose parse_document already has this many or "
+        "more dead tasks within max-age-hours (default 2). A failed "
+        "doc usually carries 1 dead task already; default 2 allows "
+        "exactly one auto-retry (resulting in 2 dead tasks), then "
+        "the doc waits for manual triage so content-intrinsic "
+        "failures (URL down, file malformed) don't loop forever.",
     )
     p.add_argument(
         "--limit", type=int, default=50,
@@ -254,7 +259,7 @@ def main() -> None:
     re, sk = asyncio.run(retry_dead_docs(
         max_age_hours=args.max_age_hours,
         retry_lockout_minutes=args.retry_lockout_minutes,
-        max_retry_cycles=args.max_retry_cycles,
+        max_dead_tasks=args.max_dead_tasks,
         limit=args.limit,
         dry_run=args.dry_run,
     ))
