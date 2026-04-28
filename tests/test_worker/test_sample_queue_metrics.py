@@ -190,3 +190,38 @@ async def test_sample_clears_stale_pending_gauges_for_vanished_task_types():
     assert "ghost" not in _age_labels(), (
         "QUEUE_OLDEST_AGE_SECONDS still has stale ghost series after sample"
     )
+
+
+@pytest.mark.asyncio
+async def test_dead_task_query_filters_to_recent_24h():
+    """The dead-task gauge only includes tasks finished in the last
+    24h. Older dead tasks stay in the DB (retry_dead_docs uses them
+    as cap evidence so content-intrinsic failures don't loop) but
+    stop alerting — that decouples "clear alert noise" from "reset
+    auto-retry cap", which previously forced operators to delete
+    dead tasks (clearing the cap) just to silence the alert.
+    """
+    _reset_dead_gauge()
+
+    captured_sql: list[str] = []
+
+    class _FakeRes:
+        def all(self): return []
+    class _FakeSession:
+        async def execute(self, stmt, *_a, **_kw):
+            captured_sql.append(str(stmt.compile(compile_kwargs={"literal_binds": True})))
+            return _FakeRes()
+
+    with patch("worker.queue.get_session") as mock_gs:
+        mock_gs.return_value.__aenter__.return_value = _FakeSession()
+        from worker.queue import sample_queue_metrics
+        await sample_queue_metrics()
+
+    # sample_queue_metrics issues two queries; the second is the dead-task
+    # SELECT. Verify it filters by finished_at.
+    assert len(captured_sql) >= 2, "expected two SELECTs (pending + dead)"
+    dead_sql = captured_sql[-1]
+    assert "dead" in dead_sql.lower(), f"second SQL doesn't look like dead-task query:\n{dead_sql}"
+    assert "finished_at" in dead_sql, (
+        f"dead-task SQL must filter finished_at to age out stale alerts; got:\n{dead_sql}"
+    )

@@ -261,9 +261,22 @@ async def sample_queue_metrics() -> None:
         # so operators can decide requeue-vs-delete without opening psql.
         # ``.clear()`` before re-emitting drops series for tasks that were
         # deleted since the last sample — otherwise the alert never resolves.
+        #
+        # The 24h finished_at window is intentional: dead tasks stay in
+        # the DB indefinitely (retry_dead_docs needs them as evidence
+        # for its dead-count cap), but old ones stop alerting. Without
+        # this filter operators were forced to DELETE dead tasks to
+        # silence noise — which then erased the cap signal and let
+        # content-intrinsic failures (URL down, file malformed) get
+        # auto-retried in a loop. Now: leave dead tasks alone, alert
+        # auto-resolves in 24h, cap stays valid.
+        dead_age_floor = now - timedelta(hours=24)
         dead_result = await session.execute(
             select(Task.id, Task.task_type, Task.payload)
-            .where(Task.status == "dead")
+            .where(
+                Task.status == "dead",
+                Task.finished_at > dead_age_floor,
+            )
         )
         QUEUE_DEAD_TASKS.clear()
         for task_id, task_type, payload in dead_result.all():
