@@ -22,7 +22,7 @@ from db.base import get_session
 from db.helpers import load_doc, update_doc
 from db.models import Document, DocumentImage
 from infra.metrics import (
-    DOCUMENT_OUTCOMES, PARSE_EMPTY_TOTAL, observe_parse,
+    DOCUMENT_OUTCOMES, PARSE_EMPTY_TOTAL, PARSE_FALLBACK_TOTAL, observe_parse,
 )
 from parsers.image_metadata import extract_metadata_into_refs
 from parsers.registry import registry
@@ -129,56 +129,49 @@ async def handle_parse_document(payload: dict) -> None:
     else:
         raw = source
 
-    # Per-attempt engine fallback. The engine recorded on the task at
-    # upload time (selected_engine) is just a preference; if it fails
-    # at the *dependency* layer (network timeout, breaker open) the
-    # file itself is fine — try the next engine in the registry's
-    # preference chain on the same attempt rather than burning all
-    # three queue retries on the same broken upstream.
-    #
-    # File-level errors (parser raised on malformed bytes, decoded the
-    # file but produced garbage) do *not* trigger fallback — a different
-    # engine isn't going to fare better and we'd just waste cycles.
-    # Compute fallback chain only after the primary engine fails — this
-    # keeps the happy path free of registry.fallback_chain calls (so
-    # tests / consumers that don't know about fallback don't have to
-    # mock it).
-    parse_result, used_engine, last_dep_exc = None, None, None
-    engine_name = selected_engine
+    # Per-attempt engine fallback. selected_engine is just the upload-time
+    # preference; if it fails at the *dependency* layer (network timeout,
+    # breaker open) the file itself is fine — try the next engine in
+    # registry.fallback_chain on the same attempt rather than burning all
+    # 3 queue retries on the same broken upstream. File-level errors
+    # (parser raised on bad bytes) skip fallback — different engine
+    # wouldn't help. The chain is computed lazily on first dep-level
+    # failure so the happy path doesn't pay for a registry call.
+    parse_result = used_engine = None
+    last_dep_exc: BaseException | None = None
+    last_dep_trace = ""           # captured inside except → safe to use later
+    engine_name: str | None = selected_engine
     fallback_queue: list[str] | None = None
     while engine_name is not None:
         try:
             parser = registry.get_by_engine(engine_name)
         except ValueError:
-            parser = None
+            parser = None         # not registered — fall through to next
         if parser is not None:
             try:
                 async with observe_parse(engine_name):
                     parse_result = await parser.parse(raw, filename=filename)
                 used_engine = engine_name
                 if engine_name != selected_engine:
+                    PARSE_FALLBACK_TOTAL.labels(
+                        from_engine=selected_engine, to_engine=engine_name,
+                    ).inc()
                     logger.warning(
                         "parse_document: doc=%s fell back from %s to %s "
-                        "after dep-level failure(s); last error: %s",
+                        "after dep-level failure(s); last error: %r",
                         doc_id, selected_engine, engine_name, last_dep_exc,
                     )
                 break
             except _DEP_LEVEL_ERRORS as e:
-                # Network / breaker / external-service errors. The
-                # next engine in chain might not depend on the broken
-                # upstream (e.g. mineru is HTTP, pdfium is in-process),
-                # so try it on the same attempt rather than burning a
-                # queue retry.
-                last_dep_exc = e
+                last_dep_exc, last_dep_trace = e, traceback.format_exc()
                 logger.warning(
                     "parse_document: %s dep-level failure on doc=%s "
                     "(%s: %s); trying next engine",
                     engine_name, doc_id, type(e).__name__, e,
                 )
             except Exception as e:
-                # File-level: parser ran end-to-end and decided this
-                # file is bad. Don't fall back — a different engine
-                # would just hit the same garbage.
+                # File-level error: stop, mark failed, let queue retry
+                # the same engine (or dead-letter). Same as before.
                 logger.exception("parse_document: parse failed doc=%s", doc_id)
                 DOCUMENT_OUTCOMES.labels(outcome="parse_error").inc()
                 await update_doc(
@@ -189,9 +182,6 @@ async def handle_parse_document(payload: dict) -> None:
                 )
                 raise
 
-        # Lazily compute the chain on the first dep-level failure (or
-        # the rare unregistered-engine case) so the happy path skips
-        # the registry call entirely.
         if fallback_queue is None:
             fallback_queue = list(registry.fallback_chain(
                 filename=filename,
@@ -201,22 +191,24 @@ async def handle_parse_document(payload: dict) -> None:
         engine_name = fallback_queue.pop(0) if fallback_queue else None
 
     if parse_result is None:
-        # Every engine in the chain hit a dep-level error. Re-raise the
-        # last one so the queue can retry (network may recover) — same
-        # terminal behaviour as before, just a stronger guarantee that
-        # we tried alternatives first.
-        logger.exception(
-            "parse_document: all engines failed dep-level for doc=%s",
-            doc_id,
+        # Whole chain hit dep-level errors. Mark failed with the last
+        # exception's traceback (captured inside its except block —
+        # traceback.format_exc() out here would just print "NoneType:
+        # None") and re-raise so the queue can retry; the network may
+        # recover by then.
+        logger.error(
+            "parse_document: all engines failed dep-level for doc=%s: %r",
+            doc_id, last_dep_exc,
         )
         DOCUMENT_OUTCOMES.labels(outcome="parse_error").inc()
         await update_doc(
             doc_id, status="failed",
             error_msg=f"Parsing failed: {last_dep_exc}"[:500],
             error_type="parse_error",
-            error_trace=traceback.format_exc(),
+            error_trace=last_dep_trace,
         )
         raise last_dep_exc  # type: ignore[misc]
+    assert used_engine is not None  # parse_result is set ⇒ used_engine is too
 
     # Drop the source bytes ASAP; the parser may have materialised them
     # into structures held on parse_result but `raw` itself can go.
@@ -259,6 +251,7 @@ async def handle_parse_document(payload: dict) -> None:
                 title=parse_result.title or source,
                 content=content,
                 status="completed",
+                parse_engine=used_engine,
                 error_type="image_only",
                 error_msg="",
                 error_trace=None,
@@ -272,7 +265,7 @@ async def handle_parse_document(payload: dict) -> None:
             "parse_document: empty content for doc %s (len=%d < %d)",
             doc_id, stripped_len, cfg.min_content_chars,
         )
-        PARSE_EMPTY_TOTAL.labels(engine=selected_engine).inc()
+        PARSE_EMPTY_TOTAL.labels(engine=used_engine).inc()
         DOCUMENT_OUTCOMES.labels(outcome="empty_content").inc()
         await update_doc(
             doc_id, status="failed",
@@ -305,6 +298,7 @@ async def handle_parse_document(payload: dict) -> None:
         doc_id,
         title=parse_result.title or filename or source,
         content=content, status="indexing",
+        parse_engine=used_engine,
         image_status=image_status,
         error_msg="", error_type=None, error_trace=None,
     )

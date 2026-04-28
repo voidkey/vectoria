@@ -134,6 +134,18 @@ PARSE_EMPTY_TOTAL = Counter(
     labelnames=("engine",),
 )
 
+PARSE_FALLBACK_TOTAL = Counter(
+    "vectoria_parse_fallback_total",
+    "Per-attempt engine fallbacks in handle_parse_document — bumped "
+    "once when a successful parse used a different engine than the "
+    "one bound at upload time, after one or more dep-level failures "
+    "(network timeout, breaker open). Use it to spot patterns like "
+    "'mineru keeps falling back to pdfium' which signals the upstream "
+    "link health is degrading even though the user-facing pipeline is "
+    "still completing docs.",
+    labelnames=("from_engine", "to_engine"),
+)
+
 # ---------------------------------------------------------------------------
 # Document lifecycle outcomes
 # ---------------------------------------------------------------------------

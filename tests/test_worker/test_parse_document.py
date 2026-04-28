@@ -491,6 +491,10 @@ async def test_dep_level_failure_falls_back_to_next_engine_in_chain():
     statuses = [u.get("status") for u in update_calls if "status" in u]
     assert "indexing" in statuses
     assert "failed" not in statuses
+    # parse_engine reflects the engine that actually produced content,
+    # so per-engine observability (Grafana / digest / DB) doesn't lie.
+    indexing_update = next(u for u in update_calls if u.get("status") == "indexing")
+    assert indexing_update.get("parse_engine") == "pdfium"
     # Index task got fanned out so the user's doc actually completes.
     assert "index_document" in enqueue_calls
 
@@ -599,4 +603,62 @@ async def test_fallback_chain_exhausted_marks_doc_failed_and_reraises():
 
     statuses = [u.get("status") for u in update_calls if "status" in u]
     assert statuses[-1] == "failed"
-    assert any(u.get("error_type") == "parse_error" for u in update_calls)
+    failed_update = next(u for u in update_calls if u.get("status") == "failed")
+    assert failed_update.get("error_type") == "parse_error"
+    # Traceback must survive — captured inside except, not from a
+    # bare traceback.format_exc() out of scope. The DB row carries
+    # the actual exception type for forensics rather than the empty
+    # 'NoneType: None' that the previous code stored.
+    trace = failed_update.get("error_trace") or ""
+    assert "WriteTimeout" in trace or "ConnectError" in trace, (
+        f"expected captured traceback, got: {trace!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_fallback_bumps_parse_fallback_total_counter():
+    """Each successful fallback (used_engine != selected_engine) must
+    bump ``vectoria_parse_fallback_total{from_engine, to_engine}`` so
+    operators can spot upstream-link degradation patterns from
+    Grafana without having to grep WARN logs.
+    """
+    import httpx
+
+    boom = MagicMock()
+    boom.parse = AsyncMock(side_effect=httpx.WriteTimeout("dep dead"))
+    rescue = MagicMock()
+    rescue.parse = AsyncMock(
+        return_value=ParseResult(content="recovered " * 50, title="t")
+    )
+
+    doc = MagicMock(); doc.status = "queued"
+
+    def _get_by_engine(name):
+        return {"mineru": boom, "pdfium": rescue}[name]
+
+    with (
+        patch("worker.handlers.get_session") as mock_sess,
+        patch("worker.handlers.registry") as mock_reg,
+        patch("worker.handlers.get_storage") as mock_storage,
+        patch("worker.handlers.update_doc", new=AsyncMock()),
+        patch("worker.queue.enqueue", new=AsyncMock()),
+        patch("worker.handlers.PARSE_FALLBACK_TOTAL") as mock_counter,
+    ):
+        mock_sess.return_value.__aenter__.return_value = _build_session(doc)
+        mock_reg.get_by_engine.side_effect = _get_by_engine
+        mock_reg.fallback_chain.return_value = ["pdfium"]
+        mock_storage.return_value = AsyncMock(get=AsyncMock(return_value=b"%PDF"))
+        mock_inc = MagicMock()
+        mock_counter.labels.return_value = mock_inc
+
+        from worker.handlers import handle_parse_document
+        await handle_parse_document({
+            "doc_id": "d-fbm", "kb_id": "k", "storage_key": "s",
+            "source": "x.pdf", "filename": "x.pdf",
+            "selected_engine": "mineru",
+        })
+
+    mock_counter.labels.assert_called_once_with(
+        from_engine="mineru", to_engine="pdfium",
+    )
+    mock_inc.inc.assert_called_once()
