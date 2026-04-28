@@ -626,6 +626,73 @@ async def test_fallback_chain_exhausted_marks_doc_failed_and_reraises():
 
 
 @pytest.mark.asyncio
+async def test_permanent_parse_error_short_circuits_no_retry():
+    """``PermanentParseError`` (e.g. URL on the unparseable blacklist)
+    short-circuits the whole chain: doc gets marked ``failed``
+    immediately and the handler *returns* (no raise) so the queue
+    sees a successful task — no retries, no dead-letter alert.
+
+    Distinct from regular Exception which triggers fallback chain
+    and (if chain exhausts) re-raises so the queue retries.
+    """
+    from parsers.base import PermanentParseError
+
+    boom = MagicMock()
+    boom.parse = AsyncMock(side_effect=PermanentParseError("URL on blacklist"))
+    other = MagicMock()
+    other.parse = AsyncMock()  # must NOT be called — chain bypassed
+
+    doc = MagicMock(); doc.status = "queued"
+    update_calls: list[dict] = []
+    parsers_used: list[str] = []
+
+    async def _update(doc_id, **fields):
+        update_calls.append(fields)
+    async def _enqueue(task_type, payload, *_a, **_kw):
+        pass
+
+    def _get_by_engine(name):
+        parsers_used.append(name)
+        return {"url": boom, "fallback": other}[name]
+
+    with (
+        patch("worker.handlers.get_session") as mock_sess,
+        patch("worker.handlers.registry") as mock_reg,
+        patch("worker.handlers.get_storage") as mock_storage,
+        patch("worker.handlers.update_doc", new=_update),
+        patch("worker.queue.enqueue", new=_enqueue),
+    ):
+        mock_sess.return_value.__aenter__.return_value = _build_session(doc)
+        mock_reg.get_by_engine.side_effect = _get_by_engine
+        # Even though we offer a fallback, handler must NOT try it —
+        # PermanentParseError is the "no engine helps" signal.
+        mock_reg.fallback_chain.return_value = ["fallback"]
+        mock_storage.return_value = AsyncMock(get=AsyncMock(return_value=b""))
+
+        from worker.handlers import handle_parse_document
+        # No raise — task returns successfully so queue marks it
+        # completed (no retries, no dead).
+        await handle_parse_document({
+            "doc_id": "d-perm", "kb_id": "k1",
+            "storage_key": None,
+            "source": "https://blacklisted.example/video", "filename": "",
+            "selected_engine": "url",
+        })
+
+    # Only the original engine was tried; fallback never invoked.
+    assert parsers_used == ["url"]
+    other.parse.assert_not_called()
+    # Doc marked failed (terminal state), error_type=parse_error so it
+    # shows up correctly in digests + dashboards.
+    statuses = [u.get("status") for u in update_calls if "status" in u]
+    assert "failed" in statuses
+    failed = next(u for u in update_calls if u.get("status") == "failed")
+    assert failed.get("error_type") == "parse_error"
+    assert "blacklist" in failed.get("error_msg", "").lower() or \
+           "URL on blacklist" in failed.get("error_msg", "")
+
+
+@pytest.mark.asyncio
 async def test_fallback_bumps_parse_fallback_total_counter():
     """Each successful fallback (used_engine != selected_engine) must
     bump ``vectoria_parse_fallback_total{from_engine, to_engine}`` so

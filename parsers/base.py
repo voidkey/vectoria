@@ -5,6 +5,29 @@ from typing import ClassVar
 from parsers.image_ref import ImageRef
 
 
+class PermanentParseError(Exception):
+    """Marker: this file/URL cannot be parsed by *any* engine, and
+    retrying with the same engine won't help either.
+
+    The worker handler short-circuits on this — marks the doc failed
+    immediately and returns success to the queue, so:
+      * no fallback attempts in this attempt (chain is futile)
+      * no queue retries (next attempt would hit the same wall)
+      * no dead-task alert noise (operator has nothing to action)
+
+    Use sparingly: only for truly hopeless cases where you can prove
+    the failure is content-intrinsic, not infrastructure-transient.
+    Examples:
+      * URL on a known anti-bot blacklist (parsers/url/_blacklist.py)
+      * file claims one extension but bytes match a blocked family
+        (we currently reject those at the API gate, not here)
+
+    For ambiguous failures (network, library bug, edge case) keep
+    raising the original exception — handler's per-attempt fallback
+    + queue retry exists exactly for those.
+    """
+
+
 @dataclass
 class ParseResult:
     content: str          # Markdown text

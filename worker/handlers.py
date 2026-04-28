@@ -24,6 +24,7 @@ from db.models import Document, DocumentImage
 from infra.metrics import (
     DOCUMENT_OUTCOMES, PARSE_EMPTY_TOTAL, PARSE_FALLBACK_TOTAL, observe_parse,
 )
+from parsers.base import PermanentParseError
 from parsers.image_metadata import extract_metadata_into_refs
 from parsers.registry import registry
 from rag.embedder import get_embedder
@@ -171,6 +172,24 @@ async def handle_parse_document(payload: dict) -> None:
                         doc_id, selected_engine, engine_name, last_exc,
                     )
                 break
+            except PermanentParseError as e:
+                # Permanent — no engine in the chain can save this, and
+                # queue retry would just hit the same wall. Mark failed
+                # and return success to the queue (no raise) so the
+                # task doesn't accumulate dead-letter alerts.
+                logger.warning(
+                    "parse_document: %s permanent failure on doc=%s "
+                    "(%s: %s); not falling back, not retrying",
+                    engine_name, doc_id, type(e).__name__, e,
+                )
+                DOCUMENT_OUTCOMES.labels(outcome="parse_error").inc()
+                await update_doc(
+                    doc_id, status="failed",
+                    error_msg=f"Parsing failed: {e}"[:500],
+                    error_type="parse_error",
+                    error_trace=traceback.format_exc(),
+                )
+                return
             except _DEP_LEVEL_ERRORS as e:
                 last_exc, last_trace = e, traceback.format_exc()
                 logger.warning(

@@ -24,7 +24,7 @@ import logging
 import re
 from urllib.parse import urlparse
 
-from parsers.base import ParseResult
+from parsers.base import ParseResult, PermanentParseError
 
 logger = logging.getLogger(__name__)
 
@@ -48,9 +48,12 @@ _BLACKLIST: tuple[tuple[str, "re.Pattern[str] | None", str], ...] = (
 )
 
 
-class UnparseableUrlError(Exception):
-    """Raised when a URL is on the blacklist. Carries a human-readable
-    reason so the failed-doc record explains why we didn't try.
+class UnparseableUrlError(PermanentParseError):
+    """Raised when a URL is on the blacklist. Subclass of
+    PermanentParseError so the worker handler short-circuits — marks
+    the doc failed and *succeeds* the task to the queue, no retry, no
+    dead-task alert. Carries a human-readable reason so the failed-doc
+    record explains why we didn't try.
     """
 
 
