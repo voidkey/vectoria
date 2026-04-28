@@ -34,9 +34,32 @@ except PackageNotFoundError:
     _VERSION = "0.1.0"
 
 
+def _log_parser_config() -> None:
+    """One-line summary of external parser routing on startup.
+
+    Cross-region misconfigurations (overseas worker pointing at a CN
+    mineru endpoint, etc.) cause silent quality degradation that's
+    hard to debug from alerts alone. Logging the resolved endpoints
+    once at boot makes it grep-able from ``docker logs`` immediately.
+    No secrets are emitted — only the URL host:port and model name.
+    """
+    log = logging.getLogger("vectoria.startup")
+    cfg = get_settings()
+    mineru = cfg.mineru_api_url or "(unset → falls back to pdfium)"
+    vision = cfg.vision_base_url or "(unset → image uploads use ocr-native)"
+    budget = cfg.vision_daily_budget_usd
+    log.info(
+        "parser config: mineru=%s | vision=%s model=%s | "
+        "vision_budget=$%s/day (per-call ~$%s)",
+        mineru, vision, cfg.vision_model,
+        budget if budget else "uncapped", cfg.vision_cost_per_call_usd,
+    )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage shared resources: startup → yield → shutdown."""
+    _log_parser_config()
     yield
     # Shutdown: close vectorstore connection pool
     from vectorstore.pgvector import close_pool
