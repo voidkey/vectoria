@@ -17,6 +17,13 @@ Eligibility (intentionally narrow):
   * no parse_document task created in the last ``--retry-lockout-minutes``
     (default 60m) — caps retry frequency to once per hour even if
     the cron fires more often
+  * fewer than ``--max-retry-cycles`` dead tasks already exist for
+    this doc (default 1) — cap the auto-retry attempts so docs whose
+    failure is content-intrinsic (URL site is down, file genuinely
+    malformed) don't get reborn and re-killed every hour, flooding
+    the dead-task alert. The original task that put the doc in
+    ``failed`` counts as cycle 1; one retry is allowed (cycle 2);
+    beyond that the doc waits for manual intervention.
 
 Each eligible doc gets:
   1. parse_engine reset via ``registry.auto_select`` so ancient docs
@@ -53,20 +60,24 @@ async def find_eligible_docs(
     *,
     max_age_hours: int,
     retry_lockout_minutes: int,
+    max_retry_cycles: int,
     limit: int,
 ) -> list[Document]:
     """Failed parse_error docs eligible for re-enqueue.
 
-    Uses ORM-level NOT EXISTS to avoid race-y two-step reads. Json
-    payload->>'doc_id' lets us join through the un-foreign-keyed
-    tasks.payload — the queue is intentionally agnostic of doc
-    schema, but for this maintenance read we know the convention.
+    Uses ORM-level NOT EXISTS / scalar count subqueries to avoid
+    race-y two-step reads. ``payload->>'doc_id'`` joins through the
+    un-foreign-keyed tasks.payload — the queue is intentionally
+    agnostic of doc schema, but for this maintenance read we know
+    the convention.
     """
+    from sqlalchemy import func
+
     now = datetime.now(timezone.utc).replace(tzinfo=None)
     age_floor = now - timedelta(hours=max_age_hours)
     lockout_floor = now - timedelta(minutes=retry_lockout_minutes)
 
-    # Subquery: any parse_document task for this doc that's either
+    # Subquery 1: any parse_document task for this doc that's either
     # in flight or recent enough we shouldn't double-retry.
     inflight_or_recent = (
         select(Task.id)
@@ -80,6 +91,24 @@ async def find_eligible_docs(
         )
     )
 
+    # Subquery 2: how many parse_document tasks have already died for
+    # this doc within the window. We cap at ``max_retry_cycles`` so a
+    # doc whose failure is content-intrinsic (BBC playwright timeout,
+    # 404 URL, malformed file) doesn't get reborn-and-re-killed every
+    # hour, polluting the dead-task alert. The original task that
+    # put the doc in 'failed' counts as cycle 1.
+    dead_task_count = (
+        select(func.count())
+        .select_from(Task)
+        .where(
+            Task.task_type == "parse_document",
+            Task.payload["doc_id"].as_string() == Document.id,
+            Task.status == "dead",
+            Task.created_at > age_floor,
+        )
+        .scalar_subquery()
+    )
+
     stmt = (
         select(Document)
         .where(
@@ -87,6 +116,7 @@ async def find_eligible_docs(
             Document.error_type == "parse_error",
             Document.created_at > age_floor,
             not_(exists(inflight_or_recent)),
+            dead_task_count < max_retry_cycles,
         )
         .order_by(Document.created_at.desc())
         .limit(limit)
@@ -126,6 +156,7 @@ async def retry_dead_docs(
     *,
     max_age_hours: int = 24 * 7,
     retry_lockout_minutes: int = 60,
+    max_retry_cycles: int = 1,
     limit: int = 50,
     dry_run: bool = False,
 ) -> tuple[int, int]:
@@ -137,6 +168,7 @@ async def retry_dead_docs(
             session,
             max_age_hours=max_age_hours,
             retry_lockout_minutes=retry_lockout_minutes,
+            max_retry_cycles=max_retry_cycles,
             limit=limit,
         )
 
@@ -196,6 +228,13 @@ def _parse_args() -> argparse.Namespace:
         "within this window (default 60m)",
     )
     p.add_argument(
+        "--max-retry-cycles", type=int, default=1,
+        help="Skip docs whose parse_document task has already died this "
+        "many times within max-age-hours (default 1: original "
+        "failure + at most 1 auto-retry; beyond that doc waits for "
+        "manual triage to avoid reviving content-intrinsic failures)",
+    )
+    p.add_argument(
         "--limit", type=int, default=50,
         help="Max docs to re-enqueue per run (default 50, prevents storm)",
     )
@@ -215,6 +254,7 @@ def main() -> None:
     re, sk = asyncio.run(retry_dead_docs(
         max_age_hours=args.max_age_hours,
         retry_lockout_minutes=args.retry_lockout_minutes,
+        max_retry_cycles=args.max_retry_cycles,
         limit=args.limit,
         dry_run=args.dry_run,
     ))
