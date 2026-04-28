@@ -32,6 +32,24 @@ from storage import get_storage
 from vectorstore.base import ChunkData
 from vectorstore.pgvector import PgVectorStore
 
+import httpx
+from infra.circuit_breaker import CircuitOpenError
+
+# Exceptions that signify the *upstream / dependency* failed —
+# the file itself is fine, just the engine couldn't reach its
+# external dep (mineru HTTP, vision API, etc.) or the breaker is
+# open. Triggers per-attempt engine fallback in
+# ``handle_parse_document`` rather than wasting all 3 queue retries
+# on the same broken upstream. File-level errors (malformed bytes,
+# parser logic) intentionally do not match — falling back to a
+# different engine wouldn't help.
+_DEP_LEVEL_ERRORS: tuple[type[BaseException], ...] = (
+    httpx.TimeoutException,   # connect / read / write / pool timeouts
+    httpx.NetworkError,       # connect / read / write / close errors
+    CircuitOpenError,         # this engine's breaker is OPEN
+    asyncio.TimeoutError,     # asyncio-side wall-clock cuts
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -111,20 +129,94 @@ async def handle_parse_document(payload: dict) -> None:
     else:
         raw = source
 
-    parser = registry.get_by_engine(selected_engine)
-    try:
-        async with observe_parse(selected_engine):
-            parse_result = await parser.parse(raw, filename=filename)
-    except Exception as e:
-        logger.exception("parse_document: parse failed doc=%s", doc_id)
+    # Per-attempt engine fallback. The engine recorded on the task at
+    # upload time (selected_engine) is just a preference; if it fails
+    # at the *dependency* layer (network timeout, breaker open) the
+    # file itself is fine — try the next engine in the registry's
+    # preference chain on the same attempt rather than burning all
+    # three queue retries on the same broken upstream.
+    #
+    # File-level errors (parser raised on malformed bytes, decoded the
+    # file but produced garbage) do *not* trigger fallback — a different
+    # engine isn't going to fare better and we'd just waste cycles.
+    # Compute fallback chain only after the primary engine fails — this
+    # keeps the happy path free of registry.fallback_chain calls (so
+    # tests / consumers that don't know about fallback don't have to
+    # mock it).
+    parse_result, used_engine, last_dep_exc = None, None, None
+    engine_name = selected_engine
+    fallback_queue: list[str] | None = None
+    while engine_name is not None:
+        try:
+            parser = registry.get_by_engine(engine_name)
+        except ValueError:
+            parser = None
+        if parser is not None:
+            try:
+                async with observe_parse(engine_name):
+                    parse_result = await parser.parse(raw, filename=filename)
+                used_engine = engine_name
+                if engine_name != selected_engine:
+                    logger.warning(
+                        "parse_document: doc=%s fell back from %s to %s "
+                        "after dep-level failure(s); last error: %s",
+                        doc_id, selected_engine, engine_name, last_dep_exc,
+                    )
+                break
+            except _DEP_LEVEL_ERRORS as e:
+                # Network / breaker / external-service errors. The
+                # next engine in chain might not depend on the broken
+                # upstream (e.g. mineru is HTTP, pdfium is in-process),
+                # so try it on the same attempt rather than burning a
+                # queue retry.
+                last_dep_exc = e
+                logger.warning(
+                    "parse_document: %s dep-level failure on doc=%s "
+                    "(%s: %s); trying next engine",
+                    engine_name, doc_id, type(e).__name__, e,
+                )
+            except Exception as e:
+                # File-level: parser ran end-to-end and decided this
+                # file is bad. Don't fall back — a different engine
+                # would just hit the same garbage.
+                logger.exception("parse_document: parse failed doc=%s", doc_id)
+                DOCUMENT_OUTCOMES.labels(outcome="parse_error").inc()
+                await update_doc(
+                    doc_id, status="failed",
+                    error_msg=f"Parsing failed: {e}"[:500],
+                    error_type="parse_error",
+                    error_trace=traceback.format_exc(),
+                )
+                raise
+
+        # Lazily compute the chain on the first dep-level failure (or
+        # the rare unregistered-engine case) so the happy path skips
+        # the registry call entirely.
+        if fallback_queue is None:
+            fallback_queue = list(registry.fallback_chain(
+                filename=filename,
+                url=("" if storage_key else source),
+                after=selected_engine,
+            ))
+        engine_name = fallback_queue.pop(0) if fallback_queue else None
+
+    if parse_result is None:
+        # Every engine in the chain hit a dep-level error. Re-raise the
+        # last one so the queue can retry (network may recover) — same
+        # terminal behaviour as before, just a stronger guarantee that
+        # we tried alternatives first.
+        logger.exception(
+            "parse_document: all engines failed dep-level for doc=%s",
+            doc_id,
+        )
         DOCUMENT_OUTCOMES.labels(outcome="parse_error").inc()
         await update_doc(
             doc_id, status="failed",
-            error_msg=f"Parsing failed: {e}"[:500],
+            error_msg=f"Parsing failed: {last_dep_exc}"[:500],
             error_type="parse_error",
             error_trace=traceback.format_exc(),
         )
-        raise  # re-raise → queue handles retry/backoff/dead-letter
+        raise last_dep_exc  # type: ignore[misc]
 
     # Drop the source bytes ASAP; the parser may have materialised them
     # into structures held on parse_result but `raw` itself can go.

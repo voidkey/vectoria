@@ -80,6 +80,33 @@ class ParserRegistry:
         # fallback: return first regardless of availability
         return engines[0]
 
+    def fallback_chain(
+        self, *, filename: str = "", url: str = "", after: str | None = None,
+    ) -> list[str]:
+        """Return the engine preference chain for this file type.
+
+        ``after``, if given, drops engines up to and including that
+        name — used by the worker handler to ask "what should I try
+        next after engine X failed at the dependency level?"
+
+        Each returned engine is registered (skipped silently if not).
+        Availability is *not* filtered here — the caller may want to
+        attempt a circuit-open engine anyway, or may have a stale view.
+        """
+        if url:
+            chain = list(_EXT_PREFERENCE.get("url", ["url"]))
+        else:
+            ext = ("." + filename.rsplit(".", 1)[-1]).lower() if "." in filename else ""
+            chain = list(_EXT_PREFERENCE.get(ext, ["markitdown"]))
+        chain = [e for e in chain if e in self._engines]
+        if after is not None:
+            try:
+                idx = chain.index(after)
+            except ValueError:
+                return []
+            chain = chain[idx + 1:]
+        return chain
+
     def supported_types(self) -> list[str]:
         """Return deduplicated list of supported file extensions and 'url'."""
         types: set[str] = set()

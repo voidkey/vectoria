@@ -119,3 +119,47 @@ def test_docling_module_removed():
     )
 
 
+
+
+def test_fallback_chain_pdf_full():
+    """For .pdf the natural chain is mineru → pdfium → markitdown.
+    All three are registered, so an unfiltered chain returns all of
+    them in declaration order."""
+    from parsers.registry import registry
+    chain = registry.fallback_chain(filename="x.pdf")
+    assert chain == ["mineru", "pdfium", "markitdown"]
+
+
+def test_fallback_chain_after_drops_engines_up_to_and_including():
+    from parsers.registry import registry
+    chain = registry.fallback_chain(filename="x.pdf", after="mineru")
+    assert chain == ["pdfium", "markitdown"]
+    chain = registry.fallback_chain(filename="x.pdf", after="pdfium")
+    assert chain == ["markitdown"]
+    chain = registry.fallback_chain(filename="x.pdf", after="markitdown")
+    assert chain == []
+
+
+def test_fallback_chain_after_unknown_engine_returns_empty():
+    """Defensive: if ``after`` names an engine that's not in the
+    chain at all (typo, removed engine), return [] rather than the
+    full chain — that way the worker doesn't accidentally retry
+    everything when the caller's intent was 'continue past X'."""
+    from parsers.registry import registry
+    assert registry.fallback_chain(filename="x.pdf", after="bogus") == []
+
+
+def test_fallback_chain_url_is_just_url():
+    from parsers.registry import registry
+    assert registry.fallback_chain(url="https://x.test") == ["url"]
+    # url=...+after="url" → empty
+    assert registry.fallback_chain(url="https://x.test", after="url") == []
+
+
+def test_fallback_chain_office_native_only():
+    """Office formats have no fallback (native parsers always
+    available, hard pins) — chain is single-engine."""
+    from parsers.registry import registry
+    assert registry.fallback_chain(filename="deck.pptx") == ["pptx-native"]
+    assert registry.fallback_chain(filename="paper.docx") == ["docx-native"]
+    assert registry.fallback_chain(filename="sheet.xlsx") == ["xlsx-native"]

@@ -416,3 +416,187 @@ async def test_rollback_min_content_chars_one_accepts_single_char():
         assert all(u.get("error_type") != "empty_content" for u in update_calls)
     finally:
         real_settings.min_content_chars = original_value
+
+
+# ---------------------------------------------------------------------------
+# Per-attempt engine fallback on dep-level failures
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_dep_level_failure_falls_back_to_next_engine_in_chain():
+    """Regression for the cross-region mineru WriteTimeout case.
+
+    Previously ``selected_engine`` was treated as immutable: if the
+    engine bound at upload time hit a transient dependency error
+    (network timeout, breaker open) the task burned all 3 queue
+    retries on the same broken upstream and went dead — leaving the
+    file unparseable even though pdfium would have worked locally
+    in-process.
+
+    Now: a dep-level exception triggers same-attempt fallback through
+    ``registry.fallback_chain``. File-level errors keep the original
+    behaviour (no fallback — see the next test).
+    """
+    import httpx
+
+    mineru_parser = MagicMock()
+    mineru_parser.parse = AsyncMock(
+        side_effect=httpx.WriteTimeout("upload to mineru body timed out")
+    )
+    pdfium_parser = MagicMock()
+    pdfium_parser.parse = AsyncMock(
+        return_value=ParseResult(
+            content="# Recovered via pdfium\n\n" + "x" * 200,
+            title="t",
+        )
+    )
+
+    doc = MagicMock(); doc.status = "queued"
+    update_calls: list[dict] = []
+    enqueue_calls: list[str] = []
+    parsers_used: list[str] = []
+
+    async def _update(doc_id, **fields):
+        update_calls.append(fields)
+    async def _enqueue(task_type, payload, *_a, **_kw):
+        enqueue_calls.append(task_type)
+
+    def _get_by_engine(name):
+        parsers_used.append(name)
+        return {"mineru": mineru_parser, "pdfium": pdfium_parser}[name]
+
+    with (
+        patch("worker.handlers.get_session") as mock_sess,
+        patch("worker.handlers.registry") as mock_reg,
+        patch("worker.handlers.get_storage") as mock_storage,
+        patch("worker.handlers.update_doc", new=_update),
+        patch("worker.queue.enqueue", new=_enqueue),
+    ):
+        mock_sess.return_value.__aenter__.return_value = _build_session(doc)
+        mock_reg.get_by_engine.side_effect = _get_by_engine
+        mock_reg.fallback_chain.return_value = ["pdfium", "markitdown"]
+        mock_storage.return_value = AsyncMock(get=AsyncMock(return_value=b"%PDF"))
+
+        from worker.handlers import handle_parse_document
+        await handle_parse_document({
+            "doc_id": "d-fb", "kb_id": "k1",
+            "storage_key": "upload/k1/d-fb/big.pdf",
+            "source": "big.pdf", "filename": "big.pdf",
+            "selected_engine": "mineru",
+        })
+
+    # Both engines were tried; fallback (pdfium) was used.
+    assert parsers_used == ["mineru", "pdfium"]
+    # Doc reached indexing stage — not failed.
+    statuses = [u.get("status") for u in update_calls if "status" in u]
+    assert "indexing" in statuses
+    assert "failed" not in statuses
+    # Index task got fanned out so the user's doc actually completes.
+    assert "index_document" in enqueue_calls
+
+
+@pytest.mark.asyncio
+async def test_file_level_error_does_not_fall_back():
+    """The fallback path is gated on dep-level exceptions only. A
+    parser raising on malformed bytes or producing a logic error is
+    NOT a signal to try a different engine — we'd just waste cycles
+    and the next engine would fail the same way. Doc must end up
+    ``failed``, not silently rerouted.
+    """
+    boom_parser = MagicMock()
+    boom_parser.parse = AsyncMock(side_effect=ValueError("malformed payload"))
+    other_parser = MagicMock()
+    other_parser.parse = AsyncMock()  # should NOT be called
+
+    doc = MagicMock(); doc.status = "queued"
+    update_calls: list[dict] = []
+    parsers_used: list[str] = []
+
+    async def _update(doc_id, **fields):
+        update_calls.append(fields)
+    async def _enqueue(task_type, payload, *_a, **_kw):
+        pass
+
+    def _get_by_engine(name):
+        parsers_used.append(name)
+        return {"mineru": boom_parser, "pdfium": other_parser}[name]
+
+    with (
+        patch("worker.handlers.get_session") as mock_sess,
+        patch("worker.handlers.registry") as mock_reg,
+        patch("worker.handlers.get_storage") as mock_storage,
+        patch("worker.handlers.update_doc", new=_update),
+        patch("worker.queue.enqueue", new=_enqueue),
+    ):
+        mock_sess.return_value.__aenter__.return_value = _build_session(doc)
+        mock_reg.get_by_engine.side_effect = _get_by_engine
+        mock_reg.fallback_chain.return_value = ["pdfium"]
+        mock_storage.return_value = AsyncMock(get=AsyncMock(return_value=b"%PDF"))
+
+        from worker.handlers import handle_parse_document
+        with pytest.raises(ValueError, match="malformed"):
+            await handle_parse_document({
+                "doc_id": "d-bad", "kb_id": "k1",
+                "storage_key": "upload/k1/d-bad/x.pdf",
+                "source": "x.pdf", "filename": "x.pdf",
+                "selected_engine": "mineru",
+            })
+
+    # Only the original engine was tried. pdfium never got the call.
+    assert parsers_used == ["mineru"]
+    other_parser.parse.assert_not_called()
+    # Doc marked failed with parse_error, same as before this change.
+    statuses = [u.get("status") for u in update_calls if "status" in u]
+    assert statuses[-1] == "failed"
+    assert any(u.get("error_type") == "parse_error" for u in update_calls)
+
+
+@pytest.mark.asyncio
+async def test_fallback_chain_exhausted_marks_doc_failed_and_reraises():
+    """If every engine in the chain hits a dep-level error (e.g. mineru
+    timeout AND pdfium also down), the doc must be marked ``failed``
+    with the last exception captured, and the exception re-raised so
+    the queue can retry — not silently swallow.
+    """
+    import httpx
+
+    boom_a = MagicMock()
+    boom_a.parse = AsyncMock(side_effect=httpx.WriteTimeout("mineru ded"))
+    boom_b = MagicMock()
+    boom_b.parse = AsyncMock(side_effect=httpx.ConnectError("pdfium ded"))
+
+    doc = MagicMock(); doc.status = "queued"
+    update_calls: list[dict] = []
+
+    async def _update(doc_id, **fields):
+        update_calls.append(fields)
+    async def _enqueue(task_type, payload, *_a, **_kw):
+        pass
+
+    def _get_by_engine(name):
+        return {"mineru": boom_a, "pdfium": boom_b}[name]
+
+    with (
+        patch("worker.handlers.get_session") as mock_sess,
+        patch("worker.handlers.registry") as mock_reg,
+        patch("worker.handlers.get_storage") as mock_storage,
+        patch("worker.handlers.update_doc", new=_update),
+        patch("worker.queue.enqueue", new=_enqueue),
+    ):
+        mock_sess.return_value.__aenter__.return_value = _build_session(doc)
+        mock_reg.get_by_engine.side_effect = _get_by_engine
+        mock_reg.fallback_chain.return_value = ["pdfium"]
+        mock_storage.return_value = AsyncMock(get=AsyncMock(return_value=b"%PDF"))
+
+        from worker.handlers import handle_parse_document
+        with pytest.raises(httpx.ConnectError):
+            await handle_parse_document({
+                "doc_id": "d-allfail", "kb_id": "k1",
+                "storage_key": "upload/k1/d-allfail/x.pdf",
+                "source": "x.pdf", "filename": "x.pdf",
+                "selected_engine": "mineru",
+            })
+
+    statuses = [u.get("status") for u in update_calls if "status" in u]
+    assert statuses[-1] == "failed"
+    assert any(u.get("error_type") == "parse_error" for u in update_calls)
