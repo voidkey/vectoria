@@ -18,12 +18,20 @@ from parsers.base import BaseParser
 # no torch/transformers stack to maintain.
 _EXT_PREFERENCE: dict[str, list[str]] = {
     ".pdf":  ["mineru", "pdfium", "markitdown"],
-    ".docx": ["docx-native"],
-    ".doc":  ["docx-native"],
-    ".pptx": ["pptx-native"],
-    ".ppt":  ["pptx-native"],
-    ".xlsx": ["xlsx-native"],
-    ".xls":  ["xlsx-native"],
+    # Office native parsers all have markitdown as a "best-effort"
+    # last resort. The native libs (python-pptx / mammoth+python-docx
+    # / openpyxl) are accurate when they work but each has rare
+    # sharp edges (we've already hit two python-pptx bugs in a
+    # month). markitdown reads the same formats via different code
+    # paths, so when the native parser raises on one specific shape
+    # / cell / element, markitdown often still extracts useful text.
+    # Cost is one extra attempt per failure.
+    ".docx": ["docx-native", "markitdown"],
+    ".doc":  ["docx-native", "markitdown"],
+    ".pptx": ["pptx-native", "markitdown"],
+    ".ppt":  ["pptx-native", "markitdown"],
+    ".xlsx": ["xlsx-native", "markitdown"],
+    ".xls":  ["xlsx-native", "markitdown"],
     ".png":  ["ocr-native"],
     ".jpg":  ["ocr-native"],
     ".jpeg": ["ocr-native"],

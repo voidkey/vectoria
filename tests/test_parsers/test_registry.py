@@ -156,10 +156,16 @@ def test_fallback_chain_url_is_just_url():
     assert registry.fallback_chain(url="https://x.test", after="url") == []
 
 
-def test_fallback_chain_office_native_only():
-    """Office formats have no fallback (native parsers always
-    available, hard pins) — chain is single-engine."""
+def test_fallback_chain_office_falls_back_to_markitdown():
+    """Office formats now have markitdown as last-resort fallback —
+    one rare-shape bug in python-pptx / mammoth / openpyxl no longer
+    kills the file outright. The native parser is still primary
+    (better fidelity); markitdown only runs when native raises.
+    """
     from parsers.registry import registry
-    assert registry.fallback_chain(filename="deck.pptx") == ["pptx-native"]
-    assert registry.fallback_chain(filename="paper.docx") == ["docx-native"]
-    assert registry.fallback_chain(filename="sheet.xlsx") == ["xlsx-native"]
+    assert registry.fallback_chain(filename="deck.pptx") == ["pptx-native", "markitdown"]
+    assert registry.fallback_chain(filename="paper.docx") == ["docx-native", "markitdown"]
+    assert registry.fallback_chain(filename="sheet.xlsx") == ["xlsx-native", "markitdown"]
+    # ``after=`` still rotates the chain correctly.
+    assert registry.fallback_chain(filename="deck.pptx", after="pptx-native") == ["markitdown"]
+    assert registry.fallback_chain(filename="deck.pptx", after="markitdown") == []

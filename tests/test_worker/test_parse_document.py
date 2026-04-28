@@ -500,17 +500,26 @@ async def test_dep_level_failure_falls_back_to_next_engine_in_chain():
 
 
 @pytest.mark.asyncio
-async def test_file_level_error_does_not_fall_back():
-    """The fallback path is gated on dep-level exceptions only. A
-    parser raising on malformed bytes or producing a logic error is
-    NOT a signal to try a different engine — we'd just waste cycles
-    and the next engine would fail the same way. Doc must end up
-    ``failed``, not silently rerouted.
+async def test_parser_level_error_falls_back_through_chain():
+    """Parser-level exceptions (e.g. python-pptx hitting a sharp edge
+    on a specific shape, mammoth choking on an embedded equation)
+    used to be terminal — handler raised immediately. Now they
+    trigger fallback too: the next engine in the chain reads the
+    same bytes via a different code path and may well succeed.
+    Cost is one extra attempt per failure (bounded by chain length).
+
+    Regression scenario: Office native parsers' library bugs were
+    killing files that markitdown could have rescued.
     """
     boom_parser = MagicMock()
-    boom_parser.parse = AsyncMock(side_effect=ValueError("malformed payload"))
-    other_parser = MagicMock()
-    other_parser.parse = AsyncMock()  # should NOT be called
+    boom_parser.parse = AsyncMock(side_effect=ValueError("library hit a sharp edge"))
+    rescue_parser = MagicMock()
+    rescue_parser.parse = AsyncMock(
+        return_value=ParseResult(
+            content="# Recovered via markitdown\n\n" + "x" * 200,
+            title="t",
+        )
+    )
 
     doc = MagicMock(); doc.status = "queued"
     update_calls: list[dict] = []
@@ -523,7 +532,7 @@ async def test_file_level_error_does_not_fall_back():
 
     def _get_by_engine(name):
         parsers_used.append(name)
-        return {"mineru": boom_parser, "pdfium": other_parser}[name]
+        return {"pptx-native": boom_parser, "markitdown": rescue_parser}[name]
 
     with (
         patch("worker.handlers.get_session") as mock_sess,
@@ -534,25 +543,26 @@ async def test_file_level_error_does_not_fall_back():
     ):
         mock_sess.return_value.__aenter__.return_value = _build_session(doc)
         mock_reg.get_by_engine.side_effect = _get_by_engine
-        mock_reg.fallback_chain.return_value = ["pdfium"]
-        mock_storage.return_value = AsyncMock(get=AsyncMock(return_value=b"%PDF"))
+        mock_reg.fallback_chain.return_value = ["markitdown"]
+        mock_storage.return_value = AsyncMock(
+            get=AsyncMock(return_value=b"PK\x03\x04"),  # zip head
+        )
 
         from worker.handlers import handle_parse_document
-        with pytest.raises(ValueError, match="malformed"):
-            await handle_parse_document({
-                "doc_id": "d-bad", "kb_id": "k1",
-                "storage_key": "upload/k1/d-bad/x.pdf",
-                "source": "x.pdf", "filename": "x.pdf",
-                "selected_engine": "mineru",
-            })
+        await handle_parse_document({
+            "doc_id": "d-rescue", "kb_id": "k1",
+            "storage_key": "upload/k1/d-rescue/deck.pptx",
+            "source": "deck.pptx", "filename": "deck.pptx",
+            "selected_engine": "pptx-native",
+        })
 
-    # Only the original engine was tried. pdfium never got the call.
-    assert parsers_used == ["mineru"]
-    other_parser.parse.assert_not_called()
-    # Doc marked failed with parse_error, same as before this change.
+    # Both engines were tried; markitdown rescued the file.
+    assert parsers_used == ["pptx-native", "markitdown"]
     statuses = [u.get("status") for u in update_calls if "status" in u]
-    assert statuses[-1] == "failed"
-    assert any(u.get("error_type") == "parse_error" for u in update_calls)
+    assert "indexing" in statuses
+    assert "failed" not in statuses
+    indexing_update = next(u for u in update_calls if u.get("status") == "indexing")
+    assert indexing_update.get("parse_engine") == "markitdown"
 
 
 @pytest.mark.asyncio

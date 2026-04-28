@@ -130,16 +130,25 @@ async def handle_parse_document(payload: dict) -> None:
         raw = source
 
     # Per-attempt engine fallback. selected_engine is just the upload-time
-    # preference; if it fails at the *dependency* layer (network timeout,
-    # breaker open) the file itself is fine — try the next engine in
-    # registry.fallback_chain on the same attempt rather than burning all
-    # 3 queue retries on the same broken upstream. File-level errors
-    # (parser raised on bad bytes) skip fallback — different engine
-    # wouldn't help. The chain is computed lazily on first dep-level
-    # failure so the happy path doesn't pay for a registry call.
+    # preference; on *any* exception we try the next engine in
+    # registry.fallback_chain rather than declaring the file dead — a
+    # different parser may not depend on the broken upstream (mineru
+    # HTTP vs pdfium in-process) or may not have the same library
+    # sharp edge (python-pptx vs markitdown). Cost: one extra attempt
+    # per failure, bounded by chain length (≤ 3).
+    #
+    # _DEP_LEVEL_ERRORS still has a meaning: those are *definitely*
+    # transient and worth distinguishing in logs. Anything else is a
+    # parser-level failure that *might* be specific to that engine —
+    # we fall back optimistically. Either way the diagnostic
+    # distinction stays in WARN logs so operators can tell apart
+    # "network glitch" from "library bug on this file".
+    #
+    # The chain is computed lazily on the first failure so the happy
+    # path doesn't pay for a registry call.
     parse_result = used_engine = None
-    last_dep_exc: BaseException | None = None
-    last_dep_trace = ""           # captured inside except → safe to use later
+    last_exc: BaseException | None = None
+    last_trace = ""               # captured inside except → safe to use later
     engine_name: str | None = selected_engine
     fallback_queue: list[str] | None = None
     while engine_name is not None:
@@ -158,29 +167,24 @@ async def handle_parse_document(payload: dict) -> None:
                     ).inc()
                     logger.warning(
                         "parse_document: doc=%s fell back from %s to %s "
-                        "after dep-level failure(s); last error: %r",
-                        doc_id, selected_engine, engine_name, last_dep_exc,
+                        "after failure(s); last error: %r",
+                        doc_id, selected_engine, engine_name, last_exc,
                     )
                 break
             except _DEP_LEVEL_ERRORS as e:
-                last_dep_exc, last_dep_trace = e, traceback.format_exc()
+                last_exc, last_trace = e, traceback.format_exc()
                 logger.warning(
                     "parse_document: %s dep-level failure on doc=%s "
                     "(%s: %s); trying next engine",
                     engine_name, doc_id, type(e).__name__, e,
                 )
             except Exception as e:
-                # File-level error: stop, mark failed, let queue retry
-                # the same engine (or dead-letter). Same as before.
-                logger.exception("parse_document: parse failed doc=%s", doc_id)
-                DOCUMENT_OUTCOMES.labels(outcome="parse_error").inc()
-                await update_doc(
-                    doc_id, status="failed",
-                    error_msg=f"Parsing failed: {e}"[:500],
-                    error_type="parse_error",
-                    error_trace=traceback.format_exc(),
+                last_exc, last_trace = e, traceback.format_exc()
+                logger.warning(
+                    "parse_document: %s parser-level failure on doc=%s "
+                    "(%s: %s); trying next engine",
+                    engine_name, doc_id, type(e).__name__, e,
                 )
-                raise
 
         if fallback_queue is None:
             fallback_queue = list(registry.fallback_chain(
@@ -191,23 +195,23 @@ async def handle_parse_document(payload: dict) -> None:
         engine_name = fallback_queue.pop(0) if fallback_queue else None
 
     if parse_result is None:
-        # Whole chain hit dep-level errors. Mark failed with the last
-        # exception's traceback (captured inside its except block —
+        # Whole chain failed. Mark failed with the last exception's
+        # traceback (captured inside its except block —
         # traceback.format_exc() out here would just print "NoneType:
         # None") and re-raise so the queue can retry; the network may
-        # recover by then.
+        # recover or a transient issue may clear by then.
         logger.error(
-            "parse_document: all engines failed dep-level for doc=%s: %r",
-            doc_id, last_dep_exc,
+            "parse_document: all engines in chain failed for doc=%s: %r",
+            doc_id, last_exc,
         )
         DOCUMENT_OUTCOMES.labels(outcome="parse_error").inc()
         await update_doc(
             doc_id, status="failed",
-            error_msg=f"Parsing failed: {last_dep_exc}"[:500],
+            error_msg=f"Parsing failed: {last_exc}"[:500],
             error_type="parse_error",
-            error_trace=last_dep_trace,
+            error_trace=last_trace,
         )
-        raise last_dep_exc  # type: ignore[misc]
+        raise last_exc  # type: ignore[misc]
     assert used_engine is not None  # parse_result is set ⇒ used_engine is too
 
     # Drop the source bytes ASAP; the parser may have materialised them
