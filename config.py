@@ -109,12 +109,23 @@ class Settings(BaseSettings):
     mineru_breaker_threshold: int = 5
     mineru_breaker_reset_timeout: float = 300.0
 
-    # Vision LLM (for image description)
+    # Vision LLM (for image description + vision-native parser)
     vision_base_url: str = ""
     vision_api_key: SecretStr = SecretStr("")
     vision_model: str = "gpt-4o"
     vision_breaker_threshold: int = 5
     vision_breaker_reset_timeout: float = 300.0
+    # Rough per-call USD cost estimate, used by the cost counter and
+    # daily-budget guardrail. Real cost depends on tokens; a flat
+    # estimate is a small, conservative approximation. Adjust per
+    # vendor: gpt-4o-mini ≈ 0.005, gpt-4o ≈ 0.02, qwen-vl ≈ 0.002.
+    vision_cost_per_call_usd: float = 0.005
+    # Soft daily budget. When today's accumulated estimated spend
+    # crosses this, vision-native parser advertises is_available()=False
+    # and registry falls back to ocr-native (rapidocr). 0 = no cap.
+    # Per-process state — multi-worker hosts get N×budget effective
+    # ceiling, conservative tune accordingly.
+    vision_daily_budget_usd: float = 0.0
 
     # Embedding reliability. Threshold is higher than mineru/vision because
     # the embedder already retries internally with backoff; the breaker is

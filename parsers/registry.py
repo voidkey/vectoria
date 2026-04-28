@@ -32,12 +32,19 @@ _EXT_PREFERENCE: dict[str, list[str]] = {
     ".ppt":  ["pptx-native", "markitdown"],
     ".xlsx": ["xlsx-native", "markitdown"],
     ".xls":  ["xlsx-native", "markitdown"],
-    ".png":  ["ocr-native"],
-    ".jpg":  ["ocr-native"],
-    ".jpeg": ["ocr-native"],
-    ".tiff": ["ocr-native"],
-    ".bmp":  ["ocr-native"],
-    ".webp": ["ocr-native"],
+    # Image files: VLM first for semantic understanding (charts /
+    # diagrams / infographics need meaning, not just OCR text);
+    # rapidocr (in-process, free, deterministic) is the fallback when
+    # vision is unconfigured / circuit open / over budget. The
+    # post-parse ``analyze_images`` task is unrelated and still runs
+    # for inline images extracted from documents — that's separate
+    # from this whole-image-as-input case.
+    ".png":  ["vision-native", "ocr-native"],
+    ".jpg":  ["vision-native", "ocr-native"],
+    ".jpeg": ["vision-native", "ocr-native"],
+    ".tiff": ["vision-native", "ocr-native"],
+    ".bmp":  ["vision-native", "ocr-native"],
+    ".webp": ["vision-native", "ocr-native"],
     ".csv":  ["markitdown"],
     ".md":   ["markitdown"],
     ".txt":  ["markitdown"],
@@ -147,6 +154,8 @@ from parsers.pdfium_parser import PdfiumParser  # noqa: E402
 registry.register(PdfiumParser)
 from parsers.ocr_parser import OcrParser  # noqa: E402
 registry.register(OcrParser)
+from parsers.vision_parser import VisionNativeParser  # noqa: E402
+registry.register(VisionNativeParser)
 from parsers.mineru_parser import MinerUParser  # noqa: E402
 registry.register(MinerUParser)
 from parsers.url import UrlParser  # noqa: E402

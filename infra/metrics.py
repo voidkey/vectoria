@@ -146,6 +146,18 @@ PARSE_FALLBACK_TOTAL = Counter(
     labelnames=("from_engine", "to_engine"),
 )
 
+VISION_COST_USD_TOTAL = Counter(
+    "vectoria_vision_cost_usd_total",
+    "Estimated USD spend on Vision LLM API calls (per-call estimate "
+    "from settings.vision_cost_per_call_usd × call count). The "
+    "estimate is rough — real cost depends on tokens — but the "
+    "counter is monotonic and good enough for budget alerting and "
+    "spend trending. Used by the daily-budget guardrail in "
+    "vision/budget.py to disable vision-native parser when the "
+    "soft cap is reached.",
+    labelnames=("purpose",),  # describe | parse  — keep cardinality bounded
+)
+
 # ---------------------------------------------------------------------------
 # Document lifecycle outcomes
 # ---------------------------------------------------------------------------
