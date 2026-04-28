@@ -27,6 +27,14 @@ register_handler(XhsHandler())
 from parsers.url._x import XHandler
 register_handler(XHandler())
 
+# Blacklist must run before GenericHandler so known-unparseable URLs
+# fail fast with a clear reason instead of burning 30s of playwright
+# startup just to discover anti-bot / JS-only-player. After all
+# specific platform handlers — those should still claim their own
+# domains first.
+from parsers.url._blacklist import BlacklistHandler
+register_handler(BlacklistHandler())
+
 from parsers.url._generic import GenericHandler
 register_handler(GenericHandler())  # catch-all, must be last
 
