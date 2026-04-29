@@ -61,7 +61,14 @@ def test_extract_image_urls_filters_data_uris():
     assert urls == ["https://example.com/real.jpg"]
 
 
-def test_extract_image_urls_caps_at_20():
+def test_extract_image_urls_caps_at_20(monkeypatch):
+    """Cap honors settings.url_image_cap (here pinned to 20 for stability)."""
+    class _Stub:
+        url_image_cap = 20
+    monkeypatch.setattr(
+        "parsers.url._handlers.get_settings", lambda: _Stub(), raising=False
+    )
+
     html = "".join(f'<img src="https://example.com/img{i}.jpg" />' for i in range(30))
     urls = extract_image_urls(html, "https://example.com")
     assert len(urls) == 20

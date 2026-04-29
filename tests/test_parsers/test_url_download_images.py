@@ -199,8 +199,14 @@ async def test_http_exception_does_not_break_batch():
 
 
 @pytest.mark.asyncio
-async def test_cap_at_20_urls():
-    """The existing 20-URL hard cap survives the async refactor."""
+async def test_cap_at_20_urls(monkeypatch):
+    """The hard cap survives the async refactor; pin cap=20 for the test."""
+    class _Stub:
+        url_image_cap = 20
+    monkeypatch.setattr(
+        "parsers.url._handlers.get_settings", lambda: _Stub(), raising=False
+    )
+
     async def _allow_all(*a, **kw):
         return True
 
