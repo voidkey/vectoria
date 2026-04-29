@@ -113,6 +113,10 @@ async def download_images_in_context(
             continue
         if not resp.ok:
             logger.info("feishu image %s returned %s", url, resp.status)
+            try:
+                await resp.dispose()
+            except Exception:
+                pass
             continue
         try:
             data = await resp.body()

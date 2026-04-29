@@ -174,3 +174,18 @@ async def test_download_images_in_context_swallows_exceptions():
         ctx, ["https://x/A"], doc_url="https://whobotai.feishu.cn/docx/Z",
     )
     assert out == {}
+
+
+@pytest.mark.asyncio
+async def test_download_images_in_context_skips_empty_body():
+    """200 OK with empty bytes (rare CDN rate-limit signal) is dropped."""
+    resp = MagicMock(); resp.ok = True; resp.status = 200
+    resp.body = AsyncMock(return_value=b"")
+
+    request = MagicMock(); request.get = AsyncMock(return_value=resp)
+    ctx = MagicMock(); ctx.request = request
+
+    out = await download_images_in_context(
+        ctx, ["https://x/A"], doc_url="https://whobotai.feishu.cn/docx/Z",
+    )
+    assert out == {}
