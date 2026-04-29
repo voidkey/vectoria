@@ -74,3 +74,19 @@ async def test_dispatch_generic_url():
         result = await parser.parse("https://example.com/page")
 
     assert "Generic content" in result.content
+
+
+def test_feishu_handler_registered_before_blacklist():
+    from parsers.url import find_handler
+    from parsers.url._feishu import FeishuHandler
+
+    h = find_handler("https://whobotai.feishu.cn/docx/ABC")
+    assert isinstance(h, FeishuHandler)
+
+
+def test_feishu_handler_does_not_match_sheets():
+    from parsers.url import find_handler
+    from parsers.url._feishu import FeishuHandler
+
+    h = find_handler("https://whobotai.feishu.cn/sheets/ABC")
+    assert not isinstance(h, FeishuHandler)

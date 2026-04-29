@@ -27,6 +27,9 @@ register_handler(XhsHandler())
 from parsers.url._x import XHandler
 register_handler(XHandler())
 
+from parsers.url._feishu import FeishuHandler
+register_handler(FeishuHandler())
+
 # Blacklist must run before GenericHandler so known-unparseable URLs
 # fail fast with a clear reason instead of burning 30s of playwright
 # startup just to discover anti-bot / JS-only-player. After all
