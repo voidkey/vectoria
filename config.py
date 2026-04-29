@@ -85,7 +85,7 @@ class Settings(BaseSettings):
 
     # Cap on number of image URLs any URL handler will carry per
     # document. Set to a large number (e.g. 9999) to effectively disable.
-    url_image_cap: int = 20
+    url_image_cap: int = 50
 
     # When True, reject uploads whose magic-byte-sniffed MIME family
     # does NOT match the claimed file extension. When False, log +
