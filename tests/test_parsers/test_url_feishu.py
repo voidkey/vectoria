@@ -378,7 +378,7 @@ async def test_parse_caps_at_url_image_cap(monkeypatch):
     metric incremented exactly once.
     """
     from infra import metrics
-    monkeypatch.setattr("config.get_settings",
+    monkeypatch.setattr("parsers.url._feishu.get_settings",
                         lambda: type("S", (), {"url_image_cap": 2})())
 
     img_urls = [

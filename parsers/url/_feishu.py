@@ -18,7 +18,7 @@ import logging
 import re
 from urllib.parse import urlparse
 
-import config
+from config import get_settings
 from infra.metrics import URL_IMAGES_TRUNCATED_TOTAL
 from parsers.base import ParseResult
 from parsers.image_ref import BytesFactory, ImageRef
@@ -225,7 +225,7 @@ class FeishuHandler:
             html = await page.content()
             image_urls_all = extract_feishu_image_urls(html)
 
-            cap = config.get_settings().url_image_cap
+            cap = get_settings().url_image_cap
             truncated = len(image_urls_all) > cap
             image_urls = image_urls_all[:cap]
             if truncated:
@@ -253,15 +253,23 @@ class FeishuHandler:
             urls_for_md.append(u)
             next_idx += 1
 
-        markdown = extract_with_trafilatura(html)
-        markdown = replace_image_urls_with_names(markdown, urls_for_md, names_for_md)
+        # Rewrite image URLs in the *HTML* to placeholder names before
+        # trafilatura runs. Without this, trafilatura's image filter
+        # strips feishu CDN URLs (no recognized file extension) and we
+        # lose every figure. Rewriting first means trafilatura sees
+        # ``<img src="image_0001.png">``, recognizes the extension, and
+        # emits ``![alt](image_0001.png)`` at the correct doc position
+        # so caption locality is preserved.
+        html_rewritten = replace_image_urls_with_names(
+            html, urls_for_md, names_for_md,
+        )
+        markdown = extract_with_trafilatura(html_rewritten)
 
-        # trafilatura drops feishu image URLs (no file extension on the
-        # CDN paths, so its image filter strips them). Append a tail
-        # block of ``![](name)`` references for any downloaded image
-        # whose placeholder name didn't make it into the markdown — so
+        # Defensive tail-block: if trafilatura *still* drops an image
+        # for some shape we haven't seen yet, append it at the end so
         # ``image_metadata.extract_metadata_into_refs`` can still locate
-        # every ref by name.
+        # the ref by name. Caption locality is lost for these, but
+        # image_loss is worse.
         missing = [n for n in names_for_md if n not in markdown]
         if missing:
             tail = "\n".join(f"![]({n})" for n in missing)
