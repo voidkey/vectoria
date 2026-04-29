@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from parsers.url._feishu import is_feishu_docx_url
+from parsers.url._feishu import extract_feishu_image_urls, is_feishu_docx_url
 
 
 def test_is_feishu_docx_url_docx_path():
@@ -35,3 +35,49 @@ def test_is_feishu_docx_url_rejects_larksuite():
 
 def test_is_feishu_docx_url_rejects_other_host():
     assert not is_feishu_docx_url("https://example.com/docx/abc")
+
+
+def test_extract_feishu_image_urls_from_internal_drive_stream():
+    html = """
+    <div class="docx-content">
+      <p>正文一段</p>
+      <img src="https://internal-api-drive-stream.feishu.cn/space/api/box/stream/download/v2/cover/A/?mount_point=docx_image"/>
+      <p>正文二段</p>
+      <img src="https://internal-api-drive-stream.feishu.cn/space/api/box/stream/download/v2/cover/B/?mount_point=docx_image"/>
+    </div>
+    """
+    urls = extract_feishu_image_urls(html)
+    assert urls == [
+        "https://internal-api-drive-stream.feishu.cn/space/api/box/stream/download/v2/cover/A/?mount_point=docx_image",
+        "https://internal-api-drive-stream.feishu.cn/space/api/box/stream/download/v2/cover/B/?mount_point=docx_image",
+    ]
+
+
+def test_extract_feishu_image_urls_dedup_keeps_first():
+    html = """
+    <img src="https://internal-api-drive-stream.feishu.cn/x/A/?p=1"/>
+    <img src="https://internal-api-drive-stream.feishu.cn/x/A/?p=1"/>
+    """
+    urls = extract_feishu_image_urls(html)
+    assert urls == ["https://internal-api-drive-stream.feishu.cn/x/A/?p=1"]
+
+
+def test_extract_feishu_image_urls_skips_data_uri():
+    html = '<img src="data:image/png;base64,abc"/>' \
+           '<img src="https://internal-api-drive-stream.feishu.cn/x/B/?"/>'
+    urls = extract_feishu_image_urls(html)
+    assert urls == ["https://internal-api-drive-stream.feishu.cn/x/B/?"]
+
+
+def test_extract_feishu_image_urls_skips_unrelated_hosts():
+    """Avatars, emoji, share-card thumbnails on s1-imfile.feishucdn.com or
+    sf-static.feishucdn.com aren't doc images — keep only main-content
+    drive-stream URLs to avoid polluting the doc with chrome assets.
+    """
+    html = """
+    <img src="https://s1-imfile.feishucdn.com/avatar/1.png"/>
+    <img src="https://internal-api-drive-stream.feishu.cn/x/REAL/?"/>
+    <img src="https://sf-static.feishucdn.com/icon.png"/>
+    """
+    urls = extract_feishu_image_urls(html)
+    assert urls == ["https://internal-api-drive-stream.feishu.cn/x/REAL/?"]

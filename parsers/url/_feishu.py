@@ -14,11 +14,18 @@ would 401).
 """
 from __future__ import annotations
 
+import re
 from urllib.parse import urlparse
 
 
 _FEISHU_HOST_SUFFIX = ".feishu.cn"
 _DOCX_PATH_PREFIXES = ("/docx/", "/wiki/")
+
+# Doc images live on this single host; chrome assets (avatars, emoji,
+# UI icons) live on ``*.feishucdn.com`` and are filtered out so the
+# downstream pipeline doesn't ingest UI noise as document figures.
+_FEISHU_IMG_HOST = "internal-api-drive-stream.feishu.cn"
+_IMG_SRC_RE = re.compile(r'<img\b[^>]*?\bsrc=["\']([^"\']+)["\']', re.IGNORECASE)
 
 
 def is_feishu_docx_url(url: str) -> bool:
@@ -35,3 +42,29 @@ def is_feishu_docx_url(url: str) -> bool:
     if not (host == "feishu.cn" or host.endswith(_FEISHU_HOST_SUFFIX)):
         return False
     return any(p.path.startswith(prefix) for prefix in _DOCX_PATH_PREFIXES)
+
+
+def extract_feishu_image_urls(html: str) -> list[str]:
+    """Extract doc-image URLs (``internal-api-drive-stream.feishu.cn``)
+    from rendered HTML, in document order, deduped, no data: URIs.
+
+    Cap is applied at the call site (``_parse_with_playwright``) — this
+    function returns the full list so callers can emit a single
+    truncation metric when the cap actually trims something.
+    """
+    seen: set[str] = set()
+    out: list[str] = []
+    for src in _IMG_SRC_RE.findall(html):
+        if src.startswith("data:"):
+            continue
+        try:
+            host = (urlparse(src).hostname or "").lower()
+        except Exception:
+            continue
+        if host != _FEISHU_IMG_HOST:
+            continue
+        if src in seen:
+            continue
+        seen.add(src)
+        out.append(src)
+    return out
