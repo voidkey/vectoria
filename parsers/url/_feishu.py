@@ -18,7 +18,12 @@ import logging
 import re
 from urllib.parse import urlparse
 
+import config
+from infra.metrics import URL_IMAGES_TRUNCATED_TOTAL
 from parsers.base import ParseResult
+from parsers.image_ref import BytesFactory, ImageRef
+from parsers.url._browser import parse_session
+from parsers.url._handlers import extract_html_title, extract_with_trafilatura
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +36,16 @@ _DOCX_PATH_PREFIXES = ("/docx/", "/wiki/")
 # downstream pipeline doesn't ingest UI noise as document figures.
 _FEISHU_IMG_HOST = "internal-api-drive-stream.feishu.cn"
 _IMG_SRC_RE = re.compile(r'<img\b[^>]*?\bsrc=["\']([^"\']+)["\']', re.IGNORECASE)
+
+_LOGIN_HOST = "accounts.feishu.cn"
+# Match the desktop Chromium that the worker pool launches. Stating it
+# explicitly keeps Feishu's bot detector from sniffing a stale UA when
+# we eventually upgrade Chromium in the deps.
+_FEISHU_UA = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/130.0 Safari/537.36"
+)
 
 
 def is_feishu_docx_url(url: str) -> bool:
@@ -172,5 +187,90 @@ class FeishuHandler:
         return await self._parse_with_playwright(url)
 
     async def _parse_with_playwright(self, url: str) -> ParseResult:
-        # Implemented in Task 7.
-        return ParseResult(content="", title="")
+        # block_heavy=False — image responses set cookies the doc page
+        # also relies on; aborting them sometimes leaves the BrowserContext
+        # without the session cookie that image fetches in this method
+        # depend on. We pay the bandwidth cost (~few MB per doc) for
+        # session correctness.
+        async with parse_session(
+            user_agent=_FEISHU_UA, block_heavy=False,
+        ) as ctx:
+            page = await ctx.new_page()
+            try:
+                await page.goto(url, wait_until="networkidle", timeout=30000)
+            except Exception:
+                logger.warning("feishu page.goto failed: %s", url, exc_info=True)
+                return ParseResult(content="", title="")
+
+            # Login wall: feishu redirects unauthorized requests to
+            # accounts.feishu.cn. Anything not on the original feishu.cn
+            # subdomain, or now on accounts.feishu.cn, means the doc is
+            # not anonymously accessible.
+            current = (page.url or "").lower()
+            if _LOGIN_HOST in current:
+                logger.info("feishu doc requires login: %s", url)
+                return ParseResult(content="", title="")
+
+            # Trigger lazy-loaded blocks (long docs paginate images on
+            # scroll). Single-shot scroll-to-bottom; networkidle above
+            # already covered the initial render.
+            try:
+                await page.evaluate(
+                    "() => window.scrollTo(0, document.body.scrollHeight)"
+                )
+                await page.wait_for_timeout(800)
+            except Exception:
+                pass
+
+            html = await page.content()
+            image_urls_all = extract_feishu_image_urls(html)
+
+            cap = config.get_settings().url_image_cap
+            truncated = len(image_urls_all) > cap
+            image_urls = image_urls_all[:cap]
+            if truncated:
+                URL_IMAGES_TRUNCATED_TOTAL.labels(handler="feishu").inc()
+
+            blob_by_url = await download_images_in_context(
+                ctx, image_urls, doc_url=url,
+            )
+
+        # Build refs in the order the URLs appeared in the doc, skipping
+        # ones whose download failed.
+        refs: list[ImageRef] = []
+        names_for_md: list[str] = []
+        urls_for_md: list[str] = []
+        next_idx = 1
+        for u in image_urls:
+            data = blob_by_url.get(u)
+            if not data:
+                continue
+            mime = sniff_image_mime(data)
+            ext = _ext_for_mime(mime)
+            name = f"image_{next_idx:04d}{ext}"
+            refs.append(ImageRef(name=name, mime=mime, _factory=BytesFactory(data)))
+            names_for_md.append(name)
+            urls_for_md.append(u)
+            next_idx += 1
+
+        markdown = extract_with_trafilatura(html)
+        markdown = replace_image_urls_with_names(markdown, urls_for_md, names_for_md)
+
+        # trafilatura drops feishu image URLs (no file extension on the
+        # CDN paths, so its image filter strips them). Append a tail
+        # block of ``![](name)`` references for any downloaded image
+        # whose placeholder name didn't make it into the markdown — so
+        # ``image_metadata.extract_metadata_into_refs`` can still locate
+        # every ref by name.
+        missing = [n for n in names_for_md if n not in markdown]
+        if missing:
+            tail = "\n".join(f"![]({n})" for n in missing)
+            markdown = (markdown + "\n\n" + tail) if markdown else tail
+
+        title = extract_html_title(html, url)
+
+        return ParseResult(
+            content=markdown,
+            title=title,
+            image_refs=refs,
+        )

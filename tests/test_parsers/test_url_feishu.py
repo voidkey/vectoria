@@ -1,11 +1,18 @@
 """Feishu docx handler tests — mock playwright, no real network."""
+from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from parsers.url._feishu import extract_feishu_image_urls, is_feishu_docx_url
-from parsers.url._feishu import replace_image_urls_with_names
-from parsers.url._feishu import download_images_in_context
+from parsers.base import ParseResult
+from parsers.url._feishu import (
+    FeishuHandler,
+    download_images_in_context,
+    extract_feishu_image_urls,
+    is_feishu_docx_url,
+    replace_image_urls_with_names,
+    sniff_image_mime,
+)
 
 
 def test_is_feishu_docx_url_docx_path():
@@ -191,9 +198,6 @@ async def test_download_images_in_context_skips_empty_body():
     assert out == {}
 
 
-from parsers.url._feishu import sniff_image_mime
-
-
 def test_sniff_image_mime_png():
     assert sniff_image_mime(b"\x89PNG\r\n\x1a\nrest") == "image/png"
 
@@ -212,9 +216,6 @@ def test_sniff_image_mime_gif():
 
 def test_sniff_image_mime_unknown_falls_back_to_jpeg():
     assert sniff_image_mime(b"\x00\x00\x00\x00") == "image/jpeg"
-
-
-from parsers.url._feishu import FeishuHandler
 
 
 def test_handler_match_docx():
@@ -242,3 +243,161 @@ def test_handler_download_headers_returns_none():
     that would make them work, so the protocol's None branch fires."""
     h = FeishuHandler()
     assert h.download_headers("https://x.feishu.cn/docx/abc") is None
+
+
+def _make_ctx_mock(*, page_html: str, page_url: str, image_payloads: dict[str, bytes]):
+    """Build a minimal BrowserContext mock that returns canned HTML on
+    ``page.content()``, canned URL on ``page.url``, and per-URL bytes via
+    ``context.request.get(url).body()``.
+    """
+    page = MagicMock()
+    page.goto = AsyncMock()
+    page.wait_for_timeout = AsyncMock()
+    page.evaluate = AsyncMock(return_value=None)
+    page.content = AsyncMock(return_value=page_html)
+    type(page).url = page_url  # ``page.url`` is a property in real PW
+
+    async def _request_get(url, headers=None):
+        resp = MagicMock()
+        if url in image_payloads:
+            resp.ok = True
+            resp.status = 200
+            resp.body = AsyncMock(return_value=image_payloads[url])
+        else:
+            resp.ok = False
+            resp.status = 404
+            resp.body = AsyncMock(return_value=b"")
+            resp.dispose = AsyncMock()
+        return resp
+
+    request = MagicMock(); request.get = _request_get
+    ctx = MagicMock(); ctx.request = request
+    ctx.new_page = AsyncMock(return_value=page)
+    return ctx, page
+
+
+def _patch_parse_session(ctx_mock):
+    @asynccontextmanager
+    async def _fake_session(**kw):
+        yield ctx_mock
+    return patch("parsers.url._feishu.parse_session", _fake_session)
+
+
+@pytest.mark.asyncio
+async def test_parse_returns_inline_image_refs():
+    img_a_url = "https://internal-api-drive-stream.feishu.cn/x/A/?p=1"
+    img_b_url = "https://internal-api-drive-stream.feishu.cn/x/B/?p=2"
+    page_html = f"""
+    <html><head><title>WhobotAI 文档</title></head><body>
+      <div class="docx-content">
+        <h1>标题</h1><p>正文段落一</p>
+        <img src="{img_a_url}"/>
+        <p>正文段落二</p>
+        <img src="{img_b_url}"/>
+      </div>
+    </body></html>
+    """
+    ctx, page = _make_ctx_mock(
+        page_html=page_html,
+        page_url="https://whobotai.feishu.cn/docx/ABC",
+        image_payloads={
+            img_a_url: b"\x89PNG\r\n\x1a\nA",
+            img_b_url: b"\xff\xd8\xff\xe0B",
+        },
+    )
+
+    h = FeishuHandler()
+    with _patch_parse_session(ctx):
+        result = await h.parse("https://whobotai.feishu.cn/docx/ABC")
+
+    assert isinstance(result, ParseResult)
+    assert result.title == "WhobotAI 文档"
+    assert "正文段落一" in result.content
+    # image_urls path is NOT used; refs go inline so worker takes the
+    # has_inline_images branch.
+    assert result.image_urls in (None, [])
+    assert len(result.image_refs) == 2
+
+    refs = sorted(result.image_refs, key=lambda r: r.name)
+    assert refs[0].name == "image_0001.png"
+    assert refs[0].mime == "image/png"
+    assert refs[0].materialize() == b"\x89PNG\r\n\x1a\nA"
+    assert refs[1].name == "image_0002.jpg"
+    assert refs[1].mime == "image/jpeg"
+
+    # Markdown should reference the placeholder names, not the original
+    # URLs — required for image_metadata.extract_metadata_into_refs.
+    assert "image_0001.png" in result.content
+    assert "image_0002.jpg" in result.content
+    assert "internal-api-drive-stream" not in result.content
+
+
+@pytest.mark.asyncio
+async def test_parse_login_redirect_returns_empty_result():
+    """Non-public docs redirect to accounts.feishu.cn after page.goto.
+    The handler must surface this as empty ParseResult so the worker
+    marks the doc failed with empty_content rather than ingesting the
+    login page text.
+    """
+    ctx, page = _make_ctx_mock(
+        page_html="<html><body>login form</body></html>",
+        page_url="https://accounts.feishu.cn/accounts/page/login?app_id=2&redirect_uri=...",
+        image_payloads={},
+    )
+    h = FeishuHandler()
+    with _patch_parse_session(ctx):
+        result = await h.parse("https://whobotai.feishu.cn/docx/PRIVATE")
+
+    assert result.content == ""
+    assert result.image_refs == []
+
+
+@pytest.mark.asyncio
+async def test_parse_zero_images_still_returns_text():
+    page_html = """
+    <html><head><title>纯文本文档</title></head><body>
+      <div class="docx-content"><p>只有正文，无图。</p></div>
+    </body></html>
+    """
+    ctx, page = _make_ctx_mock(
+        page_html=page_html,
+        page_url="https://whobotai.feishu.cn/docx/TEXT",
+        image_payloads={},
+    )
+    h = FeishuHandler()
+    with _patch_parse_session(ctx):
+        result = await h.parse("https://whobotai.feishu.cn/docx/TEXT")
+
+    assert "只有正文" in result.content
+    assert result.image_refs == []
+
+
+@pytest.mark.asyncio
+async def test_parse_caps_at_url_image_cap(monkeypatch):
+    """Doc with > cap images: only ``cap`` refs returned, truncation
+    metric incremented exactly once.
+    """
+    from infra import metrics
+    monkeypatch.setattr("config.get_settings",
+                        lambda: type("S", (), {"url_image_cap": 2})())
+
+    img_urls = [
+        f"https://internal-api-drive-stream.feishu.cn/x/{i}/?p=1" for i in "ABC"
+    ]
+    page_html = "<html><body><div class='docx-content'>" + "".join(
+        f'<img src="{u}"/>' for u in img_urls
+    ) + "</div></body></html>"
+    ctx, page = _make_ctx_mock(
+        page_html=page_html,
+        page_url="https://whobotai.feishu.cn/docx/MANY",
+        image_payloads={u: b"\xff\xd8\xff" for u in img_urls},
+    )
+
+    counter = metrics.URL_IMAGES_TRUNCATED_TOTAL.labels(handler="feishu")
+    before = counter._value.get()
+    h = FeishuHandler()
+    with _patch_parse_session(ctx):
+        result = await h.parse("https://whobotai.feishu.cn/docx/MANY")
+
+    assert len(result.image_refs) == 2
+    assert counter._value.get() == before + 1
