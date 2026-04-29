@@ -138,6 +138,16 @@ async def handle_parse_document(payload: dict) -> None:
     # sharp edge (python-pptx vs markitdown). Cost: one extra attempt
     # per failure, bounded by chain length (≤ 3).
     #
+    # We also fall back when a parser *succeeds but returns empty
+    # content* (see ``last_was_empty`` below). Office native parsers
+    # (docx_parser / pptx_parser / xlsx_parser) catch internal
+    # exceptions and return ``ParseResult(content="")`` rather than
+    # raising — without this branch, that gets misclassified as a
+    # terminal empty_content failure even though markitdown might
+    # have parsed the same file via a different code path. The
+    # opportunity cost of one extra attempt is small; the win is
+    # not silently losing files to library quirks.
+    #
     # _DEP_LEVEL_ERRORS still has a meaning: those are *definitely*
     # transient and worth distinguishing in logs. Anything else is a
     # parser-level failure that *might* be specific to that engine —
@@ -147,9 +157,11 @@ async def handle_parse_document(payload: dict) -> None:
     #
     # The chain is computed lazily on the first failure so the happy
     # path doesn't pay for a registry call.
+    cfg = get_settings()
     parse_result = used_engine = None
     last_exc: BaseException | None = None
     last_trace = ""               # captured inside except → safe to use later
+    last_was_empty = False        # distinguishes "all engines returned empty" terminal
     engine_name: str | None = selected_engine
     fallback_queue: list[str] | None = None
     while engine_name is not None:
@@ -160,18 +172,42 @@ async def handle_parse_document(payload: dict) -> None:
         if parser is not None:
             try:
                 async with observe_parse(engine_name):
-                    parse_result = await parser.parse(raw, filename=filename)
-                used_engine = engine_name
-                if engine_name != selected_engine:
-                    PARSE_FALLBACK_TOTAL.labels(
-                        from_engine=selected_engine, to_engine=engine_name,
-                    ).inc()
-                    logger.warning(
-                        "parse_document: doc=%s fell back from %s to %s "
-                        "after failure(s); last error: %r",
-                        doc_id, selected_engine, engine_name, last_exc,
-                    )
-                break
+                    candidate = await parser.parse(raw, filename=filename)
+                # "Useful" = either has enough text content, or is an
+                # opted-in image-only handler with images to download.
+                # Anything else is treated like a parser failure for
+                # fallback purposes — the next engine in the chain may
+                # do better via a different code path.
+                stripped_len = len(candidate.content.strip())
+                useful = (
+                    stripped_len >= cfg.min_content_chars
+                    or (candidate.allow_image_only and bool(candidate.image_urls))
+                )
+                if useful:
+                    parse_result = candidate
+                    used_engine = engine_name
+                    if engine_name != selected_engine:
+                        PARSE_FALLBACK_TOTAL.labels(
+                            from_engine=selected_engine, to_engine=engine_name,
+                        ).inc()
+                        logger.warning(
+                            "parse_document: doc=%s fell back from %s to %s "
+                            "after failure(s); last error: %r",
+                            doc_id, selected_engine, engine_name, last_exc,
+                        )
+                    break
+                # Empty result — not an exception, but treat as "this
+                # engine couldn't extract anything useful from this
+                # file" and try the chain. Office native parsers
+                # swallow library exceptions and return empty; without
+                # this branch they bypass the markitdown fallback.
+                last_exc, last_trace = None, ""
+                last_was_empty = True
+                logger.warning(
+                    "parse_document: %s returned empty content for doc=%s "
+                    "(%d chars); trying next engine",
+                    engine_name, doc_id, stripped_len,
+                )
             except PermanentParseError as e:
                 # Permanent — no engine in the chain can save this, and
                 # queue retry would just hit the same wall. Mark failed
@@ -192,6 +228,7 @@ async def handle_parse_document(payload: dict) -> None:
                 return
             except _DEP_LEVEL_ERRORS as e:
                 last_exc, last_trace = e, traceback.format_exc()
+                last_was_empty = False
                 logger.warning(
                     "parse_document: %s dep-level failure on doc=%s "
                     "(%s: %s); trying next engine",
@@ -199,6 +236,7 @@ async def handle_parse_document(payload: dict) -> None:
                 )
             except Exception as e:
                 last_exc, last_trace = e, traceback.format_exc()
+                last_was_empty = False
                 logger.warning(
                     "parse_document: %s parser-level failure on doc=%s "
                     "(%s: %s); trying next engine",
@@ -214,11 +252,29 @@ async def handle_parse_document(payload: dict) -> None:
         engine_name = fallback_queue.pop(0) if fallback_queue else None
 
     if parse_result is None:
-        # Whole chain failed. Mark failed with the last exception's
-        # traceback (captured inside its except block —
-        # traceback.format_exc() out here would just print "NoneType:
-        # None") and re-raise so the queue can retry; the network may
-        # recover or a transient issue may clear by then.
+        # Whole chain failed. Two terminal flavors based on what the
+        # *last* attempt did:
+        #   - last_was_empty: every engine returned empty content
+        #     (Office native libs do this on internal errors). Mark
+        #     terminal empty_content — same classification a single
+        #     engine would have produced before fallback existed —
+        #     and don't raise (queue retry won't help; same chain).
+        #   - else: last attempt raised. Mark parse_error and re-
+        #     raise so the queue retries with backoff; transient
+        #     issues might clear.
+        if last_was_empty:
+            logger.warning(
+                "parse_document: every engine returned empty content "
+                "for doc=%s — terminal empty_content", doc_id,
+            )
+            PARSE_EMPTY_TOTAL.labels(engine=selected_engine).inc()
+            DOCUMENT_OUTCOMES.labels(outcome="empty_content").inc()
+            await update_doc(
+                doc_id, status="failed",
+                error_msg="Parsing returned empty or below-threshold content",
+                error_type="empty_content",
+            )
+            return
         logger.error(
             "parse_document: all engines in chain failed for doc=%s: %r",
             doc_id, last_exc,
@@ -238,7 +294,6 @@ async def handle_parse_document(payload: dict) -> None:
     raw = None  # noqa: F841
 
     content = parse_result.content
-    cfg = get_settings()
     stripped_len = len(content.strip())
 
     download_payload = {

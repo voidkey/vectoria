@@ -626,6 +626,125 @@ async def test_fallback_chain_exhausted_marks_doc_failed_and_reraises():
 
 
 @pytest.mark.asyncio
+async def test_empty_content_from_first_engine_triggers_fallback():
+    """Regression for the prod docx-native empty-content cases:
+    Office native parsers (docx_parser / pptx_parser / xlsx_parser)
+    catch internal library exceptions and return
+    ``ParseResult(content="")`` rather than raising. Before this
+    fix the handler would treat that as terminal empty_content and
+    skip the markitdown fallback in the chain, even though
+    markitdown reads the same formats via different code paths and
+    often succeeds on the same files.
+
+    Now: empty result triggers fallback the same way an exception
+    does. The chain runs to completion; the file gets a real shot
+    at every engine before being declared empty.
+    """
+    boom = MagicMock()
+    boom.parse = AsyncMock(
+        return_value=ParseResult(content="", title="docx")
+    )
+    rescue = MagicMock()
+    rescue.parse = AsyncMock(
+        return_value=ParseResult(
+            content="# Recovered\n\n" + "x" * 200, title="t",
+        )
+    )
+
+    doc = MagicMock(); doc.status = "queued"
+    update_calls: list[dict] = []
+    parsers_used: list[str] = []
+    enqueue_calls: list[str] = []
+
+    async def _update(doc_id, **fields):
+        update_calls.append(fields)
+    async def _enqueue(task_type, payload, *_a, **_kw):
+        enqueue_calls.append(task_type)
+
+    def _get_by_engine(name):
+        parsers_used.append(name)
+        return {"docx-native": boom, "markitdown": rescue}[name]
+
+    with (
+        patch("worker.handlers.get_session") as mock_sess,
+        patch("worker.handlers.registry") as mock_reg,
+        patch("worker.handlers.get_storage") as mock_storage,
+        patch("worker.handlers.update_doc", new=_update),
+        patch("worker.queue.enqueue", new=_enqueue),
+    ):
+        mock_sess.return_value.__aenter__.return_value = _build_session(doc)
+        mock_reg.get_by_engine.side_effect = _get_by_engine
+        mock_reg.fallback_chain.return_value = ["markitdown"]
+        mock_storage.return_value = AsyncMock(get=AsyncMock(return_value=b"PK"))
+
+        from worker.handlers import handle_parse_document
+        await handle_parse_document({
+            "doc_id": "d-empty-fb", "kb_id": "k1",
+            "storage_key": "s/x", "source": "x.docx", "filename": "x.docx",
+            "selected_engine": "docx-native",
+        })
+
+    assert parsers_used == ["docx-native", "markitdown"]
+    statuses = [u.get("status") for u in update_calls if "status" in u]
+    assert "indexing" in statuses
+    assert "failed" not in statuses
+    indexing = next(u for u in update_calls if u.get("status") == "indexing")
+    assert indexing.get("parse_engine") == "markitdown"
+    assert "index_document" in enqueue_calls
+
+
+@pytest.mark.asyncio
+async def test_all_engines_empty_terminal_empty_content_no_raise():
+    """If every engine in the chain returns empty content (truly bad
+    file), the terminal classification stays ``empty_content`` —
+    same as the single-engine behavior before fallback existed.
+    Crucially we *don't* raise from the handler: queue retries on
+    the same chain would just re-produce empty content, so let the
+    task complete and stop the cycle.
+    """
+    e1 = MagicMock()
+    e1.parse = AsyncMock(return_value=ParseResult(content="", title=""))
+    e2 = MagicMock()
+    e2.parse = AsyncMock(return_value=ParseResult(content="  \n  ", title=""))
+
+    doc = MagicMock(); doc.status = "queued"
+    update_calls: list[dict] = []
+
+    async def _update(doc_id, **fields):
+        update_calls.append(fields)
+    async def _enqueue(*_a, **_kw):
+        pass
+
+    def _get_by_engine(name):
+        return {"docx-native": e1, "markitdown": e2}[name]
+
+    with (
+        patch("worker.handlers.get_session") as mock_sess,
+        patch("worker.handlers.registry") as mock_reg,
+        patch("worker.handlers.get_storage") as mock_storage,
+        patch("worker.handlers.update_doc", new=_update),
+        patch("worker.queue.enqueue", new=_enqueue),
+    ):
+        mock_sess.return_value.__aenter__.return_value = _build_session(doc)
+        mock_reg.get_by_engine.side_effect = _get_by_engine
+        mock_reg.fallback_chain.return_value = ["markitdown"]
+        mock_storage.return_value = AsyncMock(get=AsyncMock(return_value=b""))
+
+        from worker.handlers import handle_parse_document
+        # Must NOT raise — queue retry won't help.
+        await handle_parse_document({
+            "doc_id": "d-allempty", "kb_id": "k1",
+            "storage_key": "s/x", "source": "x.docx", "filename": "x.docx",
+            "selected_engine": "docx-native",
+        })
+
+    statuses = [u.get("status") for u in update_calls if "status" in u]
+    assert statuses[-1] == "failed"
+    failed = next(u for u in update_calls if u.get("status") == "failed")
+    assert failed.get("error_type") == "empty_content"
+
+
+@pytest.mark.asyncio
 async def test_permanent_parse_error_short_circuits_no_retry():
     """``PermanentParseError`` (e.g. URL on the unparseable blacklist)
     short-circuits the whole chain: doc gets marked ``failed``
