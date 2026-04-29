@@ -45,6 +45,11 @@ _BLACKLIST: tuple[tuple[str, "re.Pattern[str] | None", str], ...] = (
     ("iqiyi.com",    re.compile(r"/v_"),     "iqiyi video page (player only)"),
     ("youku.com",    re.compile(r"/v_show"), "youku video page (player only)"),
     ("ixigua.com",   re.compile(r"/\d+"),    "xigua video page (player only)"),
+    # Larksuite (overseas Lark) — same login-wall behavior as feishu.cn,
+    # but the FeishuHandler is scoped to ``*.feishu.cn`` only. Without
+    # an entry here, larksuite URLs fall through to GenericHandler and
+    # silently fail on the login redirect after a 30s playwright run.
+    ("larksuite.com", None,                  "larksuite (overseas Lark) — separate handler not implemented; please open an issue if needed"),
 )
 
 

@@ -38,6 +38,19 @@ def test_match_other_video_platforms():
     assert h.match("https://www.ixigua.com/7123456")
 
 
+def test_match_larksuite_overseas():
+    """Overseas Lark (larksuite.com) shares feishu's login-wall behavior
+    but the FeishuHandler is scoped to ``*.feishu.cn``. Without a
+    blacklist entry, larksuite URLs fall through to GenericHandler and
+    burn 30s of playwright before failing on the login redirect.
+    """
+    h = BlacklistHandler()
+    assert h.match("https://example.larksuite.com/docx/abc")
+    assert h.match("https://larksuite.com/anything")
+    # subdomain still matches
+    assert h.match("https://www.larksuite.com/wiki/xyz")
+
+
 def test_does_not_match_legitimate_urls():
     """The blacklist must be narrow — false positives would block
     legitimate sources. Bilibili's main page (not /video/), wechat

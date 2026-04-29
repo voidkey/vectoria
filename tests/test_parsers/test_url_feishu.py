@@ -333,12 +333,13 @@ async def test_parse_returns_inline_image_refs():
 
 
 @pytest.mark.asyncio
-async def test_parse_login_redirect_returns_empty_result():
+async def test_parse_login_redirect_raises_permanent_parse_error():
     """Non-public docs redirect to accounts.feishu.cn after page.goto.
-    The handler must surface this as empty ParseResult so the worker
-    marks the doc failed with empty_content rather than ingesting the
-    login page text.
+    The handler raises PermanentParseError so the worker fails the doc
+    immediately without 3× retry — login won't be added between attempts.
     """
+    from parsers.base import PermanentParseError
+
     ctx, page = _make_ctx_mock(
         page_html="<html><body>login form</body></html>",
         page_url="https://accounts.feishu.cn/accounts/page/login?app_id=2&redirect_uri=...",
@@ -346,10 +347,8 @@ async def test_parse_login_redirect_returns_empty_result():
     )
     h = FeishuHandler()
     with _patch_parse_session(ctx):
-        result = await h.parse("https://whobotai.feishu.cn/docx/PRIVATE")
-
-    assert result.content == ""
-    assert result.image_refs == []
+        with pytest.raises(PermanentParseError):
+            await h.parse("https://whobotai.feishu.cn/docx/PRIVATE")
 
 
 @pytest.mark.asyncio

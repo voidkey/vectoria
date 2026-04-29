@@ -20,7 +20,7 @@ from urllib.parse import urlparse
 
 from config import get_settings
 from infra.metrics import URL_IMAGES_TRUNCATED_TOTAL
-from parsers.base import ParseResult
+from parsers.base import ParseResult, PermanentParseError
 from parsers.image_ref import BytesFactory, ImageRef
 from parsers.url._browser import parse_session
 from parsers.url._handlers import extract_html_title, extract_with_trafilatura
@@ -203,13 +203,16 @@ class FeishuHandler:
                 return ParseResult(content="", title="")
 
             # Login wall: feishu redirects unauthorized requests to
-            # accounts.feishu.cn. Anything not on the original feishu.cn
-            # subdomain, or now on accounts.feishu.cn, means the doc is
-            # not anonymously accessible.
-            current = (page.url or "").lower()
-            if _LOGIN_HOST in current:
+            # accounts.feishu.cn. Match host exactly (substring match
+            # would false-positive on URLs that happen to contain the
+            # login host in a query param). Raise PermanentParseError so
+            # the worker short-circuits immediately — login won't be
+            # added between attempts, retrying 3× wastes worker slots
+            # and creates dead-task alert noise.
+            current_host = (urlparse(page.url or "").hostname or "").lower()
+            if current_host == _LOGIN_HOST:
                 logger.info("feishu doc requires login: %s", url)
-                return ParseResult(content="", title="")
+                raise PermanentParseError(f"feishu doc requires login: {url}")
 
             # Trigger lazy-loaded blocks (long docs paginate images on
             # scroll). Single-shot scroll-to-bottom; networkidle above
