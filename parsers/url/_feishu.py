@@ -18,6 +18,8 @@ import logging
 import re
 from urllib.parse import urlparse
 
+from parsers.base import ParseResult
+
 logger = logging.getLogger(__name__)
 
 
@@ -154,3 +156,21 @@ def sniff_image_mime(data: bytes) -> str:
 
 def _ext_for_mime(mime: str) -> str:
     return _MIME_EXT.get(mime, ".jpg")
+
+
+class FeishuHandler:
+    def match(self, url: str) -> bool:
+        return is_feishu_docx_url(url)
+
+    def download_headers(self, url: str) -> dict[str, str] | None:
+        # Inline image_refs path — there is no deferred httpx download
+        # to inject Referer/UA into. Returning None is the documented
+        # "I have no opinion" branch in the SiteHandler protocol.
+        return None
+
+    async def parse(self, url: str) -> ParseResult:
+        return await self._parse_with_playwright(url)
+
+    async def _parse_with_playwright(self, url: str) -> ParseResult:
+        # Implemented in Task 7.
+        return ParseResult(content="", title="")

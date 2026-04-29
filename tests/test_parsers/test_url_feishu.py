@@ -212,3 +212,33 @@ def test_sniff_image_mime_gif():
 
 def test_sniff_image_mime_unknown_falls_back_to_jpeg():
     assert sniff_image_mime(b"\x00\x00\x00\x00") == "image/jpeg"
+
+
+from parsers.url._feishu import FeishuHandler
+
+
+def test_handler_match_docx():
+    h = FeishuHandler()
+    assert h.match("https://x.feishu.cn/docx/abc")
+
+
+def test_handler_match_wiki():
+    h = FeishuHandler()
+    assert h.match("https://x.feishu.cn/wiki/abc")
+
+
+def test_handler_match_other_path_false():
+    h = FeishuHandler()
+    assert not h.match("https://x.feishu.cn/sheets/abc")
+
+
+def test_handler_match_other_host_false():
+    h = FeishuHandler()
+    assert not h.match("https://example.com/docx/abc")
+
+
+def test_handler_download_headers_returns_none():
+    """Bare httpx fetches will 401 anyway; we don't promise headers
+    that would make them work, so the protocol's None branch fires."""
+    h = FeishuHandler()
+    assert h.download_headers("https://x.feishu.cn/docx/abc") is None
