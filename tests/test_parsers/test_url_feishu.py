@@ -189,3 +189,26 @@ async def test_download_images_in_context_skips_empty_body():
         ctx, ["https://x/A"], doc_url="https://whobotai.feishu.cn/docx/Z",
     )
     assert out == {}
+
+
+from parsers.url._feishu import sniff_image_mime
+
+
+def test_sniff_image_mime_png():
+    assert sniff_image_mime(b"\x89PNG\r\n\x1a\nrest") == "image/png"
+
+
+def test_sniff_image_mime_jpeg():
+    assert sniff_image_mime(b"\xff\xd8\xff\xe0\x00\x10JFIF") == "image/jpeg"
+
+
+def test_sniff_image_mime_webp():
+    assert sniff_image_mime(b"RIFF\x00\x00\x00\x00WEBPVP8 ") == "image/webp"
+
+
+def test_sniff_image_mime_gif():
+    assert sniff_image_mime(b"GIF89a\x00\x00") == "image/gif"
+
+
+def test_sniff_image_mime_unknown_falls_back_to_jpeg():
+    assert sniff_image_mime(b"\x00\x00\x00\x00") == "image/jpeg"

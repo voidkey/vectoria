@@ -126,3 +126,31 @@ async def download_images_in_context(
         if data:
             out[url] = data
     return out
+
+
+_MIME_EXT = {
+    "image/png": ".png",
+    "image/jpeg": ".jpg",
+    "image/webp": ".webp",
+    "image/gif": ".gif",
+}
+
+
+def sniff_image_mime(data: bytes) -> str:
+    """Return content-type by magic bytes. Default ``image/jpeg`` —
+    feishu covers are JPEG by default and giving an extension keeps
+    ``ImageRef.name`` looking sane even on malformed bytes.
+    """
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if data.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    if data.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif"
+    return "image/jpeg"
+
+
+def _ext_for_mime(mime: str) -> str:
+    return _MIME_EXT.get(mime, ".jpg")
