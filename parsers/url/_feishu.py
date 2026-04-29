@@ -84,6 +84,6 @@ def replace_image_urls_with_names(
     dedupes), so no risk of cross-replacement.
     """
     out = markdown
-    for url, name in zip(urls, names):
+    for url, name in zip(urls, names, strict=True):
         out = out.replace(url, name)
     return out
