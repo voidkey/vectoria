@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from parsers.url._feishu import extract_feishu_image_urls, is_feishu_docx_url
+from parsers.url._feishu import replace_image_urls_with_names
 
 
 def test_is_feishu_docx_url_docx_path():
@@ -81,3 +82,45 @@ def test_extract_feishu_image_urls_skips_unrelated_hosts():
     """
     urls = extract_feishu_image_urls(html)
     assert urls == ["https://internal-api-drive-stream.feishu.cn/x/REAL/?"]
+
+
+def test_replace_image_urls_with_names_two_images():
+    md = (
+        "Header\n\n"
+        "![](https://internal-api-drive-stream.feishu.cn/x/A/?p=1)\n\n"
+        "Middle\n\n"
+        "![](https://internal-api-drive-stream.feishu.cn/x/B/?p=2)\n"
+    )
+    urls = [
+        "https://internal-api-drive-stream.feishu.cn/x/A/?p=1",
+        "https://internal-api-drive-stream.feishu.cn/x/B/?p=2",
+    ]
+    names = ["image_0001.jpg", "image_0002.jpg"]
+    out = replace_image_urls_with_names(md, urls, names)
+    assert "![](image_0001.jpg)" in out
+    assert "![](image_0002.jpg)" in out
+    assert "internal-api-drive-stream" not in out
+
+
+def test_replace_image_urls_with_names_preserves_alt_text():
+    md = "![描述](https://internal-api-drive-stream.feishu.cn/x/A/?p=1)"
+    out = replace_image_urls_with_names(
+        md,
+        ["https://internal-api-drive-stream.feishu.cn/x/A/?p=1"],
+        ["image_0001.jpg"],
+    )
+    assert out == "![描述](image_0001.jpg)"
+
+
+def test_replace_image_urls_with_names_url_not_in_md_no_op():
+    """If a URL was extracted from raw HTML but trafilatura dropped it
+    from the markdown (rare — happens for figure captions), skip the
+    replacement quietly. Don't emit a stray placeholder.
+    """
+    md = "Body without that image"
+    out = replace_image_urls_with_names(
+        md,
+        ["https://internal-api-drive-stream.feishu.cn/x/A/?"],
+        ["image_0001.jpg"],
+    )
+    assert out == "Body without that image"

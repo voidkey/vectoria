@@ -68,3 +68,22 @@ def extract_feishu_image_urls(html: str) -> list[str]:
         seen.add(src)
         out.append(src)
     return out
+
+
+def replace_image_urls_with_names(
+    markdown: str, urls: list[str], names: list[str],
+) -> str:
+    """Rewrite ``![alt](<url>)`` → ``![alt](<name>)`` for each (url, name) pair.
+
+    URL-to-name mapping is positional: ``urls[i]`` maps to ``names[i]``.
+    URLs that don't appear in ``markdown`` (trafilatura sometimes drops
+    figure-caption images) are silently skipped — no stray placeholder.
+
+    String replacement is done one URL at a time with ``str.replace`` to
+    keep alt text intact. URLs are unique within a doc (extractor
+    dedupes), so no risk of cross-replacement.
+    """
+    out = markdown
+    for url, name in zip(urls, names):
+        out = out.replace(url, name)
+    return out
