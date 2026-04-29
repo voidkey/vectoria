@@ -5,6 +5,7 @@ import pytest
 
 from parsers.url._feishu import extract_feishu_image_urls, is_feishu_docx_url
 from parsers.url._feishu import replace_image_urls_with_names
+from parsers.url._feishu import download_images_in_context
 
 
 def test_is_feishu_docx_url_docx_path():
@@ -124,3 +125,52 @@ def test_replace_image_urls_with_names_url_not_in_md_no_op():
         ["image_0001.jpg"],
     )
     assert out == "Body without that image"
+
+
+@pytest.mark.asyncio
+async def test_download_images_in_context_returns_bytes_per_url():
+    """One request per URL, results keyed by URL, Referer set to doc URL."""
+    resp_a = MagicMock(); resp_a.ok = True; resp_a.status = 200
+    resp_a.body = AsyncMock(return_value=b"AAA")
+    resp_b = MagicMock(); resp_b.ok = True; resp_b.status = 200
+    resp_b.body = AsyncMock(return_value=b"BBB")
+
+    request = MagicMock()
+    request.get = AsyncMock(side_effect=[resp_a, resp_b])
+    ctx = MagicMock(); ctx.request = request
+
+    out = await download_images_in_context(
+        ctx,
+        ["https://x/A", "https://x/B"],
+        doc_url="https://whobotai.feishu.cn/docx/Z",
+    )
+
+    assert out == {"https://x/A": b"AAA", "https://x/B": b"BBB"}
+    # Both calls receive a Referer pointing back to the doc
+    for call in request.get.await_args_list:
+        assert call.kwargs["headers"]["Referer"] == "https://whobotai.feishu.cn/docx/Z"
+
+
+@pytest.mark.asyncio
+async def test_download_images_in_context_skips_non_200():
+    resp = MagicMock(); resp.ok = False; resp.status = 401
+    resp.body = AsyncMock(return_value=b"err")
+
+    request = MagicMock(); request.get = AsyncMock(return_value=resp)
+    ctx = MagicMock(); ctx.request = request
+
+    out = await download_images_in_context(
+        ctx, ["https://x/A"], doc_url="https://whobotai.feishu.cn/docx/Z",
+    )
+    assert out == {}
+
+
+@pytest.mark.asyncio
+async def test_download_images_in_context_swallows_exceptions():
+    request = MagicMock(); request.get = AsyncMock(side_effect=RuntimeError("net"))
+    ctx = MagicMock(); ctx.request = request
+
+    out = await download_images_in_context(
+        ctx, ["https://x/A"], doc_url="https://whobotai.feishu.cn/docx/Z",
+    )
+    assert out == {}

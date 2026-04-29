@@ -14,8 +14,11 @@ would 401).
 """
 from __future__ import annotations
 
+import logging
 import re
 from urllib.parse import urlparse
+
+logger = logging.getLogger(__name__)
 
 
 _FEISHU_HOST_SUFFIX = ".feishu.cn"
@@ -86,4 +89,36 @@ def replace_image_urls_with_names(
     out = markdown
     for url, name in zip(urls, names, strict=True):
         out = out.replace(url, name)
+    return out
+
+
+async def download_images_in_context(
+    context, urls: list[str], *, doc_url: str,
+) -> dict[str, bytes]:
+    """Download image bytes through the browser's APIRequestContext so
+    the anonymous session cookie set on the docx page applies. Sequential —
+    飞书 image CDN tolerates light bursts but parallelism gives no win
+    on the 1-50 images per doc range and risks anti-abuse signals.
+
+    Non-200 / exception → URL silently dropped from the result dict
+    (image-loss is acceptable; the doc still ingests with text).
+    """
+    headers = {"Referer": doc_url}
+    out: dict[str, bytes] = {}
+    for url in urls:
+        try:
+            resp = await context.request.get(url, headers=headers)
+        except Exception:
+            logger.debug("feishu image fetch raised: %s", url, exc_info=True)
+            continue
+        if not resp.ok:
+            logger.info("feishu image %s returned %s", url, resp.status)
+            continue
+        try:
+            data = await resp.body()
+        except Exception:
+            logger.debug("feishu image body() raised: %s", url, exc_info=True)
+            continue
+        if data:
+            out[url] = data
     return out
