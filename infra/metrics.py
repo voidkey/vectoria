@@ -207,7 +207,7 @@ UPLOAD_REJECTED_TOTAL = Counter(
     "rejections only. The filename / detected family / size land in "
     "the paired ``upload_rejected`` log line; only bounded labels go "
     "on the metric to keep cardinality safe.",
-    # reason ∈ {mime_mismatch, too_large, too_many_pages}
+    # reason ∈ {mime_mismatch, too_large, too_many_pages, too_many_slides}
     # claimed_ext bucketed against EXT_FAMILIES; anything else → "other"
     labelnames=("reason", "claimed_ext"),
 )

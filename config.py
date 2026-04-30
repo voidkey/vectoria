@@ -75,6 +75,12 @@ class Settings(BaseSettings):
     # a dedicated long-doc pipeline.
     max_pdf_pages: int = 200
 
+    # Hard cap on PPTX slide count. Same shape of attack as PDF —
+    # text-only slides compress small but each slide still pays the
+    # full per-slide parse + image-extraction + vision cost. Counting
+    # is a zip directory listing, no XML parse, microseconds.
+    max_pptx_slides: int = 200
+
     # Per-parse wall-clock timeout (seconds). Parsers run in a subprocess
     # pool; after this timeout the worker is terminated so a stuck convert()
     # can't block the API thread indefinitely.

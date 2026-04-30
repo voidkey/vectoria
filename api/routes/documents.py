@@ -292,12 +292,14 @@ async def ingest_file(
             filename, detected,
         )
 
-    # PDF page-count gate. The byte cap above does not catch
-    # "small file, many pages" — a 19 MB scanned PDF can hide 1000+
-    # pages that mineru cannot OCR within its 120 s timeout, wasting
-    # 3 × retries of GPU time before falling back. Rejecting here costs
-    # only the xref-table read pypdfium2 already does to count pages,
-    # and saves the S3 write + worker slot + mineru call downstream.
+    # Page-count gate. The byte cap above does not catch the
+    # "small file, many pages" shape — a 19 MB scanned PDF can hide
+    # 1000+ pages mineru cannot OCR within its 120 s timeout, and a
+    # text-only PPTX with 1000 slides multiplies parse + vision cost
+    # across each slide while staying tiny on disk. Counting is cheap
+    # for both formats (xref-table read for PDF, zip dir listing for
+    # PPTX) so we pay ~ms to save the S3 write, worker slot, and
+    # downstream parser call we'd otherwise burn.
     _, ext = os.path.splitext(filename.lower())
     if ext == ".pdf":
         from api.pdf_inspect import count_pdf_pages
@@ -310,6 +312,19 @@ async def ingest_file(
             raise AppError(
                 413, ErrorCode.PDF_TOO_MANY_PAGES,
                 f"PDF has {pages} pages; max allowed is {cfg.max_pdf_pages}",
+            )
+    elif ext == ".pptx":
+        from api.pptx_inspect import count_pptx_slides
+        slides = count_pptx_slides(raw)
+        if slides is not None and slides > cfg.max_pptx_slides:
+            _record_upload_reject(
+                kb_id=kb_id, filename=filename, size=len(raw),
+                reason="too_many_slides", slides=slides,
+                limit=cfg.max_pptx_slides,
+            )
+            raise AppError(
+                413, ErrorCode.PPTX_TOO_MANY_SLIDES,
+                f"PPTX has {slides} slides; max allowed is {cfg.max_pptx_slides}",
             )
 
     # Per-KB file-hash dedup. Idempotency for accidental retries and
