@@ -19,6 +19,7 @@ class ErrorCode:
     PARSE_TIMEOUT = 1205
     INGEST_BUSY = 1206
     MIME_MISMATCH = 1207
+    PDF_TOO_MANY_PAGES = 1208
 
     # Resource not found (1301-1399)
     NOT_FOUND = 1301

@@ -65,6 +65,16 @@ class Settings(BaseSettings):
     # the file is buffered in memory.
     max_upload_bytes: int = 50 * 1024 * 1024
 
+    # Hard cap on PDF page count. The byte cap above doesn't catch
+    # "small file, many pages" — a 19 MB scanned PDF can hide 1000+
+    # pages that mineru can't OCR within its 120 s per-call timeout,
+    # burning 3 retries × 120 s of GPU time before fallback. Rejecting
+    # at upload (after pypdfium2 reads the xref, ~ms) costs nothing.
+    # 200 covers the long tail of business documents (reports, slide
+    # exports, manuals); larger inputs should be split or routed via
+    # a dedicated long-doc pipeline.
+    max_pdf_pages: int = 200
+
     # Per-parse wall-clock timeout (seconds). Parsers run in a subprocess
     # pool; after this timeout the worker is terminated so a stuck convert()
     # can't block the API thread indefinitely.

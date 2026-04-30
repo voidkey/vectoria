@@ -292,6 +292,26 @@ async def ingest_file(
             filename, detected,
         )
 
+    # PDF page-count gate. The byte cap above does not catch
+    # "small file, many pages" — a 19 MB scanned PDF can hide 1000+
+    # pages that mineru cannot OCR within its 120 s timeout, wasting
+    # 3 × retries of GPU time before falling back. Rejecting here costs
+    # only the xref-table read pypdfium2 already does to count pages,
+    # and saves the S3 write + worker slot + mineru call downstream.
+    _, ext = os.path.splitext(filename.lower())
+    if ext == ".pdf":
+        from api.pdf_inspect import count_pdf_pages
+        pages = count_pdf_pages(raw)
+        if pages is not None and pages > cfg.max_pdf_pages:
+            _record_upload_reject(
+                kb_id=kb_id, filename=filename, size=len(raw),
+                reason="too_many_pages", pages=pages, limit=cfg.max_pdf_pages,
+            )
+            raise AppError(
+                413, ErrorCode.PDF_TOO_MANY_PAGES,
+                f"PDF has {pages} pages; max allowed is {cfg.max_pdf_pages}",
+            )
+
     # Per-KB file-hash dedup. Idempotency for accidental retries and
     # double-uploads that previously re-ran parse + embed and OOM'd the host.
     #
