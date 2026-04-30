@@ -49,10 +49,13 @@ def test_mineru_build_image_refs_produces_picklable_refs():
     raw = b"tiny-png-placeholder-bytes"
     b64 = base64.b64encode(raw).decode()
 
-    refs = MinerUParser()._build_image_refs({
-        "plain.png": b64,
-        "datauri.png": f"data:image/png;base64,{b64}",
-    })
+    refs = MinerUParser()._build_image_refs(
+        {
+            "plain.png": b64,
+            "datauri.png": f"data:image/png;base64,{b64}",
+        },
+        page_map={},
+    )
     _assert_refs_pickle(refs)
     # Sanity: both paths decode back to the original bytes.
     for ref in refs:

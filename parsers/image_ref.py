@@ -92,6 +92,10 @@ class ImageRef:
 
     height: int | None = None
 
+    page: int | None = None
+    """1-based page number for paginated sources (PDF). ``None`` for
+    formats without a meaningful page concept (docx, html, images)."""
+
     # ---- Filled by parsers.image_metadata.extract_metadata_into_refs -------
     alt: str = ""
     context: str = ""

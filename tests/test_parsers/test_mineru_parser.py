@@ -6,8 +6,11 @@ from parsers.mineru_parser import MinerUParser
 from parsers.base import ParseResult
 
 
-def _make_response(md_content: str, images: dict) -> dict:
-    return {"results": {"document": {"md_content": md_content, "images": images}}}
+def _make_response(md_content: str, images: dict, content_list: list | None = None) -> dict:
+    doc: dict = {"md_content": md_content, "images": images}
+    if content_list is not None:
+        doc["content_list"] = content_list
+    return {"results": {"document": doc}}
 
 
 @pytest.mark.asyncio
@@ -113,6 +116,72 @@ def test_is_available_true_when_url_set():
     with patch("parsers.mineru_parser.get_settings") as mock_settings:
         mock_settings.return_value.mineru_api_url = "http://gpu:8000"
         assert MinerUParser.is_available() is True
+
+
+@pytest.mark.asyncio
+async def test_parse_fills_page_from_content_list():
+    """``ImageRef.page`` should reflect MinerU's per-image ``page_idx``
+    from ``content_list``, converted to 1-based. Image dict keys may be
+    bare basenames while content_list uses ``images/<name>``; basename
+    match must paper over that.
+    """
+    png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 4
+    b64 = "data:image/png;base64," + base64.b64encode(png).decode()
+    fake_resp = _make_response(
+        "![a](images/a.png)\n![b](images/b.png)\n![c](images/c.png)",
+        {"a.png": b64, "b.png": b64, "c.png": b64},
+        content_list=[
+            {"type": "text", "text": "ignored", "page_idx": 0},
+            {"type": "image", "img_path": "images/a.png", "page_idx": 0},
+            {"type": "image", "img_path": "images/b.png", "page_idx": 4},
+            # c.png missing from content_list — page should stay None.
+        ],
+    )
+
+    with patch("parsers.mineru_parser.httpx.AsyncClient") as MockClient, \
+         patch("parsers.mineru_parser.get_settings") as mock_settings:
+        mock_settings.return_value.mineru_api_url = "http://gpu:8000"
+        mock_settings.return_value.mineru_backend = "pipeline"
+        mock_settings.return_value.mineru_language = "ch"
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = fake_resp
+        MockClient.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_resp)
+
+        parser = MinerUParser(api_url="http://gpu:8000")
+        result = await parser.parse(b"%PDF fake", filename="test.pdf")
+
+    by_name = {r.name: r for r in result.image_refs}
+    assert by_name["a.png"].page == 1
+    assert by_name["b.png"].page == 5
+    assert by_name["c.png"].page is None
+
+
+@pytest.mark.asyncio
+async def test_parse_no_content_list_leaves_page_none():
+    """Older MinerU response or non-paginated source: page must stay
+    ``None`` rather than crash on the missing field.
+    """
+    png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 4
+    b64 = "data:image/png;base64," + base64.b64encode(png).decode()
+    fake_resp = _make_response("![x](x.png)", {"x.png": b64})  # no content_list
+
+    with patch("parsers.mineru_parser.httpx.AsyncClient") as MockClient, \
+         patch("parsers.mineru_parser.get_settings") as mock_settings:
+        mock_settings.return_value.mineru_api_url = "http://gpu:8000"
+        mock_settings.return_value.mineru_backend = "pipeline"
+        mock_settings.return_value.mineru_language = "ch"
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = fake_resp
+        MockClient.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_resp)
+
+        parser = MinerUParser(api_url="http://gpu:8000")
+        result = await parser.parse(b"%PDF fake", filename="test.pdf")
+
+    assert result.image_refs[0].page is None
 
 
 @pytest.mark.asyncio

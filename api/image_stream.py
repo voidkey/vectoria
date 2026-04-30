@@ -198,6 +198,7 @@ async def stream_upload_and_store_refs(
                 description="",
                 vision_status=_vision_status_for(ref, vision_configured),
                 image_index=image_index,
+                page=ref.page,
                 phash=phash,
             )
 

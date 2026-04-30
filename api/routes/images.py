@@ -55,6 +55,7 @@ async def get_document_images(kb_id: str, doc_id: str):
             alt=img.alt,
             context=img.context,
             section_title=img.section_title,
+            page=img.page,
         )
 
     images = await asyncio.gather(*(_presign(img) for img in db_images))

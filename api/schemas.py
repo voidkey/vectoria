@@ -75,6 +75,7 @@ class DocumentImageResponse(BaseModel):
     alt: str = ""
     context: str = ""
     section_title: str = ""
+    page: int | None = None
 
 
 class DocumentImagesListResponse(BaseModel):

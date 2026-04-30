@@ -94,6 +94,10 @@ class DocumentImage(Base):
         String(20), default="pending", server_default="pending", nullable=False
     )
     image_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    # 1-based page number for paginated source docs (PDF). Nullable
+    # because non-paginated formats (docx, html) and pre-existing rows
+    # have no meaningful page.
+    page: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # Perceptual hash (phash) of the image bytes. 16-hex-char string =
     # 64-bit hash. Populated at upload time when possible; nullable so
     # rows that predate W3-f (or where PIL couldn't decode the bytes)
