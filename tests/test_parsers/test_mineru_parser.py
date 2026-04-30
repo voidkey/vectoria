@@ -1,5 +1,6 @@
 import pytest
 import base64
+import json
 import httpx
 from unittest.mock import patch, AsyncMock, MagicMock
 from parsers.mineru_parser import MinerUParser
@@ -156,6 +157,45 @@ async def test_parse_fills_page_from_content_list():
     assert by_name["a.png"].page == 1
     assert by_name["b.png"].page == 5
     assert by_name["c.png"].page is None
+
+
+@pytest.mark.asyncio
+async def test_parse_fills_page_when_content_list_is_json_string():
+    """Real MinerU returns ``content_list`` as a JSON-encoded string,
+    not an already-parsed list. Iterating the raw string walks
+    characters and silently yields page=None for every image — exactly
+    the bug observed on vtest. Parser must json.loads first.
+    """
+    png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 4
+    b64 = "data:image/png;base64," + base64.b64encode(png).decode()
+    cl_json = json.dumps([
+        {"type": "text", "text": "header", "page_idx": 0},
+        {"type": "image", "img_path": "images/a.png", "page_idx": 2},
+        {"type": "table", "img_path": "images/t.png", "page_idx": 6},
+    ])
+    fake_resp = _make_response(
+        "![a](images/a.png)\n![t](images/t.png)",
+        {"a.png": b64, "t.png": b64},
+        content_list=cl_json,  # JSON string, mirroring real MinerU shape
+    )
+
+    with patch("parsers.mineru_parser.httpx.AsyncClient") as MockClient, \
+         patch("parsers.mineru_parser.get_settings") as mock_settings:
+        mock_settings.return_value.mineru_api_url = "http://gpu:8000"
+        mock_settings.return_value.mineru_backend = "pipeline"
+        mock_settings.return_value.mineru_language = "ch"
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = fake_resp
+        MockClient.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_resp)
+
+        parser = MinerUParser(api_url="http://gpu:8000")
+        result = await parser.parse(b"%PDF fake", filename="test.pdf")
+
+    by_name = {r.name: r for r in result.image_refs}
+    assert by_name["a.png"].page == 3
+    assert by_name["t.png"].page == 7  # 'table' type is still mapped
 
 
 @pytest.mark.asyncio

@@ -1,3 +1,4 @@
+import json
 import logging
 import re
 from pathlib import Path, PurePosixPath
@@ -98,9 +99,8 @@ class MinerUParser(BaseParser):
         doc = results.get("document") or results.get("files") or next(iter(results.values()), {})
         md_content: str = doc.get("md_content", "")
         images_b64: dict[str, str] = doc.get("images", {})
-        content_list: list[dict] = doc.get("content_list") or []
 
-        page_map = _page_map_from_content_list(content_list)
+        page_map = _page_map_from_content_list(doc.get("content_list"))
         image_refs = self._build_image_refs(images_b64, page_map)
         title = Path(filename).stem
         return ParseResult(content=md_content, title=title, image_refs=image_refs)
@@ -142,8 +142,13 @@ class MinerUParser(BaseParser):
         return refs
 
 
-def _page_map_from_content_list(content_list: list[dict]) -> dict[str, int]:
+def _page_map_from_content_list(content_list) -> dict[str, int]:
     """Build basename→1-based-page from MinerU's ``content_list``.
+
+    MinerU returns ``content_list`` as a **JSON-encoded string** (not a
+    parsed list) — iterating it directly walks characters and silently
+    yields an empty map. Decode if needed; tolerate a real list too in
+    case a future backend version inlines it.
 
     Entries with ``img_path`` look like
     ``{"img_path": "images/fig1.png", "page_idx": 0, ...}``; ``page_idx``
@@ -151,6 +156,13 @@ def _page_map_from_content_list(content_list: list[dict]) -> dict[str, int]:
     missing either field are skipped — schema-variant tolerance, not a
     silent error.
     """
+    if isinstance(content_list, str):
+        try:
+            content_list = json.loads(content_list)
+        except (ValueError, TypeError):
+            return {}
+    if not isinstance(content_list, list):
+        return {}
     out: dict[str, int] = {}
     for item in content_list:
         if not isinstance(item, dict):
