@@ -12,10 +12,10 @@ from parsers.image_metadata import extract_metadata_into_refs
 from parsers.image_ref import ImageRef
 
 
-def _ref(name: str, width=None, height=None, payload: bytes = b"x") -> ImageRef:
+def _ref(name: str, width=None, height=None, page=None, payload: bytes = b"x") -> ImageRef:
     return ImageRef(
         name=name, mime="image/png",
-        width=width, height=height,
+        width=width, height=height, page=page,
         _factory=lambda d=payload: d,
     )
 
@@ -88,6 +88,109 @@ def test_unmatched_refs_appended_at_end_with_empty_alt():
     assert len(out) == 1
     assert out[0].alt == ""
     assert out[0].markdown_pos == len("# Just text")
+
+
+def test_paged_orphan_lands_before_later_page_anchor():
+    """MinerU often extracts a chart/table from an early page but
+    doesn't write a markdown reference for it. With ``page`` known,
+    the extractor must place the orphan ahead of the first
+    later-page matched ref — not at doc_len, where it would inherit
+    the document's last heading and tail context. Symptom of the
+    bug: an orphan with page=3 ends up tagged with page-21's
+    section title, making the page field look wrong next to its
+    surrounding metadata.
+    """
+    markdown = (
+        "# Theme\n\n"
+        "Front matter on page 3.\n\n"
+        "# 波段原点\n\n"
+        "![p5](images/p5.png)\n\n"
+        "# 货架陈列重点\n\n"
+        "Tail content.\n"
+    )
+    refs = [
+        _ref("p5.png", width=300, height=300, page=5),
+        _ref("orphan_p3.png", width=300, height=300, page=3),
+    ]
+
+    out = extract_metadata_into_refs(markdown, refs)
+
+    by_name = {r.name: r for r in out}
+    # Orphan must come BEFORE the page-5 ref in the output array,
+    # matching its physical-page order.
+    assert [r.name for r in out] == ["orphan_p3.png", "p5.png"]
+    # Orphans have no real markdown anchor — context and section_title
+    # must stay empty so we don't surface next-page text as if it
+    # belonged to this image.
+    assert by_name["orphan_p3.png"].context == ""
+    assert by_name["orphan_p3.png"].section_title == ""
+    # Matched refs are unaffected.
+    assert by_name["p5.png"].section_title == "波段原点"
+
+
+def test_paged_orphan_after_all_matches_lands_at_end():
+    """Orphan whose page is greater than every matched ref's page
+    has no later anchor to slot before — falls through to doc_len,
+    which is correct (it really IS document tail).
+    """
+    markdown = "# Top\n\n![p2](images/p2.png)\n\n# Tail"
+    refs = [
+        _ref("p2.png", width=300, height=300, page=2),
+        _ref("orphan_p9.png", width=300, height=300, page=9),
+    ]
+
+    out = extract_metadata_into_refs(markdown, refs)
+
+    assert [r.name for r in out] == ["p2.png", "orphan_p9.png"]
+    assert out[1].markdown_pos == len(markdown)
+
+
+def test_orphan_without_page_still_tails():
+    """Backwards compat: refs from non-paginated sources (docx, html)
+    have page=None. They keep the legacy doc_len placement so existing
+    behaviour is unchanged.
+    """
+    markdown = "# Top\n\n![a](a.png)\n\n# Bottom"
+    refs = [
+        _ref("a.png", width=300, height=300),
+        _ref("orphan.png", width=300, height=300),  # page=None
+    ]
+
+    out = extract_metadata_into_refs(markdown, refs)
+
+    assert [r.name for r in out] == ["a.png", "orphan.png"]
+    assert out[1].markdown_pos == len(markdown)
+
+
+def test_multiple_paged_orphans_sort_by_page():
+    """Several orphans with different pages must each land at their
+    own page-anchored slot — they shouldn't all collapse to the same
+    position just because they're all unmatched.
+    """
+    markdown = (
+        "![p5](images/p5.png)\n\n"
+        "![p10](images/p10.png)\n\n"
+        "![p20](images/p20.png)\n"
+    )
+    refs = [
+        _ref("p5.png", width=300, height=300, page=5),
+        _ref("p10.png", width=300, height=300, page=10),
+        _ref("p20.png", width=300, height=300, page=20),
+        _ref("orphan_p3.png", width=300, height=300, page=3),
+        _ref("orphan_p15.png", width=300, height=300, page=15),
+    ]
+
+    out = extract_metadata_into_refs(markdown, refs)
+
+    # Output order follows page order: p3 orphan first, then p5,
+    # p10, p15 orphan, p20.
+    assert [r.name for r in out] == [
+        "orphan_p3.png",
+        "p5.png",
+        "p10.png",
+        "orphan_p15.png",
+        "p20.png",
+    ]
 
 
 def test_returns_same_ref_objects_in_order():

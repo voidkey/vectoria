@@ -116,9 +116,43 @@ def extract_metadata_into_refs(
                 break
 
     doc_len = len(markdown)
+
+    # Anchors for placing "orphan" refs — images the parser extracted
+    # from the source but that mineru never wrote into the exported
+    # markdown (typical for charts on cover/summary pages it filtered
+    # from the layout). Without anchors these all land at doc_len, so
+    # they tail the output array and inherit the document's last
+    # heading as section_title — a page-3 chart ends up tagged with
+    # the page-21 section, which makes the `page` field look wrong
+    # next to its (misleading) section_title and context.
+    page_anchors = sorted(
+        (ref.page, start)
+        for ref, start, _, _ in positioned
+        if ref.page is not None
+    )
+
+    orphan_names: set[str] = set()
     for name, ref in by_name.items():
-        if name not in matched:
-            positioned.append((ref, doc_len, doc_len, ""))
+        if name in matched:
+            continue
+        orphan_names.add(name)
+        pos = doc_len
+        if ref.page is not None and page_anchors:
+            # Park the orphan at the first anchor on a later page — it
+            # ranks just ahead of that anchor in the sort below, so
+            # backwards heading-search picks up a heading near its own
+            # page rather than the document tail.
+            for anchor_page, anchor_pos in page_anchors:
+                if anchor_page > ref.page:
+                    pos = anchor_pos
+                    break
+        positioned.append((ref, pos, pos, ""))
+
+    # Sort orphans into document/page order. Tie-break orphan-first so
+    # an orphan anchored to the same position as a matched ref slots in
+    # ahead of it (its page is *strictly less* than the anchor's, so it
+    # belongs earlier even though they share a markdown position).
+    positioned.sort(key=lambda x: (x[1], 0 if x[0].name in orphan_names else 1))
 
     out: list[ImageRef] = []
     for ref, start, end, alt in positioned:
@@ -142,8 +176,16 @@ def extract_metadata_into_refs(
             continue
 
         ref.alt = alt
-        ref.context = _extract_context(markdown, start, end)
-        ref.section_title = _find_section_title(markdown, start)
+        if ref.name in orphan_names:
+            # Orphan refs have no real markdown anchor — context and
+            # the backwards heading-search would just sample the
+            # next-page content (the orphan was parked there only to
+            # land at the right *index*). Misleading, so leave empty.
+            ref.context = ""
+            ref.section_title = ""
+        else:
+            ref.context = _extract_context(markdown, start, end)
+            ref.section_title = _find_section_title(markdown, start)
         ref.markdown_pos = start
         out.append(ref)
 
