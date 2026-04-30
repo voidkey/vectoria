@@ -9,8 +9,9 @@ from sqlalchemy import select, func
 from sqlalchemy.orm import selectinload
 
 from api.schemas import (
-    DocumentResponse, DocumentIngestResponse, DocumentURLRequest,
-    DocumentSourceURLResponse, DocumentListResponse, OutlineItem,
+    DocumentResponse, DocumentIngestResponse, DocumentDetailResponse,
+    DocumentURLRequest, DocumentSourceURLResponse, DocumentListResponse,
+    OutlineItem,
 )
 from api.errors import AppError, ErrorCode
 from api.url_validation import validate_url
@@ -52,7 +53,7 @@ def _dedup_response(doc: Document) -> DocumentIngestResponse:
         status=doc.status, error_msg=doc.error_msg or "",
         created_at=doc.created_at.isoformat(),
         content="",
-        outline=[], image_count=0,
+        outline=[],
     )
 
 
@@ -92,24 +93,19 @@ def _queued_response(doc: Document) -> DocumentIngestResponse:
         chunk_count=doc.chunk_count, status=doc.status,
         error_msg=doc.error_msg or "",
         created_at=doc.created_at.isoformat(),
-        content="", outline=[], image_count=0,
+        content="", outline=[],
         image_status=doc.image_status,
     )
 
 
 async def _fresh_ingest_response(doc_id: str) -> DocumentIngestResponse:
-    """Re-read the Document (including images) after ``?wait=true`` so
-    the response reflects whatever state parse reached. Used only on the
-    slow path — the fast path uses ``_queued_response`` on the in-memory
-    row we just inserted.
+    """Re-read the Document after ``?wait=true`` so the response
+    reflects whatever state parse reached. Used only on the slow path —
+    the fast path uses ``_queued_response`` on the in-memory row we
+    just inserted.
     """
     async with get_session() as session:
-        result = await session.execute(
-            select(Document)
-            .options(selectinload(Document.images))
-            .where(Document.id == doc_id)
-        )
-        doc = result.scalar_one_or_none()
+        doc = await session.get(Document, doc_id)
     if doc is None:
         # Racy delete between enqueue and wait completion — rare but
         # valid; surface as 404 rather than pretending success.
@@ -123,7 +119,6 @@ async def _fresh_ingest_response(doc_id: str) -> DocumentIngestResponse:
         created_at=doc.created_at.isoformat(),
         content=doc.content or "",
         outline=[OutlineItem(**item) for item in outline],
-        image_count=len(doc.images),
         image_status=doc.image_status,
     )
 
@@ -428,7 +423,7 @@ async def list_documents(kb_id: str, offset: int = Query(0, ge=0), limit: int = 
         )
 
 
-@router.get("/{kb_id}/documents/{doc_id}", response_model=DocumentIngestResponse)
+@router.get("/{kb_id}/documents/{doc_id}", response_model=DocumentDetailResponse)
 async def get_document(kb_id: str, doc_id: str):
     async with get_session() as session:
         result = await session.execute(
@@ -440,15 +435,14 @@ async def get_document(kb_id: str, doc_id: str):
         if not doc:
             raise AppError(404, ErrorCode.NOT_FOUND, "Document not found")
         outline = extract_outline(doc.content) if doc.content else []
-        image_count = len(doc.images)
-        return DocumentIngestResponse(
+        return DocumentDetailResponse(
             id=doc.id, kb_id=doc.kb_id, title=doc.title, source=doc.source,
             chunk_count=doc.chunk_count,
             status=doc.status, error_msg=doc.error_msg,
             created_at=doc.created_at.isoformat(),
             content=doc.content,
             outline=[OutlineItem(**item) for item in outline],
-            image_count=image_count,
+            image_count=len(doc.images),
             image_status=doc.image_status,
         )
 

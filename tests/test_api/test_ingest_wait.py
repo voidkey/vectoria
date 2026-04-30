@@ -29,6 +29,9 @@ def _configure_session(session: AsyncMock, *, add_captures: list):
     session.execute = AsyncMock(side_effect=_execute)
     session.add = MagicMock(side_effect=lambda d: add_captures.append(d))
     session.commit = AsyncMock()
+    session.get = AsyncMock(
+        side_effect=lambda _cls, _doc_id: add_captures[0] if add_captures else None,
+    )
 
     def _refresh(obj):
         obj.created_at = datetime(2026, 4, 20)
@@ -144,9 +147,6 @@ async def test_wait_true_times_out_returns_current_state(client, monkeypatch):
         mock_reg.auto_select.return_value = "markitdown"
         session = AsyncMock()
         _configure_session(session, add_captures=captures)
-        session.get = AsyncMock(
-            side_effect=lambda cls, doc_id: captures[0] if captures else None,
-        )
         mock_sess.return_value.__aenter__.return_value = session
 
         resp = await client.post(

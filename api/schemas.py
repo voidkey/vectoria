@@ -55,11 +55,24 @@ class DocumentResponse(BaseModel):
 
 
 class DocumentIngestResponse(DocumentResponse):
-    """Extended response for document upload -- includes parsed content."""
+    """Sync response for document upload (file/url).
+
+    No ``image_count`` here: parsing is async, so any value we could put
+    in this body would either be 0 (queued/parsing — almost always) or
+    only correct under ``?wait=true``. Callers that need the count fetch
+    ``GET /documents/{id}`` (returns ``DocumentDetailResponse``) or
+    ``GET /documents/{id}/images``.
+    """
     content: str = ""
     outline: list[OutlineItem] = []
-    image_count: int = 0
     image_status: str = "none"
+
+
+class DocumentDetailResponse(DocumentIngestResponse):
+    """Response for GET /documents/{id}. Adds ``image_count`` since by
+    the time a caller GETs a doc, parse has had a chance to populate it.
+    """
+    image_count: int = 0
 
 
 class DocumentImageResponse(BaseModel):
