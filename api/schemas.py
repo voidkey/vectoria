@@ -100,6 +100,7 @@ class DocumentSourceURLResponse(BaseModel):
     doc_id: str
     source_type: str  # "file" or "url"
     url: str
+    object_key: str | None = None  # raw storage key for "file" type, None for "url" type
 
 
 class PaginatedResponse(BaseModel):

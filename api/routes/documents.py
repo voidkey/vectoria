@@ -495,7 +495,9 @@ async def get_document_source_url(kb_id: str, doc_id: str):
     if doc.storage_key:
         obj_storage = await get_storage()
         url = await obj_storage.presign_url(doc.storage_key)
-        return DocumentSourceURLResponse(doc_id=doc.id, source_type="file", url=url)
+        return DocumentSourceURLResponse(
+            doc_id=doc.id, source_type="file", url=url, object_key=doc.storage_key
+        )
     else:
         return DocumentSourceURLResponse(doc_id=doc.id, source_type="url", url=doc.source)
 
