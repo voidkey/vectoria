@@ -155,14 +155,85 @@ def extract_image_urls(html: str, base_url: str) -> list[str]:
     return urls
 
 
+# XPath selectors for likely article-body containers, in priority order.
+# Modern semantic markup first (``<article>`` / Schema.org ``articleBody``),
+# then the WordPress / generic CMS class names that show up across most
+# themes. ``contains(concat(' ', normalize-space(@class), ' '), ' X ')``
+# is the standard XPath idiom for "class list contains exactly X" — plain
+# ``contains(@class, "X")`` would also match ``X-foo`` and ``no-X``.
+_ARTICLE_CONTAINER_XPATHS = (
+    "//article",
+    "//*[@itemprop='articleBody']",
+    "//div[contains(concat(' ', normalize-space(@class), ' '), ' entry-content ')]",
+    "//div[contains(concat(' ', normalize-space(@class), ' '), ' post-content ')]",
+    "//div[contains(concat(' ', normalize-space(@class), ' '), ' article-content ')]",
+    "//div[contains(concat(' ', normalize-space(@class), ' '), ' content-inner ')]",
+    "//main",
+)
+
+
+def _largest_article_subtree(html: str) -> str | None:
+    """Return the HTML of the candidate article container with the most
+    text, or ``None`` if no plausible container was found.
+
+    Heavy WordPress / CMS templates (jnews, Astra, etc.) wrap a small
+    article body inside megabytes of sidebar widgets, ad slots, share
+    bars, related-post grids and recommendation rails. trafilatura's
+    whole-page scoring can flag the page as low-content and return
+    nothing even when ``.entry-content`` plainly holds 15k+ characters.
+    Trimming to that subtree before re-running trafilatura recovers it.
+    """
+    from lxml import html as lh
+
+    try:
+        tree = lh.fromstring(html)
+    except Exception:
+        return None
+
+    best_text_len = 0
+    best_node = None
+    for xp in _ARTICLE_CONTAINER_XPATHS:
+        for node in tree.xpath(xp):
+            text_len = len((node.text_content() or "").strip())
+            if text_len > best_text_len:
+                best_text_len = text_len
+                best_node = node
+
+    # 300 chars is the same threshold ``needs_browser_fallback`` uses
+    # for "this isn't a real article" — anything below that isn't worth
+    # a second extraction pass and would just produce noise.
+    if best_node is None or best_text_len < 300:
+        return None
+    return lh.tostring(best_node, encoding="unicode")
+
+
 def extract_with_trafilatura(html: str) -> str:
-    """Extract main text content from HTML as markdown via trafilatura."""
+    """Extract main text content from HTML as markdown via trafilatura.
+
+    Three-step recovery:
+      1. Run trafilatura on the full HTML — fast path for clean templates.
+      2. On empty result, locate the largest plausible article container
+         and retry on that subtree (defeats heavy-chrome WordPress themes
+         where whole-page scoring sinks below trafilatura's threshold).
+      3. Last-resort trafilatura ``baseline`` — coarser but fires when
+         the above two miss.
+    """
     text = trafilatura.extract(
         html,
         include_images=True,
         include_links=False,
         output_format="markdown",
     ) or ""
+
+    if not text.strip():
+        subtree = _largest_article_subtree(html)
+        if subtree is not None:
+            text = trafilatura.extract(
+                subtree,
+                include_images=True,
+                include_links=False,
+                output_format="markdown",
+            ) or ""
 
     if not text.strip():
         from trafilatura.utils import load_html

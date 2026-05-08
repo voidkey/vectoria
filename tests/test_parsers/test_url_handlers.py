@@ -80,6 +80,50 @@ def test_extract_with_trafilatura_returns_markdown():
     assert "Hello" in text or text == ""
 
 
+def test_extract_with_trafilatura_recovers_via_article_subtree():
+    """WordPress / heavy-CMS regression: trafilatura's whole-page scoring
+    rejects this kind of page (massive theme chrome — sidebar + ads +
+    related posts + share bar dwarfing the actual body), so we retry on
+    the largest plausible article container before giving up.
+
+    Without the subtree-retry path, ``extract_with_trafilatura`` would
+    return empty here and downstream callers would mark the doc as
+    ``empty_content``. The synthetic fixture below mirrors the live
+    failure shape we hit on wallstreetlogic.com.
+    """
+    body_para = (
+        "One of the most disorienting things happening in financial "
+        "markets right now is the behavior of gold. By every conventional "
+        "piece of investment logic, a full-scale military conflict in the "
+        "Middle East should send gold prices soaring. Yet gold has fallen, "
+        "leaving investors and analysts confused about the disconnect "
+        "between geopolitical risk and the gold price. "
+    )
+    article_body = "<p>" + body_para * 8 + "</p>"
+    chrome_block = "".join(
+        f'<div class="ad-slot-{i}"><a href="/promo/{i}">Sponsored {i}</a></div>'
+        for i in range(40)
+    )
+    sidebar = "".join(
+        f'<aside class="related-post"><h3>Related: Headline {i}</h3>'
+        f'<a href="/p/{i}">Read more</a></aside>'
+        for i in range(60)
+    )
+    html = (
+        "<html lang='en-US'><head><title>Gold</title></head><body>"
+        f'<header class="site-header"><nav>Home About Contact</nav></header>'
+        f'<div class="page-wrapper">{chrome_block}'
+        f'<div class="entry-content">{article_body}</div>'
+        f'{sidebar}</div>'
+        '<footer>Subscribe Privacy Terms</footer>'
+        "</body></html>"
+    )
+    # First trafilatura pass should fail on the whole-page noise; the
+    # subtree retry must find ``.entry-content`` and extract from there.
+    text = extract_with_trafilatura(html)
+    assert "disorienting things happening in financial markets" in text
+
+
 async def test_download_images_with_headers():
     """Happy path: respects provided Referer header and returns bytes."""
     from unittest.mock import AsyncMock, MagicMock, patch
