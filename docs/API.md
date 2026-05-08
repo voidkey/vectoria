@@ -97,6 +97,7 @@
 |------|------|------|--------|
 | POST | `/knowledgebases/{kb_id}/documents/file` | 上传文件入库（multipart/form-data） | 201 |
 | POST | `/knowledgebases/{kb_id}/documents/url` | URL 入库 | 201 |
+| POST | `/knowledgebases/{kb_id}/documents/text` | 文本入库（JSON body） | 201 |
 | GET | `/knowledgebases/{kb_id}/documents` | 列出知识库下所有文档 | 200 |
 | GET | `/knowledgebases/{kb_id}/documents/{doc_id}` | 查询单个文档状态 | 200 |
 | DELETE | `/knowledgebases/{kb_id}/documents/{doc_id}` | 删除文档及其向量数据 | 204 |
@@ -108,6 +109,15 @@
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
 | `url` | string | 是 | 文档 URL |
+
+#### 请求 - DocumentTextRequest（文本入库）
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `text` | string | 是 | 要入库的全部文本（UTF-8）。受 `max_upload_bytes` 字节上限约束 |
+| `title` | string | 否 | 文档标题；不传则取文本首行（截断 80 字符），首行为空则用 `text-{8位hash}` |
+
+服务内部会把文本以 `.txt` 文件形式写入对象存储并按普通文档流程解析。`GET /knowledgebases/{kb_id}/documents/{doc_id}` 返回的 `content` 字段即为用户原始输入的全部文本。
 
 #### 响应 - DocumentIngestResponse（入库时返回）
 
@@ -142,13 +152,6 @@
 
 ---
 
-### 5. 文档原始来源
-
-| 方法 | 路径 | 说明 | 状态码 |
-|------|------|------|--------|
-| GET | `/knowledgebases/{kb_id}/documents/{doc_id}/source_url` | 获取文档的原始文件地址或 URL | 200 |
-
-> 对于**上传的文件**，返回 S3 预签名下载链接；对于 **URL 导入的文档**，返回原始 URL。
 
 #### 响应 - DocumentSourceURLResponse
 

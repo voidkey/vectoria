@@ -10,6 +10,11 @@ class DocumentURLRequest(BaseModel):
     url: str
 
 
+class DocumentTextRequest(BaseModel):
+    text: str = Field(..., min_length=1)
+    title: str | None = None
+
+
 class OutlineItem(BaseModel):
     level: int
     title: str

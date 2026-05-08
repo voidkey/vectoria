@@ -10,8 +10,8 @@ from sqlalchemy.orm import selectinload
 
 from api.schemas import (
     DocumentResponse, DocumentIngestResponse, DocumentDetailResponse,
-    DocumentURLRequest, DocumentSourceURLResponse, DocumentListResponse,
-    OutlineItem,
+    DocumentURLRequest, DocumentTextRequest, DocumentSourceURLResponse,
+    DocumentListResponse, OutlineItem,
 )
 from api.errors import AppError, ErrorCode
 from api.url_validation import validate_url
@@ -436,6 +436,85 @@ async def ingest_url(
         source=body.url, storage_key=None,
         filename="", selected_engine=selected_engine,
         file_hash=None, file_hash_sha256=url_sha256, wait=wait,
+    )
+
+
+def _title_from_text(text: str) -> str:
+    """First non-empty line, trimmed and capped at 80 chars.
+
+    Mirrors the behaviour the user picked during design: text-input docs
+    get a human-readable title from the body when the caller didn't
+    supply one. The 80-char cap keeps it usable as a filename + UI label
+    without surprising line-break injection from the body.
+    """
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped:
+            return stripped[:80]
+    return ""
+
+
+@router.post("/{kb_id}/documents/text", response_model=DocumentIngestResponse, status_code=201)
+async def ingest_text(
+    kb_id: str,
+    body: DocumentTextRequest,
+    wait: bool = Query(False),
+):
+    await _validate_kb(kb_id)
+
+    cfg = get_settings()
+
+    # Encode once: we need the bytes for both the size gate and the
+    # sha256 dedup key, and for the storage put. Doing it three times
+    # would double-allocate a multi-MB string for nothing.
+    raw = body.text.encode("utf-8")
+    if len(raw) > cfg.max_upload_bytes:
+        # No filename yet — invent one for the metric so claimed_ext
+        # buckets cleanly into ".txt" rather than "other".
+        _record_upload_reject(
+            kb_id=kb_id, filename="text-input.txt", size=len(raw),
+            reason="too_large", limit=cfg.max_upload_bytes,
+        )
+        raise AppError(
+            413, ErrorCode.UPLOAD_TOO_LARGE,
+            f"Text exceeds {cfg.max_upload_bytes} bytes",
+        )
+
+    # Per-KB sha256 dedup, same semantics as /file. Same text submitted
+    # twice into one KB collapses to one doc — no MD5 lookup since text
+    # ingestion is W6+ and never wrote legacy MD5 rows.
+    file_hash_sha256 = hashlib.sha256(raw).hexdigest()
+    existing = await _find_existing_by_hash(kb_id, sha256=file_hash_sha256)
+    if existing is not None:
+        logger.info(
+            "Text dedup hit: kb=%s sha256=%s existing_doc=%s",
+            kb_id, file_hash_sha256, existing.id,
+        )
+        return _dedup_response(existing)
+
+    title = (body.title or "").strip() or _title_from_text(body.text)
+    if not title:
+        title = f"text-{file_hash_sha256[:8]}"
+    # The .txt suffix is purely an internal storage detail (drives parser
+    # selection via the markitdown registry entry). The user-facing
+    # title and source intentionally don't include it — users care about
+    # "My Note", not "My Note.txt".
+    storage_filename = title if title.endswith(".txt") else f"{title}.txt"
+
+    doc_id = str(uuid.uuid4())
+    obj_storage = await get_storage()
+    storage_key = f"upload_files/{kb_id}/{doc_id}/{storage_filename}"
+    await obj_storage.put(storage_key, raw, content_type="text/plain; charset=utf-8")
+
+    raw = None  # noqa: F841
+
+    selected_engine = registry.auto_select(filename=storage_filename)
+    return await _enqueue_ingest(
+        kb_id,
+        source=title, storage_key=storage_key,
+        filename=title, selected_engine=selected_engine,
+        file_hash=None, file_hash_sha256=file_hash_sha256,
+        doc_id=doc_id, wait=wait,
     )
 
 
