@@ -1,7 +1,7 @@
 import pytest
 from unittest.mock import patch, MagicMock, AsyncMock
 from contextlib import contextmanager
-from parsers.url._generic import GenericHandler
+from parsers.url._generic import GenericHandler, _strip_tracking_params
 from parsers.base import ParseResult
 
 
@@ -29,6 +29,36 @@ def _patch_async_httpx(*, html: str | None = None, url: str = "",
     with patch("parsers.url._generic.httpx.AsyncClient",
                return_value=mock_client):
         yield
+
+
+def test_strip_tracking_drops_google_ads_and_utm():
+    """The exact failure URL we hit on overseas — Google Ads tracking
+    plus inline ``gad_*`` siblings. After strip the article URL must be
+    canonical (no query string) so playwright doesn't get bounced
+    through a tracker redirect that races our poll loop.
+    """
+    raw = (
+        "https://wallstreetlogic.com/article?"
+        "gad_source=1&gad_campaignid=23820234144&gbraid=0AAAAA&"
+        "gclid=Cj0KCQjw&utm_source=newsletter&utm_medium=email"
+    )
+    assert _strip_tracking_params(raw) == "https://wallstreetlogic.com/article"
+
+
+def test_strip_tracking_preserves_load_bearing_query():
+    """Article-identifying query params (``id``, ``page``, ``slug``)
+    must survive — we only drop known tracking keys.
+    """
+    raw = "https://news.example/article?id=42&page=2&utm_source=x&fbclid=abc"
+    assert _strip_tracking_params(raw) == "https://news.example/article?id=42&page=2"
+
+
+def test_strip_tracking_no_query_is_noop():
+    """Identity for URLs without a query string — exercises the early
+    return so we don't waste a parse_qsl + urlunparse roundtrip.
+    """
+    raw = "https://news.example/article"
+    assert _strip_tracking_params(raw) is raw
 
 
 def test_handler_match_always_true():

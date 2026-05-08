@@ -1,7 +1,7 @@
 """Generic URL handler — httpx fetch with playwright fallback."""
 from __future__ import annotations
 
-from urllib.parse import urlparse
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 import httpx
 
@@ -14,6 +14,50 @@ from parsers.url._handlers import (
 )
 
 _BROWSER_ONLY_DOMAINS = {"threads.net", "instagram.com"}
+
+# Query-string keys we strip before fetching. Two reasons:
+#   1. Many of these (Google Ads ``gclid``, ``gad_*``) trigger client-side
+#      tracker scripts that ``history.replaceState`` after the document
+#      loads, which races with our playwright poll loop and used to
+#      surface as "Execution context was destroyed" before we taught the
+#      loop to recover from it. Stripping cuts the race off at the source
+#      so we don't depend on recovery for the common case.
+#   2. They're never load-bearing for the article content itself.
+#
+# Exact key matches (not prefix) for tight scoping. Prefix groups
+# (``gad_*``, ``utm_*``, ``mc_*``) are listed separately below — these
+# camps have many siblings (``gad_source``, ``gad_campaignid``,
+# ``utm_source``, ``utm_medium``, ``utm_id``, ``mc_cid``, ``mc_eid``)
+# and listing each one risks missing a future addition.
+_TRACKING_PARAM_KEYS = frozenset({
+    "gclid", "gclsrc", "gbraid", "wbraid",     # Google Ads
+    "fbclid",                                   # Facebook / Meta
+    "yclid",                                    # Yandex
+    "msclkid",                                  # Microsoft Ads
+    "dclid",                                    # DoubleClick / GA4
+    "ref", "ref_src", "ref_url",                # generic referral hints
+})
+_TRACKING_PARAM_PREFIXES = ("gad_", "utm_", "mc_")
+
+
+def _strip_tracking_params(url: str) -> str:
+    """Drop known ad / analytics tracking params from ``url``'s query.
+
+    Site-specific handlers (mp.weixin, feishu, etc.) bypass GenericHandler,
+    so their URL-encoded payload params are not at risk here.
+    """
+    parsed = urlparse(url)
+    if not parsed.query:
+        return url
+    kept = [
+        (k, v) for k, v in parse_qsl(parsed.query, keep_blank_values=True)
+        if k not in _TRACKING_PARAM_KEYS
+        and not any(k.startswith(p) for p in _TRACKING_PARAM_PREFIXES)
+    ]
+    new_query = urlencode(kept)
+    if new_query == parsed.query:
+        return url
+    return urlunparse(parsed._replace(query=new_query))
 
 
 def _browser_only(url: str) -> bool:
@@ -29,6 +73,7 @@ class GenericHandler:
         return None
 
     async def parse(self, url: str) -> ParseResult:
+        url = _strip_tracking_params(url)
         if _browser_only(url):
             return await self._parse_with_playwright(url)
 
