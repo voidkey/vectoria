@@ -5,13 +5,40 @@ from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 import httpx
 
-from parsers.base import ParseResult
+from parsers.base import ParseResult, PermanentParseError
 from parsers.url._handlers import (
     extract_html_title,
     extract_image_urls,
     extract_with_trafilatura,
     needs_browser_fallback,
 )
+
+
+def _chromium_cert_error_code(exc: BaseException) -> str | None:
+    """Return the ``ERR_CERT_*`` token from a playwright Error message,
+    or ``None`` if the exception isn't a Chromium TLS-cert failure.
+
+    Chromium surfaces all cert problems as ``net::ERR_CERT_<reason>``
+    in the Page.goto error string (DATE_INVALID, AUTHORITY_INVALID,
+    COMMON_NAME_INVALID, REVOKED, INVALID, …). Cert validity is not a
+    transient state — site owners must renew/reconfigure — so we treat
+    these as permanent and skip the queue's retry-and-alert path
+    instead of burning three worker slots per dead URL.
+
+    Deliberately does NOT match ``net::ERR_SSL_*`` or other TLS errors
+    (protocol negotiation, handshake) — those can be transient
+    (server reload, intermediate proxy hiccup) and are worth retrying.
+    """
+    msg = str(exc)
+    marker = "net::ERR_CERT_"
+    idx = msg.find(marker)
+    if idx == -1:
+        return None
+    tail = msg[idx + len("net::") :]
+    end = 0
+    while end < len(tail) and (tail[end].isalnum() or tail[end] == "_"):
+        end += 1
+    return tail[:end] or None
 
 _BROWSER_ONLY_DOMAINS = {"threads.net", "instagram.com"}
 
@@ -140,7 +167,16 @@ class GenericHandler:
                 init_script=anti_webdriver,
             ) as ctx:
                 page = await ctx.new_page()
-                await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                try:
+                    await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                except PlaywrightError as exc:
+                    cert_code = _chromium_cert_error_code(exc)
+                    if cert_code is not None:
+                        raise PermanentParseError(
+                            f"TLS certificate invalid ({cert_code}) at {url}; "
+                            "site cert is expired or misconfigured — not retryable"
+                        ) from exc
+                    raise
 
                 # Poll until Cloudflare/JS challenge clears. ``page.title()``
                 # / ``page.content()`` race with in-flight client-side

@@ -173,6 +173,100 @@ async def test_playwright_recovers_from_navigation_race():
 
 
 @pytest.mark.asyncio
+async def test_playwright_cert_error_raises_permanent():
+    """Chromium ``net::ERR_CERT_*`` from page.goto must escalate to
+    PermanentParseError so the worker handler short-circuits — no
+    fallback chain (URL has only one engine), no queue retries, no
+    dead-task alert. Cert validity is not a transient property.
+
+    Real-world trigger: an .edu.cn site whose Sectigo cert expired
+    weeks ago kept burning 3 retries × 30 s of playwright startup
+    every time someone re-uploaded the URL.
+    """
+    from contextlib import asynccontextmanager
+    from playwright.async_api import Error as PlaywrightError
+    from parsers.base import PermanentParseError
+
+    page = MagicMock()
+    page.goto = AsyncMock(side_effect=PlaywrightError(
+        "Page.goto: net::ERR_CERT_DATE_INVALID at https://expired.example/\n"
+        "Call log:\n  - navigating to \"https://expired.example/\", "
+        "waiting until \"domcontentloaded\"\n"
+    ))
+
+    ctx = MagicMock()
+    ctx.new_page = AsyncMock(return_value=page)
+
+    @asynccontextmanager
+    async def fake_session(**_kwargs):
+        yield ctx
+
+    with _patch_async_httpx(side_effect=Exception("connection failed")), \
+         patch("parsers.url._browser.parse_session", fake_session):
+        h = GenericHandler()
+        with pytest.raises(PermanentParseError, match="ERR_CERT_DATE_INVALID"):
+            await h.parse("https://expired.example/")
+
+
+@pytest.mark.asyncio
+async def test_playwright_non_cert_error_still_propagates():
+    """Sanity check the cert detection isn't over-eager: a regular
+    timeout (non-cert) must NOT be repackaged as PermanentParseError —
+    those *should* go through the queue's retry path because they're
+    often transient (network blip, slow site).
+    """
+    from contextlib import asynccontextmanager
+    from playwright.async_api import Error as PlaywrightError
+    from parsers.base import PermanentParseError
+
+    page = MagicMock()
+    page.goto = AsyncMock(side_effect=PlaywrightError(
+        "Page.goto: Timeout 30000ms exceeded."
+    ))
+    ctx = MagicMock()
+    ctx.new_page = AsyncMock(return_value=page)
+
+    @asynccontextmanager
+    async def fake_session(**_kwargs):
+        yield ctx
+
+    with _patch_async_httpx(side_effect=Exception("connection failed")), \
+         patch("parsers.url._browser.parse_session", fake_session):
+        h = GenericHandler()
+        with pytest.raises(PlaywrightError):
+            await h.parse("https://slow.example/")
+        # Crucially NOT PermanentParseError — the worker queue should
+        # be allowed to retry timeouts.
+        assert not isinstance(PlaywrightError, type) or True  # docs only
+
+
+def test_chromium_cert_error_code_extraction():
+    """Helper recognises every ERR_CERT_* variant chromium surfaces and
+    rejects unrelated TLS errors (ERR_SSL_* are protocol-layer, possibly
+    transient, so we deliberately don't match them).
+    """
+    from parsers.url._generic import _chromium_cert_error_code
+
+    cases = {
+        "Page.goto: net::ERR_CERT_DATE_INVALID at https://x/": "ERR_CERT_DATE_INVALID",
+        "Page.goto: net::ERR_CERT_AUTHORITY_INVALID at https://x/": "ERR_CERT_AUTHORITY_INVALID",
+        "Page.goto: net::ERR_CERT_COMMON_NAME_INVALID at x": "ERR_CERT_COMMON_NAME_INVALID",
+        "wrapped: net::ERR_CERT_REVOKED\nCall log:": "ERR_CERT_REVOKED",
+    }
+    for msg, expected in cases.items():
+        assert _chromium_cert_error_code(Exception(msg)) == expected, msg
+
+    # Negative cases: not a cert error.
+    for msg in (
+        "Page.goto: Timeout 30000ms exceeded.",
+        "Page.goto: net::ERR_SSL_PROTOCOL_ERROR at https://x/",  # SSL ≠ CERT
+        "Page.goto: net::ERR_CONNECTION_REFUSED at https://x/",
+        "Execution context was destroyed",
+    ):
+        assert _chromium_cert_error_code(Exception(msg)) is None, msg
+
+
+@pytest.mark.asyncio
 async def test_generic_allow_image_only_stays_false():
     """Generic handler is HTML-scraped — stay strict."""
     html = "<html><head><title>Test</title></head><body><p>Content</p></body></html>"
