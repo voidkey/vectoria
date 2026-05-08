@@ -86,6 +86,63 @@ async def test_handler_returns_empty_on_total_failure():
 
 
 @pytest.mark.asyncio
+async def test_playwright_recovers_from_navigation_race():
+    """Real-world failure: when a page does a client-side navigation
+    (ad-tracker redirect, SPA route change) right after
+    ``goto(domcontentloaded)`` returns, the first ``page.title()``
+    inside the poll loop races with that navigation and playwright
+    raises ``Execution context was destroyed``. The handler must
+    swallow that error and keep polling, not let it bubble out and
+    burn all three worker retries.
+    """
+    from contextlib import asynccontextmanager
+    from playwright.async_api import Error as PlaywrightError
+
+    page = MagicMock()
+    page.goto = AsyncMock()
+    page.wait_for_timeout = AsyncMock()
+    page.wait_for_load_state = AsyncMock()
+    page.url = "https://example.com/article"
+    # First two title() calls die mid-navigation; third succeeds.
+    page.title = AsyncMock(side_effect=[
+        PlaywrightError(
+            "Page.title: Execution context was destroyed, "
+            "most likely because of a navigation"
+        ),
+        PlaywrightError(
+            "Page.title: Execution context was destroyed, "
+            "most likely because of a navigation"
+        ),
+        "Article Title",
+    ])
+    page.content = AsyncMock(return_value="<html><body>real content</body></html>")
+
+    ctx = MagicMock()
+    ctx.new_page = AsyncMock(return_value=page)
+
+    @asynccontextmanager
+    async def fake_session(**_kwargs):
+        yield ctx
+
+    # httpx fails outright so ``needs_browser_fallback`` triggers the
+    # playwright path; trafilatura then extracts the article body from
+    # the post-recovery ``page.content()``.
+    long_content = "Real article body. " * 25
+
+    with _patch_async_httpx(side_effect=Exception("connection failed")), \
+         patch("parsers.url._handlers.trafilatura.extract", return_value=long_content), \
+         patch("parsers.url._browser.parse_session", fake_session):
+        h = GenericHandler()
+        result = await h.parse("https://example.com/article")
+
+    # Loop should have retried past the two navigation errors and finally
+    # captured title + content on the third tick.
+    assert page.title.await_count == 3
+    assert result.title == "Article Title"
+    assert "Real article body" in result.content
+
+
+@pytest.mark.asyncio
 async def test_generic_allow_image_only_stays_false():
     """Generic handler is HTML-scraped — stay strict."""
     html = "<html><head><title>Test</title></head><body><p>Content</p></body></html>"

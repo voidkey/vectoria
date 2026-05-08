@@ -74,6 +74,7 @@ class GenericHandler:
         """
         try:
             from parsers.url._browser import parse_session
+            from playwright.async_api import Error as PlaywrightError
         except ImportError:
             return ParseResult(content="", title="")
 
@@ -96,13 +97,31 @@ class GenericHandler:
                 page = await ctx.new_page()
                 await page.goto(url, wait_until="domcontentloaded", timeout=30000)
 
-                # Poll until Cloudflare/JS challenge clears
+                # Poll until Cloudflare/JS challenge clears. ``page.title()``
+                # / ``page.content()`` race with in-flight client-side
+                # navigation (ad-tracker redirects on `?gclid=` URLs, SPA
+                # route changes) — the JS execution context gets torn down
+                # mid-call and playwright surfaces "Execution context was
+                # destroyed". Swallow that one error so the loop retries
+                # on the next tick instead of bubbling out and burning all
+                # three worker retries.
                 html = ""
                 title = ""
                 for _ in range(20):
                     await page.wait_for_timeout(1000)
-                    title = await page.title()
-                    html = await page.content()
+                    try:
+                        title = await page.title()
+                        html = await page.content()
+                    except PlaywrightError as exc:
+                        if "Execution context was destroyed" not in str(exc):
+                            raise
+                        try:
+                            await page.wait_for_load_state(
+                                "domcontentloaded", timeout=5000,
+                            )
+                        except PlaywrightError:
+                            pass
+                        continue
                     lower_head = html[:5000].lower()
                     stub = (
                         "Just a moment" in title
