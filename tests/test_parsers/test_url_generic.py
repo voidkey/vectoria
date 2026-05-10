@@ -7,7 +7,9 @@ from parsers.base import ParseResult
 
 @contextmanager
 def _patch_async_httpx(*, html: str | None = None, url: str = "",
-                      side_effect: Exception | None = None):
+                      side_effect: Exception | None = None,
+                      content_type: str = "text/html",
+                      content: bytes | None = None):
     """Patch ``httpx.AsyncClient`` returned by ``_generic.py``'s
     ``async with httpx.AsyncClient(...) as client`` block.
 
@@ -23,7 +25,9 @@ def _patch_async_httpx(*, html: str | None = None, url: str = "",
     else:
         mock_resp = MagicMock()
         mock_resp.text = html or ""
+        mock_resp.content = content if content is not None else (html or "").encode()
         mock_resp.url = url
+        mock_resp.headers = {"content-type": content_type}
         mock_resp.raise_for_status = MagicMock()
         mock_client.get = AsyncMock(return_value=mock_resp)
     with patch("parsers.url._generic.httpx.AsyncClient",
@@ -264,6 +268,113 @@ def test_chromium_cert_error_code_extraction():
         "Execution context was destroyed",
     ):
         assert _chromium_cert_error_code(Exception(msg)) is None, msg
+
+
+@pytest.mark.asyncio
+async def test_handler_routes_pdf_content_type_to_pdf_parser():
+    """When the URL serves ``application/pdf``, hand the bytes off to
+    the registered PDF parser chain instead of (a) running trafilatura
+    on binary garbage and getting empty content, or (b) falling back
+    to Playwright — which Chromium refuses with
+    ``Page.goto: Download is starting`` the moment it sees the PDF
+    response, burning all 3 worker retries on every PDF URL.
+
+    Real-world trigger: aixj-image CDN serves write-up PDFs at
+    ``.../*.pdf`` with ``Content-Type: application/pdf``. Without this
+    short-circuit the URL parser's chain is single-engine (Playwright)
+    and there is no fallback to mineru/pdfium.
+    """
+    pdf_bytes = b"%PDF-1.4\nfake\n%%EOF"
+    parsed = ParseResult(content="Extracted PDF body. " * 30, title="PDF Title")
+
+    pdf_parser = MagicMock()
+    pdf_parser.parse = AsyncMock(return_value=parsed)
+    fake_registry = MagicMock()
+    fake_registry.fallback_chain = MagicMock(return_value=["mineru"])
+    fake_registry.get_by_engine = MagicMock(return_value=pdf_parser)
+
+    with _patch_async_httpx(
+            url="https://cdn.example/file.pdf",
+            content_type="application/pdf",
+            content=pdf_bytes,
+         ), \
+         patch("parsers.registry.registry", fake_registry), \
+         patch.object(GenericHandler, "_parse_with_playwright",
+                      new_callable=AsyncMock,
+                      side_effect=AssertionError(
+                          "Playwright must not be invoked on application/pdf"
+                      )):
+        h = GenericHandler()
+        result = await h.parse("https://cdn.example/file.pdf")
+
+    assert result.content == parsed.content
+    assert result.title == "PDF Title"
+    pdf_parser.parse.assert_awaited_once()
+    # Bytes from the response body — not the URL string — must reach the parser.
+    args, kwargs = pdf_parser.parse.await_args
+    assert args[0] == pdf_bytes
+
+
+@pytest.mark.asyncio
+async def test_handler_pdf_chain_falls_through_engines():
+    """First engine (mineru) raises → next engine (pdfium) gets the
+    bytes. Mirrors the worker-handler chain semantics so a transient
+    mineru outage doesn't dead-letter PDF URLs.
+    """
+    pdf_bytes = b"%PDF-1.4\n"
+    good = ParseResult(content="pdfium body. " * 50, title="from pdfium")
+
+    bad_parser = MagicMock()
+    bad_parser.parse = AsyncMock(side_effect=RuntimeError("mineru down"))
+    good_parser = MagicMock()
+    good_parser.parse = AsyncMock(return_value=good)
+
+    fake_registry = MagicMock()
+    fake_registry.fallback_chain = MagicMock(return_value=["mineru", "pdfium"])
+    fake_registry.get_by_engine = MagicMock(side_effect=lambda name: {
+        "mineru": bad_parser, "pdfium": good_parser,
+    }[name])
+
+    with _patch_async_httpx(
+            url="https://cdn.example/x.pdf",
+            content_type="application/pdf",
+            content=pdf_bytes,
+         ), \
+         patch("parsers.registry.registry", fake_registry):
+        h = GenericHandler()
+        result = await h.parse("https://cdn.example/x.pdf")
+
+    assert result.content == good.content
+    bad_parser.parse.assert_awaited_once()
+    good_parser.parse.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_handler_routes_pdf_with_charset_in_content_type():
+    """Some CDNs append ``; charset=...`` even on binary types. The
+    Content-Type comparison must split on ``;`` so the PDF short-circuit
+    still fires.
+    """
+    pdf_bytes = b"%PDF-1.4\n"
+    parsed = ParseResult(content="ok " * 200, title="t")
+
+    pdf_parser = MagicMock()
+    pdf_parser.parse = AsyncMock(return_value=parsed)
+    fake_registry = MagicMock()
+    fake_registry.fallback_chain = MagicMock(return_value=["pdfium"])
+    fake_registry.get_by_engine = MagicMock(return_value=pdf_parser)
+
+    with _patch_async_httpx(
+            url="https://cdn.example/y.pdf",
+            content_type="application/pdf; charset=binary",
+            content=pdf_bytes,
+         ), \
+         patch("parsers.registry.registry", fake_registry):
+        h = GenericHandler()
+        result = await h.parse("https://cdn.example/y.pdf")
+
+    assert result.content == parsed.content
+    pdf_parser.parse.assert_awaited_once()
 
 
 @pytest.mark.asyncio

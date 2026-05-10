@@ -1,6 +1,8 @@
 """Generic URL handler — httpx fetch with playwright fallback."""
 from __future__ import annotations
 
+import logging
+from dataclasses import dataclass
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 import httpx
@@ -12,6 +14,60 @@ from parsers.url._handlers import (
     extract_with_trafilatura,
     needs_browser_fallback,
 )
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class _PdfHandled:
+    """Sentinel: ``_parse_httpx`` already dispatched an ``application/pdf``
+    response to the PDF parser chain — caller must accept ``result`` as
+    final and skip the Playwright fallback path.
+    """
+    result: ParseResult
+
+
+async def _parse_pdf_bytes(data: bytes, *, url: str) -> ParseResult:
+    """Run the registered PDF parser chain on already-downloaded bytes.
+
+    Mirrors the worker handler's per-engine fallback semantics for the
+    ``.pdf`` extension, but operating on bytes already in hand instead
+    of going back to the queue. Returns the first useful result; on
+    empty / total failure, returns an empty ``ParseResult`` (the worker
+    handler will then mark the doc ``empty_content`` rather than dead-
+    lettering — much quieter than the previous "Page.goto: Download is
+    starting" loop).
+    """
+    # Lazy import: registry imports url package at module init, so a
+    # top-level import here would form a cycle.
+    from parsers.registry import registry
+
+    filename = url.rsplit("/", 1)[-1] or "downloaded.pdf"
+    if not filename.lower().endswith(".pdf"):
+        filename += ".pdf"
+    last_exc: BaseException | None = None
+    for engine_name in registry.fallback_chain(filename=filename):
+        try:
+            parser = registry.get_by_engine(engine_name)
+        except ValueError:
+            continue
+        try:
+            candidate = await parser.parse(data, filename=filename)
+        except Exception as exc:
+            last_exc = exc
+            logger.warning(
+                "url->pdf: %s failed on %s (%s: %s); trying next engine",
+                engine_name, url, type(exc).__name__, exc,
+            )
+            continue
+        if candidate.content.strip():
+            return candidate
+    if last_exc is not None:
+        logger.warning(
+            "url->pdf: every engine failed for %s; last error: %r",
+            url, last_exc,
+        )
+    return ParseResult(content="", title="")
 
 
 def _chromium_cert_error_code(exc: BaseException) -> str | None:
@@ -104,18 +160,32 @@ class GenericHandler:
         if _browser_only(url):
             return await self._parse_with_playwright(url)
 
+        # Sentinel returned by _parse_httpx for application/pdf responses
+        # — the bytes were already dispatched to the PDF parser chain and
+        # the result is attached to the sentinel. Skip Playwright entirely
+        # in that case: Chromium refuses PDF navigation with
+        # ``Page.goto: Download is starting`` and would burn 3 retries.
         result = await self._parse_httpx(url)
+        if isinstance(result, _PdfHandled):
+            return result.result
         if needs_browser_fallback(result):
             return await self._parse_with_playwright(url)
         return result
 
-    async def _parse_httpx(self, url: str) -> ParseResult:
+    async def _parse_httpx(self, url: str) -> "ParseResult | _PdfHandled":
         """Async HTTP fetch. Previously dispatched sync ``httpx.get``
         via ``run_in_executor(None, ...)`` which shared the default
         thread pool with ``asyncio.to_thread`` hot paths elsewhere
         (image_stream, vision calls). Native async removes that
         coupling and stops generic-URL fetches from fighting for
         thread slots under concurrent load.
+
+        For ``application/pdf`` responses, hands the bytes off to the
+        registered PDF parser chain and returns a :class:`_PdfHandled`
+        sentinel so the caller knows the result is final (no Playwright
+        fallback). Without the sentinel, an empty PDF result would
+        re-enter Playwright and re-trigger the original "Page.goto:
+        Download is starting" failure.
         """
         try:
             async with httpx.AsyncClient(
@@ -123,11 +193,15 @@ class GenericHandler:
             ) as client:
                 resp = await client.get(url)
             resp.raise_for_status()
-            downloaded = resp.text
-            final_url = str(resp.url)
         except Exception:
             return ParseResult(content="", title="")
 
+        ct = resp.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+        if ct == "application/pdf":
+            return _PdfHandled(await _parse_pdf_bytes(resp.content, url=url))
+
+        downloaded = resp.text
+        final_url = str(resp.url)
         text = extract_with_trafilatura(downloaded)
         title = extract_html_title(downloaded, final_url)
         img_urls = extract_image_urls(downloaded, final_url)
