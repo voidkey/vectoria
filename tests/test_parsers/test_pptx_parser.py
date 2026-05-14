@@ -176,6 +176,20 @@ async def test_parse_returns_empty_image_refs_on_deck_without_pictures():
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
+async def test_parse_emits_page_count_equal_to_slide_count():
+    """ParseResult.page_count carries the slide total so the worker can
+    persist it without re-inspecting the deck. The two-slide fixture
+    must report exactly 2 — pinning the contract that the count comes
+    from ``len(prs.slides)`` and not from an off-by-one source.
+    """
+    from parsers.pptx_parser import PptxParser
+    result = await PptxParser().parse(
+        _build_pptx_with_notes(), filename="deck.pptx",
+    )
+    assert result.page_count == 2
+
+
+@pytest.mark.asyncio
 async def test_parse_handles_malformed_bytes():
     from parsers.pptx_parser import PptxParser
     result = await PptxParser().parse(b"not a pptx", filename="bad.pptx")

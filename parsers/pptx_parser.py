@@ -146,6 +146,7 @@ class PptxParser(BaseParser):
             content=content,
             title=deck_title,
             image_refs=image_refs,
+            page_count=len(prs.slides),
         )
 
 

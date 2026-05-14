@@ -66,6 +66,10 @@ class Document(Base):
     image_status: Mapped[str] = mapped_column(
         String(20), default="none", server_default="none", nullable=False,
     )
+    # PDF pages / PPTX slides. NULL for non-paginated sources (docx,
+    # html, plain text) and for legacy binary .doc — Word's pagination
+    # is a render-time concept, so there's no honest static answer.
+    page_count: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     knowledge_base: Mapped["KnowledgeBase"] = relationship(back_populates="documents")

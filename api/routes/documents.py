@@ -131,6 +131,7 @@ async def _enqueue_ingest(
     file_hash_sha256: str | None = None,
     doc_id: str | None = None,
     wait: bool = False,
+    page_count: int | None = None,
 ) -> DocumentIngestResponse:
     """Create a Document row in ``queued`` state and enqueue parse work.
 
@@ -158,6 +159,7 @@ async def _enqueue_ingest(
             file_hash_sha256=file_hash_sha256,
             content="", image_status="pending",
             chunk_count=0, error_msg="",
+            page_count=page_count,
         )
         session.add(doc)
         # Atomic with the Document: a DB blip between two separate
@@ -300,6 +302,9 @@ async def ingest_file(
     # for both formats (xref-table read for PDF, zip dir listing for
     # PPTX) so we pay ~ms to save the S3 write, worker slot, and
     # downstream parser call we'd otherwise burn.
+    # ``page_count`` falls out of the gate for free — persist it so the
+    # detail API can surface it without re-inspecting the bytes.
+    page_count: int | None = None
     _, ext = os.path.splitext(filename.lower())
     if ext == ".pdf":
         from api.pdf_inspect import count_pdf_pages
@@ -313,6 +318,7 @@ async def ingest_file(
                 413, ErrorCode.PDF_TOO_MANY_PAGES,
                 f"PDF has {pages} pages; max allowed is {cfg.max_pdf_pages}",
             )
+        page_count = pages
     elif ext == ".pptx":
         from api.pptx_inspect import count_pptx_slides
         slides = count_pptx_slides(raw)
@@ -326,6 +332,7 @@ async def ingest_file(
                 413, ErrorCode.PPTX_TOO_MANY_SLIDES,
                 f"PPTX has {slides} slides; max allowed is {cfg.max_pptx_slides}",
             )
+        page_count = slides
 
     # Per-KB file-hash dedup. Idempotency for accidental retries and
     # double-uploads that previously re-ran parse + embed and OOM'd the host.
@@ -360,6 +367,7 @@ async def ingest_file(
         filename=filename, selected_engine=selected_engine,
         file_hash=None, file_hash_sha256=file_hash_sha256,
         doc_id=doc_id, wait=wait,
+        page_count=page_count,
     )
 
 
@@ -558,6 +566,7 @@ async def get_document(kb_id: str, doc_id: str):
             outline=[OutlineItem(**item) for item in outline],
             image_count=len(doc.images),
             image_status=doc.image_status,
+            page_count=doc.page_count,
         )
 
 

@@ -324,8 +324,7 @@ async def handle_parse_document(payload: dict) -> None:
             DOCUMENT_OUTCOMES.labels(outcome="image_only").inc()
             # error_type here is a terminal-outcome label (matches
             # DOCUMENT_OUTCOMES labels), not an error; status stays completed.
-            await update_doc(
-                doc_id,
+            image_only_fields: dict = dict(
                 title=parse_result.title or source,
                 content=content,
                 status="completed",
@@ -335,6 +334,9 @@ async def handle_parse_document(payload: dict) -> None:
                 error_trace=None,
                 image_status="pending",
             )
+            if parse_result.page_count is not None:
+                image_only_fields["page_count"] = parse_result.page_count
+            await update_doc(doc_id, **image_only_fields)
             from worker.queue import enqueue
             await enqueue("download_and_store_images", download_payload)
             return
@@ -372,14 +374,19 @@ async def handle_parse_document(payload: dict) -> None:
     image_status = "pending" if (has_image_urls or has_inline_images) else "none"
     vision_configured = bool(cfg.vision_base_url)
 
-    await update_doc(
-        doc_id,
+    # ``page_count`` set conditionally: don't clobber an upload-time
+    # value (PDF/PPTX gates) with None when the parser didn't produce
+    # one (PDF parsers don't currently emit it).
+    update_fields: dict = dict(
         title=parse_result.title or filename or source,
         content=content, status="indexing",
         parse_engine=used_engine,
         image_status=image_status,
         error_msg="", error_type=None, error_trace=None,
     )
+    if parse_result.page_count is not None:
+        update_fields["page_count"] = parse_result.page_count
+    await update_doc(doc_id, **update_fields)
 
     if not has_image_urls and has_inline_images:
         from api.image_stream import stream_upload_and_store_refs

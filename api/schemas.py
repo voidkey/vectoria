@@ -78,6 +78,12 @@ class DocumentDetailResponse(DocumentIngestResponse):
     the time a caller GETs a doc, parse has had a chance to populate it.
     """
     image_count: int = 0
+    # PDF pages / PPTX slides. ``None`` for non-paginated sources
+    # (docx, html, plain text) and for legacy binary .doc — Word's
+    # notion of "page" is a render-time concept with no honest static
+    # answer. Also ``None`` until the upload-time gate (PDF/PPTX) or
+    # parse-time count (PPT) has populated it.
+    page_count: int | None = None
 
 
 class DocumentImageResponse(BaseModel):

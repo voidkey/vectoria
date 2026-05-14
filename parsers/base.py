@@ -48,6 +48,12 @@ class ParseResult:
     # HTML-scraped handlers must keep this False so silent anti-bot
     # failures don't get laundered into valid docs.
     allow_image_only: bool = False
+    # Source-doc page/slide count when the parser sees it cheaply
+    # (e.g. PPTX slide count after .ppt→.pptx conversion). NULL for
+    # non-paginated formats. For PDF/PPTX uploaded directly, the
+    # upload path populates page_count at gate time and parsers don't
+    # need to re-emit it here.
+    page_count: int | None = None
 
 
 class BaseParser(ABC):
