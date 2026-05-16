@@ -45,13 +45,14 @@ def _log_parser_config() -> None:
     """
     log = logging.getLogger("vectoria.startup")
     cfg = get_settings()
+    paddle = cfg.paddle_api_url or "(unset → falls back to mineru)"
     mineru = cfg.mineru_api_url or "(unset → falls back to pdfium)"
     vision = cfg.vision_base_url or "(unset → image uploads use ocr-native)"
     budget = cfg.vision_daily_budget_usd
     log.info(
-        "parser config: mineru=%s | vision=%s model=%s | "
+        "parser config: paddle=%s | mineru=%s | vision=%s model=%s | "
         "vision_budget=$%s/day (per-call ~$%s)",
-        mineru, vision, cfg.vision_model,
+        paddle, mineru, vision, cfg.vision_model,
         budget if budget else "uncapped", cfg.vision_cost_per_call_usd,
     )
 

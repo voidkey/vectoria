@@ -298,6 +298,11 @@ def get_breaker(name: str) -> CircuitBreaker:
             cfg.mineru_breaker_reset_timeout,
             _http_server_error,
         ),
+        "paddle": (
+            cfg.paddle_breaker_threshold,
+            cfg.paddle_breaker_reset_timeout,
+            _http_server_error,
+        ),
         "vision": (
             cfg.vision_breaker_threshold,
             cfg.vision_breaker_reset_timeout,

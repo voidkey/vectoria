@@ -8,16 +8,20 @@ from parsers.base import BaseParser
 # trailing fallback entry here would be dead code. Native parsers
 # catch exceptions internally and return empty content.
 #
-# PDF: mineru is primary (VLM layout parsing). pdfium is the
-# lightweight fallback (pure pypdfium2, no ML models) for cases where
-# mineru is unavailable. markitdown is the text-only last resort.
+# PDF: paddle (PaddleOCR-VL gateway) is primary — VLM layout parsing
+# with per-page markdown + lazy base64 images. mineru is fallback B,
+# preserved through the migration so that paddle's documented failure
+# modes (image-density connection-drop, format-unsupported) still land
+# on a high-quality engine before falling through. pdfium is the
+# lightweight in-process fallback (pure pypdfium2, no ML models) for
+# when both VL paths are out. markitdown is the text-only last resort.
 #
 # Images (.png/.jpg/.jpeg/.tiff/.bmp/.webp): ocr-native via rapidocr
 # (ONNX runtime, CJK+English). Replaced docling's image OCR path
 # in W6-2 — rapidocr is purpose-built, ~10× smaller on disk, and
 # no torch/transformers stack to maintain.
 _EXT_PREFERENCE: dict[str, list[str]] = {
-    ".pdf":  ["mineru", "pdfium", "markitdown"],
+    ".pdf":  ["paddle", "mineru", "pdfium", "markitdown"],
     # Office native parsers all have markitdown as a "best-effort"
     # last resort. The native libs (python-pptx / mammoth+python-docx
     # / openpyxl) are accurate when they work but each has rare
@@ -158,6 +162,8 @@ from parsers.vision_parser import VisionNativeParser  # noqa: E402
 registry.register(VisionNativeParser)
 from parsers.mineru_parser import MinerUParser  # noqa: E402
 registry.register(MinerUParser)
+from parsers.paddle_parser import PaddleParser  # noqa: E402
+registry.register(PaddleParser)
 from parsers.url import UrlParser  # noqa: E402
 registry.register(UrlParser)
 from parsers.markitdown_parser import MarkitdownParser  # noqa: E402

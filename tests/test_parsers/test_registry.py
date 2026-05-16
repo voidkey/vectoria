@@ -122,12 +122,12 @@ def test_docling_module_removed():
 
 
 def test_fallback_chain_pdf_full():
-    """For .pdf the natural chain is mineru → pdfium → markitdown.
-    All three are registered, so an unfiltered chain returns all of
-    them in declaration order."""
+    """For .pdf the natural chain is paddle → mineru → pdfium →
+    markitdown. All four are registered, so an unfiltered chain
+    returns all of them in declaration order."""
     from parsers.registry import registry
     chain = registry.fallback_chain(filename="x.pdf")
-    assert chain == ["mineru", "pdfium", "markitdown"]
+    assert chain == ["paddle", "mineru", "pdfium", "markitdown"]
 
 
 def test_fallback_chain_after_drops_engines_up_to_and_including():

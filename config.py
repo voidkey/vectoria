@@ -125,6 +125,26 @@ class Settings(BaseSettings):
     mineru_breaker_threshold: int = 5
     mineru_breaker_reset_timeout: float = 300.0
 
+    # PaddleOCR-VL remote API (PDF primary; MinerU stays as fallback B).
+    # Both URL and key required; either being empty makes the parser
+    # advertise unavailable so the registry falls straight through to
+    # mineru. Gateway accepts JSON+base64 PDF (see docs in
+    # ``parsers/paddle_parser.py``).
+    paddle_api_url: str = ""
+    paddle_api_key: SecretStr = SecretStr("")
+    # Wall-clock per VL call (s). VL gateway's own ceiling is 600 s;
+    # we stay close to that — long PDFs (~50-200 pages) routinely sit
+    # at 60-90 s, and a 120 s client-side cut (the value MinerU uses)
+    # would prematurely fail them when the gateway is still working.
+    paddle_timeout: float = 600.0
+    # Per-process cap on concurrent VL requests. Single-card GPU
+    # serializes; >3 concurrent on image-heavy PDFs has been observed
+    # to drop connections (see VL gateway docs §5). Multi-worker hosts
+    # get N × ceiling; tune at worker count level.
+    paddle_concurrency: int = 3
+    paddle_breaker_threshold: int = 5
+    paddle_breaker_reset_timeout: float = 300.0
+
     # Vision LLM (for image description + vision-native parser)
     vision_base_url: str = ""
     vision_api_key: SecretStr = SecretStr("")

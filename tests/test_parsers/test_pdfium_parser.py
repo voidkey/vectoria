@@ -108,11 +108,13 @@ def test_registry_prefers_pdfium_when_mineru_unavailable(monkeypatch):
 
 
 def test_registry_pdf_chain_includes_pdfium():
-    """Even when mineru IS available (test env has a URL), the chain
-    must list pdfium as the next fallback after mineru.
+    """Even when paddle/mineru ARE available (test env has URLs), the
+    chain must list pdfium as the lightweight in-process fallback
+    after both VLM engines, ahead of the markitdown last resort.
     """
     from parsers.registry import _EXT_PREFERENCE
     chain = _EXT_PREFERENCE[".pdf"]
-    assert chain[0] == "mineru"
+    assert chain[0] == "paddle"
+    assert chain[1] == "mineru"
     assert "pdfium" in chain
     assert chain.index("pdfium") < chain.index("markitdown")
