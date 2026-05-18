@@ -14,6 +14,13 @@
 #        info      趋势记录，不打扰
 #   5. summary 一句话事实（WeCom 标题），description 给当前值 +
 #      排查路径 + 仪表盘链接。
+#   6. 区分两类告警的生命周期：
+#        level-triggered（持续监控）：错误率 / 延迟 / 队列堆积 / 熔断
+#          —— 条件持续真才告，alertmanager 1h 复读防遗忘
+#        edge-triggered（运维 inbox）：死信、需要决策的事件
+#          —— 像邮件，到一次就够。child route 在 alertmanager.yml 里
+#          调长 repeat_interval，避免 "新错误一直来" 的群里幻觉。
+#      新加 alert 时先想清楚是哪类，再决定是否需要 child route。
 #
 # 接入：
 #   prometheus.yaml → rule_files: [/etc/prometheus/rules.yaml]
@@ -239,9 +246,12 @@ groups:
             引擎：{{ $labels.engine }}
             空结果率：{{ $value | humanizePercentage }}（阈值 30%）
             注意：不是报错，是 "解析成功但没东西可提取"。常见原因：
-              • pdfium：扫描版 PDF 缺 OCR，应走 MinerU
+              • pdfium：扫描版 PDF 缺 OCR，应走 paddle/mineru
               • ocr-native：rapidocr 模型或语言配置不匹配
-              • url handler：被反爬 / CAPTCHA 墙拦截
+              • url handler：通用页面没有可抽取正文（SPA、视频播放器、纯图）。
+                已知 hopeless 的 host（bilibili/douyin/larksuite 等）已经被
+                parsers/url/_blacklist.py 拦在前面转成 PermanentParseError，
+                走到这里说明该模式还没被识别 —— 考虑加进 blacklist。
               • Office：受密码保护，mammoth/python-pptx 悄悄吞掉
 
   # -------------------------------------------------------------------
@@ -294,16 +304,21 @@ groups:
           component: queue
         annotations:
           summary: "[{{ $externalLabels.env }}] 死信 {{ $labels.task_type }}: {{ $labels.source }}"
-          # One series per dead task → one alert per task. source/task_id
-          # come from labels on the gauge emitted in worker/queue.py, so
-          # operators can decide requeue-vs-delete from the wecom message
-          # alone without opening psql.
+          # Edge-triggered alert：每条 dead task 一个 series → 一条告警。
+          # alertmanager 侧 child route 把 repeat_interval 拉到 96h，所以
+          # 这条只会推一次。description 必须自洽 —— 第一条信息就要让运维
+          # 知道默认动作（不动），UPDATE/DELETE 是 escape hatch 而非默认。
           description: |
             来源: {{ $labels.source }}
             任务: {{ $labels.task_id }}
-            已耗尽重试，人工决策重入队或删除：
-              UPDATE tasks SET status='pending',attempts=0 WHERE id='{{ $labels.task_id }}';
-              DELETE FROM tasks WHERE id='{{ $labels.task_id }}';
+            已耗尽重试。retry_dead_docs 的 cap 已经把这个 doc 排除在 auto-retry
+            之外，dead 行留作 cap 证据，告警 24h 后随 metric 自动消失。
+
+            默认动作：不动。下面两条 SQL 是 escape hatch，按需选用：
+              • 若失败明显是临时（外部 API 当时抖动、worker 当时挂）→ 重入队：
+                  UPDATE tasks SET status='pending',attempts=0 WHERE id='{{ $labels.task_id }}';
+              • 极少需要：彻底清掉（会让同 doc 重新进入 auto-retry 池，慎用）：
+                  DELETE FROM tasks WHERE id='{{ $labels.task_id }}';
 
   # -------------------------------------------------------------------
   # Worker 资源
@@ -372,12 +387,18 @@ groups:
         annotations:
           summary: "[{{ $externalLabels.env }}] 熔断器 {{ $labels.name }} 已打开"
           description: |
-            {{ $labels.name }} 熔断器打开，下游调用全部快速失败
-            直到自动探测成功。判断：
-              • 对方真的挂了 → 熔断器做对了，等恢复即可
-              • 对方没挂是我们误判 → 看 external_api_error_rate
-                ，可能要调熔断阈值
-            影响：依赖 {{ $labels.name }} 的业务功能当前残缺。
+            {{ $labels.name }} 熔断器打开，下游调用全部快速失败，
+            直到自动半开探测连续成功后才会关闭。
+
+            默认动作：不动，等自动恢复。熔断器是自愈机制，下次有调用进来时会
+            自动半开探测，对方恢复后会自己关闭。期间依赖 {{ $labels.name }}
+            的业务功能残缺。
+
+            介入触发条件：
+              • 对方真的没挂（curl 通 / dashboard 正常）→ 我们误判了 → 看
+                vectoria_external_api_calls_total{api="{{ $labels.name }}"}
+                的 status 分布，调熔断阈值或修客户端逻辑
+              • 对方挂了超过 30 分钟还没自动恢复 → 联系上游/换备份链路
 
       - alert: VectoriaExternalAPIErrorRate
         # 外部 API 失败率 > 10% 持续 5 分钟，闸门 >0.05/s

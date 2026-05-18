@@ -20,6 +20,22 @@ route:
   group_wait: 30s       # sit on the first firing for 30s to collect more
   group_interval: 5m    # resend when a new alert joins a live group
   repeat_interval: 1h   # re-ping while still firing so it doesn't fade
+  routes:
+    # Dead-letter alerts are an operator inbox, not a live metric — the
+    # annotation already carries task_id + source + UPDATE/DELETE SQL so
+    # one notification is enough to act on. Hourly repeats just create
+    # the "looks like a new error" confusion in the wecom group. Long
+    # repeat_interval (> metric's 24h auto-expiry) effectively makes
+    # this edge-triggered: 🟡 once when task dies, ✅ once when operator
+    # acts OR after 24h auto-expire — and silent in between.
+    - matchers:
+        - alertname = VectoriaDeadTaskAccumulating
+      # Must stay <= alertmanager's data retention (120h default) to
+      # keep dedup state alive — anything longer warns and risks a
+      # spurious re-notification once retention rolls. 96h is well
+      # past the 24h metric auto-expiry so this is effectively
+      # "never repeat" in practice.
+      repeat_interval: 96h
 
 receivers:
   - name: wecom
