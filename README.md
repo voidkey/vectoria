@@ -10,7 +10,7 @@ A lightweight RAG (Retrieval-Augmented Generation) backend service built with Fa
 - **Hybrid search** — combines vector similarity search with BM25 keyword search via Reciprocal Rank Fusion
 - **Modular RAG pipeline** — Query Rewrite → Retrieve → Fusion → Rerank → Context Expand → Generate
 - **OpenAI-compatible** — works with any OpenAI-compatible LLM/embedding endpoint (OpenAI, DeepSeek, Ollama, etc.)
-- **Pluggable parsers** — native Office (mammoth/python-pptx/openpyxl), [pypdfium2](https://github.com/pypdfium2-team/pypdfium2) PDF fallback, [rapidocr](https://github.com/RapidAI/RapidOCR) image OCR, MinerU remote API for layout-heavy PDFs, [markitdown](https://github.com/microsoft/markitdown) as last resort; heavy parsers run isolated in subprocesses
+- **Pluggable parsers** — native Office (mammoth/python-pptx/openpyxl), [PaddleOCR-VL](https://github.com/PaddlePaddle/PaddleOCR) HTTP gateway as primary PDF engine (layout + OCR + tables + formulas), MinerU remote API as PDF fallback B, [pypdfium2](https://github.com/pypdfium2-team/pypdfium2) text-layer fallback, [rapidocr](https://github.com/RapidAI/RapidOCR) for image OCR, [markitdown](https://github.com/microsoft/markitdown) as last resort. Default PDF chain: `[paddle, mineru, pdfium, markitdown]` — failures cascade automatically. Heavy parsers run isolated in subprocesses.
 - **Multiple vector stores** — pgvector (default), ChromaDB (optional)
 
 ## Requirements
@@ -144,26 +144,27 @@ All settings are configured via environment variables (see [`.env.example`](.env
 | `S3_BUCKET` | `vectoria` | Bucket name |
 | `S3_ADDRESSING_STYLE` | `auto` | `auto`, `virtual`, or `path` |
 | `S3_PRESIGN_EXPIRES` | `3600` | Presigned URL expiry (seconds) |
-| `DEFAULT_PARSE_ENGINE` | `auto` | Parser engine (`auto`, `docx-native`, `pptx-native`, `xlsx-native`, `pdfium`, `ocr-native`, `markitdown`, `mineru`, `url`) |
+| `DEFAULT_PARSE_ENGINE` | `auto` | Parser engine (`auto`, `docx-native`, `pptx-native`, `xlsx-native`, `pdfium`, `ocr-native`, `paddle`, `mineru`, `markitdown`, `url`) |
 | `ENABLE_QUERY_REWRITE` | `true` | Rewrite queries with LLM before retrieval |
 | `ENABLE_RERANKER` | `false` | Enable cross-encoder reranking |
 | `RERANKER_BASE_URL` | — | Reranker API URL |
 | `VISION_BASE_URL` | — | Vision LLM API URL (optional, for image description) |
 | `VISION_API_KEY` | — | Vision LLM API key |
 | `VISION_MODEL` | `gpt-4o` | Vision model |
-| `MINERU_API_URL` | — | MinerU remote API URL (optional, for GPU-based PDF OCR) |
+| `PADDLE_API_URL` | — | PaddleOCR-VL gateway URL (e.g. `https://your-gateway/vl`); empty disables the paddle engine, chain falls through to mineru/pdfium |
+| `PADDLE_API_KEY` | — | Bearer token for the PaddleOCR-VL gateway |
+| `MINERU_API_URL` | — | MinerU remote API URL (PDF fallback B, kicks in when paddle is unavailable or returns empty) |
 | `MINERU_BACKEND` | `pipeline` | MinerU backend mode |
 | `MINERU_LANGUAGE` | `ch` | MinerU OCR language |
 | `API_KEY` | *(blank = public)* | API key for client authentication (`X-API-Key` header) |
 | `CORS_ORIGINS` | `["*"]` | Allowed CORS origins |
 
-## Optional: OCR with PaddleOCR
+## A note on "PaddleOCR"
 
-For local OCR support:
+Two PaddleOCR-derived runtimes show up in this project — they look related by name but serve different roles:
 
-```bash
-uv sync --extra ocr
-```
+- **[rapidocr](https://github.com/RapidAI/RapidOCR)** — bundled in the base dependencies (no extra install needed). ONNX-runtime port of PaddleOCR's detection + recognition models, used by the `ocr-native` parser for image files (`.png`/`.jpg`/`.tiff`/...). Runs in-process on CPU.
+- **[PaddleOCR-VL](https://github.com/PaddlePaddle/PaddleOCR) HTTP gateway** — the primary PDF parser, called via `PADDLE_API_URL`. A separate service you deploy yourself (GPU recommended) that handles layout + OCR + tables + formulas for PDFs. Vectoria only ships the HTTP client; the gateway is out-of-process.
 
 ## Acknowledgements
 
