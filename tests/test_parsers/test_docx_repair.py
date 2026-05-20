@@ -82,6 +82,53 @@ def _corrupt_image_rel_to_null(raw: bytes) -> bytes:
     return bio_out.getvalue()
 
 
+def _corrupt_image_crc(raw: bytes) -> bytes:
+    """Take a valid docx with an embedded image and produce the WPS
+    wild state: image payload bytes mutated but CRC in the zip header
+    left pointing at the original. Reading the member back via
+    ``zipfile`` then raises ``BadZipFile("Bad CRC-32 ...")``.
+
+    Two-step build: first re-pack the image member with
+    ``compress_type=ZIP_STORED`` so the on-disk bytes ARE the payload
+    bytes (a DEFLATE-compressed payload would trip ``zlib.error`` on
+    byte-flips before the CRC check ever ran — different failure
+    surface than production). Then flip bytes in place, leaving the
+    stored CRC untouched.
+    """
+    import struct
+
+    # Step 1: re-pack with the image stored uncompressed.
+    bio = io.BytesIO(raw)
+    with zipfile.ZipFile(bio) as zin:
+        items = [(i, zin.read(i.filename)) for i in zin.infolist()]
+    bio_out = io.BytesIO()
+    with zipfile.ZipFile(bio_out, "w") as zout:
+        for item, data in items:
+            info = zipfile.ZipInfo(item.filename, item.date_time)
+            info.compress_type = (
+                zipfile.ZIP_STORED if item.filename.startswith("word/media/")
+                else zipfile.ZIP_DEFLATED
+            )
+            zout.writestr(info, data)
+    repacked = bio_out.getvalue()
+
+    # Step 2: find the stored image member's data offset and flip bytes.
+    # LFH layout: 30 fixed bytes + filename + extra. Data follows.
+    with zipfile.ZipFile(io.BytesIO(repacked)) as zf:
+        media = [i for i in zf.infolist() if i.filename.startswith("word/media/")]
+        assert media, "fixture builder needs at least one word/media/ entry"
+        info = media[0]
+
+    buf = bytearray(repacked)
+    lfh_start = info.header_offset
+    name_len = struct.unpack_from("<H", buf, lfh_start + 26)[0]
+    extra_len = struct.unpack_from("<H", buf, lfh_start + 28)[0]
+    data_start = lfh_start + 30 + name_len + extra_len
+    for offset in range(data_start, min(data_start + 16, len(buf))):
+        buf[offset] ^= 0xFF
+    return bytes(buf)
+
+
 # ---------------------------------------------------------------------------
 # Standalone sanitize_ooxml_package
 # ---------------------------------------------------------------------------
@@ -134,6 +181,71 @@ def test_sanitize_detects_and_repairs_dangling_image_rel():
         # element absence is what unblocks mammoth.
         doc = z.read("word/document.xml").decode("utf-8")
         assert f'r:embed="{a.rel_id}"' not in doc
+
+
+def test_sanitize_detects_and_repairs_bad_crc_image():
+    """WPS sometimes writes media with a bad CRC in the local header.
+    Word/WPS skip CRC verification; Python's zipfile validates on
+    .read() so mammoth crashes mid-image-extraction. Sanitizer should
+    detect the bad-CRC read, drop the rel, strip the orphan blip,
+    AND drop the corrupt member from the re-packed zip (so the next
+    read attempt doesn't hit the same wall)."""
+    from parsers.docx_repair import sanitize_ooxml_package
+
+    raw = _corrupt_image_crc(_build_clean_docx_with_image())
+    out, actions = sanitize_ooxml_package(raw)
+
+    assert len(actions) == 1
+    a = actions[0]
+    assert a.kind == "bad_crc_image"
+    assert a.rels_file == "word/_rels/document.xml.rels"
+    assert a.rel_id.startswith("rId")
+
+    with zipfile.ZipFile(io.BytesIO(out)) as z:
+        # The rel is gone.
+        rels = z.read("word/_rels/document.xml.rels").decode("utf-8")
+        assert f'Id="{a.rel_id}"' not in rels
+        # The orphan blip is gone from document.xml.
+        doc = z.read("word/document.xml").decode("utf-8")
+        assert f'r:embed="{a.rel_id}"' not in doc
+        # The bad-CRC media member itself is gone from the zip — the
+        # rel that referenced it is gone, so leaving the bytes would
+        # be dead weight (and re-reading them would just re-raise).
+        assert not any(n.startswith("word/media/") for n in z.namelist())
+
+
+@pytest.mark.asyncio
+async def test_corrupted_crc_docx_parses_after_repair():
+    """End-to-end via DocxParser: the WPS bad-CRC pattern produces an
+    empty parse pre-fix (mammoth crashes inside its image walker).
+    Post-fix the body text comes out and ``repair_kinds`` carries
+    ``bad_crc_image`` for the metric."""
+    from parsers.docx_parser import DocxParser
+
+    raw = _corrupt_image_crc(_build_clean_docx_with_image())
+
+    # Sanity: raw bytes crash mammoth's image-extraction path. The
+    # default image handler base64-inlines, so we install a minimal
+    # one that reads the bytes — the read is what trips the CRC check.
+    import mammoth
+    def _read_and_discard(image):
+        with image.open() as stream:
+            stream.read()
+        return {"src": "x", "alt": ""}
+    with pytest.raises(zipfile.BadZipFile):
+        mammoth.convert_to_markdown(
+            io.BytesIO(raw),
+            convert_image=mammoth.images.img_element(_read_and_discard),
+        )
+
+    parser = DocxParser()
+    result = await parser.parse(raw, filename="badcrc.docx")
+
+    assert "Body line one" in result.content
+    assert "Body line two" in result.content
+    assert "Body line three" in result.content
+    assert result.image_refs == []
+    assert result.repair_kinds == ["bad_crc_image"]
 
 
 def test_sanitize_external_target_is_left_alone():
