@@ -38,8 +38,10 @@ import logging
 from pathlib import Path
 
 from config import get_settings
+from infra.metrics import PARSE_REPAIRS_TOTAL
 from parsers.base import BaseParser, ParseResult
 from parsers.convert import LEGACY_FORMAT_MAP, convert_legacy_format
+from parsers.docx_repair import sanitize_ooxml_package
 from parsers.image_ref import BytesFactory, ImageRef
 from parsers.isolation import run_isolated
 
@@ -97,6 +99,27 @@ class DocxParser(BaseParser):
                     Path(converted_path).unlink(missing_ok=True)
             finally:
                 Path(tmp_path).unlink(missing_ok=True)
+
+        # WPS Office (and occasionally older Word) writes dangling
+        # image relationships when an image is removed from a doc —
+        # the rel still points at e.g. ``Target="../NULL"`` and the
+        # ``<a:blip>`` survives in document.xml, but the media file
+        # is gone from the zip. Word/WPS open these fine; mammoth
+        # (and python-docx, and markitdown which wraps mammoth) all
+        # raise ``KeyError`` doing the zip lookup. Sanitize first so
+        # the whole fallback chain doesn't silently lose the file to
+        # an ``empty_content`` classification. See parsers/docx_repair.py.
+        raw, repairs = sanitize_ooxml_package(raw)
+        if repairs:
+            for action in repairs:
+                PARSE_REPAIRS_TOTAL.labels(
+                    engine=self.engine_name, kind=action.kind,
+                ).inc()
+            logger.warning(
+                "docx-native: applied %d OOXML repair(s) to %s: %s",
+                len(repairs), filename,
+                [(a.kind, a.rel_id, a.target) for a in repairs],
+            )
 
         # Collect images as ImageRefs while mammoth walks the doc.
         # ``mammoth.images.img_element`` receives a mammoth Image and

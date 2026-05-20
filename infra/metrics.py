@@ -146,6 +146,17 @@ PARSE_FALLBACK_TOTAL = Counter(
     labelnames=("from_engine", "to_engine"),
 )
 
+PARSE_REPAIRS_TOTAL = Counter(
+    "vectoria_parse_repairs_total",
+    "Pre-parse package repairs applied to malformed inputs (e.g. WPS "
+    "Office writing dangling image rels in .docx). Bumped once per "
+    "repair action — a file with 3 broken rels reports 3. Use it to "
+    "track which producer quirks are showing up in production so we "
+    "know where to invest sanitizer coverage next.",
+    # kind ∈ {dangling_image_rel, ...future kinds}
+    labelnames=("engine", "kind"),
+)
+
 VISION_COST_USD_TOTAL = Counter(
     "vectoria_vision_cost_usd_total",
     "Estimated USD spend on Vision LLM API calls (per-call estimate "
