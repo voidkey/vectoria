@@ -165,7 +165,14 @@ class DocxParser(BaseParser):
             markdown = result.value or ""
         except Exception:
             logger.exception("mammoth conversion failed for %s", filename)
-            return ParseResult(content="", title=Path(filename).stem)
+            # Carry repair_kinds even on the empty-result branch so the
+            # metric records repair events that didn't save the parse
+            # — knowing how often sanitizing still leaves mammoth
+            # crashing is exactly what tells us when to extend coverage.
+            return ParseResult(
+                content="", title=Path(filename).stem,
+                repair_kinds=[a.kind for a in repairs],
+            )
 
         # Title: heuristic — first heading, else filename stem.
         title = _extract_first_heading(markdown) or Path(filename).stem

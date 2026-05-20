@@ -224,6 +224,50 @@ async def test_clean_docx_carries_no_repair_kinds():
 
 
 @pytest.mark.asyncio
+async def test_repair_kinds_survive_post_repair_mammoth_failure():
+    """If sanitization runs but mammoth still crashes downstream
+    (another quirk we don't know about yet), the parser returns
+    empty content — but ``repair_kinds`` must still carry the
+    successful sanitizer hits so the metric records them. Without
+    this we'd silently undercount producer quirks in production."""
+    from parsers.base import ParseResult
+    from parsers import docx_parser as docx_parser_mod
+
+    raw = _corrupt_image_rel_to_null(_build_clean_docx_with_image())
+
+    # Stub mammoth to raise after sanitization runs — simulates a
+    # second, unknown malformation that the sanitizer doesn't yet
+    # cover. The parser must still emit repair_kinds for what it
+    # *did* fix.
+    class _BoomMammoth:
+        @staticmethod
+        def convert_to_markdown(*a, **kw):
+            raise RuntimeError("simulated post-repair mammoth crash")
+
+        class images:
+            @staticmethod
+            def img_element(handler):
+                return handler
+
+    import sys
+    real_mammoth = sys.modules.get("mammoth")
+    sys.modules["mammoth"] = _BoomMammoth
+    try:
+        result = await docx_parser_mod.DocxParser().parse(
+            raw, filename="boom.docx",
+        )
+    finally:
+        if real_mammoth is not None:
+            sys.modules["mammoth"] = real_mammoth
+        else:
+            sys.modules.pop("mammoth", None)
+
+    assert isinstance(result, ParseResult)
+    assert result.content == ""
+    assert result.repair_kinds == ["dangling_image_rel"]
+
+
+@pytest.mark.asyncio
 async def test_metric_increments_in_parent_process():
     """End-to-end metric path: the corrupted-docx parse must bump
     ``PARSE_REPAIRS_TOTAL`` in the *parent* (caller) process. The
