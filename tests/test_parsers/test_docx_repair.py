@@ -204,3 +204,44 @@ async def test_corrupted_docx_parses_after_repair():
     assert "Body line three" in result.content
     # The orphan blip is gone — there was no real image left to capture.
     assert result.image_refs == []
+    # Repair kinds round-trip back so the parent process can drive
+    # PARSE_REPAIRS_TOTAL — the counter lives outside the parser
+    # subprocess pool and won't see in-subprocess increments.
+    assert result.repair_kinds == ["dangling_image_rel"]
+
+
+@pytest.mark.asyncio
+async def test_clean_docx_carries_no_repair_kinds():
+    """Healthy uploads must not drag a junk repair_kinds entry through
+    the pipeline — the parent's metric increment loop counts non-empty
+    lists, so a stray entry would inflate ops dashboards."""
+    from parsers.docx_parser import DocxParser
+    from tests.test_parsers.test_docx_parser import _build_docx_bytes
+
+    parser = DocxParser()
+    result = await parser.parse(_build_docx_bytes(), filename="clean.docx")
+    assert result.repair_kinds == []
+
+
+@pytest.mark.asyncio
+async def test_metric_increments_in_parent_process():
+    """End-to-end metric path: the corrupted-docx parse must bump
+    ``PARSE_REPAIRS_TOTAL`` in the *parent* (caller) process. The
+    parser's _parse_sync runs inside the isolation subprocess pool
+    and any .inc() there would be invisible to the worker's metrics
+    endpoint — this test guards that the round-trip through
+    ParseResult.repair_kinds is wired up correctly."""
+    from infra.metrics import PARSE_REPAIRS_TOTAL
+    from parsers.docx_parser import DocxParser
+
+    before = PARSE_REPAIRS_TOTAL.labels(
+        engine="docx-native", kind="dangling_image_rel",
+    )._value.get()
+
+    raw = _corrupt_image_rel_to_null(_build_clean_docx_with_image())
+    await DocxParser().parse(raw, filename="metric.docx")
+
+    after = PARSE_REPAIRS_TOTAL.labels(
+        engine="docx-native", kind="dangling_image_rel",
+    )._value.get()
+    assert after == before + 1

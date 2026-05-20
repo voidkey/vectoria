@@ -54,6 +54,14 @@ class ParseResult:
     # upload path populates page_count at gate time and parsers don't
     # need to re-emit it here.
     page_count: int | None = None
+    # Repair actions a sanitizer applied before parsing (e.g. WPS
+    # dangling image rel cleanup in docx_repair). Carried back here
+    # so the parent process can bump PARSE_REPAIRS_TOTAL — prometheus
+    # counters incremented inside the parser subprocess pool don't
+    # survive the pickle roundtrip into the worker's metrics process.
+    # Strings (not RepairAction dataclasses) to keep ParseResult free
+    # of parser-specific imports.
+    repair_kinds: list[str] = field(default_factory=list)
 
 
 class BaseParser(ABC):

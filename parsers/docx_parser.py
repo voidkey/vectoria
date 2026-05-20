@@ -66,13 +66,24 @@ class DocxParser(BaseParser):
     ) -> ParseResult:
         cfg = get_settings()
         if not cfg.parser_isolation:
-            return await asyncio.get_running_loop().run_in_executor(
+            result = await asyncio.get_running_loop().run_in_executor(
                 None, self._parse_sync, source, filename,
             )
-        return await run_isolated(
-            _docx_parse_worker, source, filename,
-            timeout=cfg.parser_timeout, tier="fast",
-        )
+        else:
+            result = await run_isolated(
+                _docx_parse_worker, source, filename,
+                timeout=cfg.parser_timeout, tier="fast",
+            )
+        # Bump the repair metric in the parent process. _parse_sync runs
+        # in the isolation subprocess pool, and prometheus counters
+        # incremented there increment the *subprocess's* in-memory state
+        # — not visible on the worker's :9001 endpoint. The kinds list
+        # round-trips back through the pickle so we can count here.
+        for kind in result.repair_kinds:
+            PARSE_REPAIRS_TOTAL.labels(
+                engine=self.engine_name, kind=kind,
+            ).inc()
+        return result
 
     def _parse_sync(self, source: bytes | str, filename: str) -> ParseResult:
         import mammoth
@@ -111,10 +122,9 @@ class DocxParser(BaseParser):
         # an ``empty_content`` classification. See parsers/docx_repair.py.
         raw, repairs = sanitize_ooxml_package(raw)
         if repairs:
-            for action in repairs:
-                PARSE_REPAIRS_TOTAL.labels(
-                    engine=self.engine_name, kind=action.kind,
-                ).inc()
+            # Log here (subprocess-side) — stderr is captured by docker
+            # so cross-process aggregation is free. Metric increment
+            # happens parent-side; see DocxParser.parse() for why.
             logger.warning(
                 "docx-native: applied %d OOXML repair(s) to %s: %s",
                 len(repairs), filename,
@@ -164,6 +174,7 @@ class DocxParser(BaseParser):
             content=markdown,
             title=title,
             image_refs=image_refs,
+            repair_kinds=[a.kind for a in repairs],
         )
 
 
