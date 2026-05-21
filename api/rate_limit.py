@@ -4,10 +4,10 @@ Why
 ---
 ``infra.ratelimit`` is the underlying token bucket (shared with the
 outbound CDN limiter). This module pins a *bucket per caller* so a
-single buggy/hostile client cannot amplify writes by sharing a token
-across many connections — the May 2026 frontend incident produced
-2 655 duplicate KBs from one client because nothing was metered per
-principal.
+single buggy or hostile client cannot amplify writes by sharing one
+token allowance across many connections. Without per-principal
+metering a write endpoint is trivially amplified by any loop or
+parallel HTTP client.
 
 Principal derivation
 --------------------
@@ -17,9 +17,9 @@ In priority order:
 2. **X-API-Key value (sha256-truncated)** — when callers share a single
    service key. The hash is in the bucket id (and therefore in
    metric labels) so the raw secret never leaks via ``/metrics``.
-3. **X-Forwarded-For first hop** — behind the SLB the direct peer is a
-   100.64.x.x internal address; the real client IP rides in XFF. The
-   leftmost hop is the originator per RFC 7239.
+3. **X-Forwarded-For first hop** — behind a reverse proxy or load
+   balancer the direct peer is an internal address; the real client
+   IP rides in XFF. The leftmost hop is the originator per RFC 7239.
 4. **request.client.host** — last resort for direct (non-proxied) hits.
 
 Failure mode

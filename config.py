@@ -219,13 +219,10 @@ class Settings(BaseSettings):
     # Inbound rate limits (per principal, per minute). Principal = JWT
     # sub/uid, else hashed X-API-Key, else client IP (XFF-aware). Set to
     # 0 to disable a limiter without redeploying — kill-switch during
-    # incident response. Defaults tuned for the May 2026 incident where
-    # a buggy frontend created 2 655 KBs in minutes: 10 KB-creates/min
-    # comfortably covers legit "one-shot parse" flows (one KB per file,
-    # bursts of a few at a time) while shutting down a runaway loop.
-    # Doc ingest is higher because chunked multipart re-uploads after a
-    # network blip are normal traffic.
-    ratelimit_kb_create_per_min: int = 10
+    # incident response. Defaults are conservative amplification caps
+    # (sustained ~1 write/sec per caller); retune via env when the
+    # expected traffic shape includes legitimate batch usage.
+    ratelimit_kb_create_per_min: int = 60
     ratelimit_doc_ingest_per_min: int = 60
 
     # Worker runtime limits
