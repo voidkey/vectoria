@@ -106,13 +106,27 @@ async def _get_limiter() -> MovingWindowRateLimiter:
     return _limiter
 
 
-async def acquire(key: str, *, rate: int, per_seconds: int = 1) -> bool:
+async def acquire(
+    key: str,
+    *,
+    rate: int,
+    per_seconds: int = 1,
+    metric_label: str | None = None,
+) -> bool:
     """Consume one token for ``key``. Returns True if allowed.
 
     ``key`` is the bucket identifier — typically a bare domain like
     ``"xhscdn.com"`` or a composite like ``"xhscdn.com:user-42"`` if you
     need per-user-per-domain pacing. Different keys use independent
     buckets; same key across workers shares the same bucket.
+
+    ``metric_label`` overrides the Prometheus label used on
+    ``RATELIMIT_CHECKS_TOTAL``. Inbound limiters key buckets per
+    principal (per-API-key) for correct accounting but need a *low*-
+    cardinality label (the bucket name) for Prometheus, otherwise
+    /metrics grows one time series per distinct caller. Outbound
+    domain-based callers leave this None — their key is already low
+    cardinality.
 
     On Redis failure, degrades to a per-process in-memory token bucket
     with the same rate (see module docstring). Callers treat the
@@ -124,6 +138,7 @@ async def acquire(key: str, *, rate: int, per_seconds: int = 1) -> bool:
     """
     global _last_redis_error_ts  # noqa: PLW0603
     item = RateLimitItemPerSecond(rate, per_seconds)
+    label = metric_label if metric_label is not None else key
 
     now = time.monotonic()
     in_outage = (
@@ -148,7 +163,7 @@ async def acquire(key: str, *, rate: int, per_seconds: int = 1) -> bool:
                 logger.info("rate limit Redis recovered; resuming shared bucket")
                 _last_redis_error_ts = 0.0
             RATELIMIT_CHECKS_TOTAL.labels(
-                key=key, result="allowed" if allowed else "blocked",
+                key=label, result="allowed" if allowed else "blocked",
             ).inc()
             return allowed
 
@@ -160,10 +175,50 @@ async def acquire(key: str, *, rate: int, per_seconds: int = 1) -> bool:
         logger.exception(
             "local fallback rate limiter failed for key=%s; allowing", key,
         )
-        RATELIMIT_CHECKS_TOTAL.labels(key=key, result="error").inc()
+        RATELIMIT_CHECKS_TOTAL.labels(key=label, result="error").inc()
         return True
-    RATELIMIT_CHECKS_TOTAL.labels(key=key, result="local_fallback").inc()
+    RATELIMIT_CHECKS_TOTAL.labels(key=label, result="local_fallback").inc()
     return allowed
+
+
+async def get_window_stats(
+    key: str, *, rate: int, per_seconds: int = 1,
+) -> tuple[int, int]:
+    """Return ``(reset_unix_ts, remaining)`` for ``key`` without consuming
+    a token.
+
+    Used by the inbound limiter to populate ``X-RateLimit-Reset`` and
+    ``X-RateLimit-Remaining`` response headers (GitHub/Stripe convention)
+    so well-behaved clients can self-pace before hitting 429.
+
+    Falls back to the local bucket on Redis error, same shape as
+    :func:`acquire` — pacing degrades but never blocks the request path.
+    """
+    global _last_redis_error_ts  # noqa: PLW0603
+    item = RateLimitItemPerSecond(rate, per_seconds)
+
+    now = time.monotonic()
+    in_outage = (
+        _last_redis_error_ts > 0
+        and (now - _last_redis_error_ts) < _REDIS_RETRY_SECONDS
+    )
+    if not in_outage:
+        limiter = await _get_limiter()
+        try:
+            reset, remaining = await limiter.get_window_stats(item, key)
+        except Exception:  # noqa: BLE001
+            _last_redis_error_ts = now
+            # fall through to local fallback
+        else:
+            return int(reset), int(remaining)
+
+    fallback = _get_fallback_limiter()
+    try:
+        reset, remaining = await fallback.get_window_stats(item, key)
+    except Exception:  # noqa: BLE001 — never fail the caller
+        # Sane defaults: assume bucket is empty and resets at end of window.
+        return int(time.time() + per_seconds), 0
+    return int(reset), int(remaining)
 
 
 # ---------------------------------------------------------------------------

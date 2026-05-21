@@ -216,6 +216,18 @@ class Settings(BaseSettings):
     # don't show up in debug dumps or error traces.
     redis_url: SecretStr = SecretStr("redis://localhost:6379/0")
 
+    # Inbound rate limits (per principal, per minute). Principal = JWT
+    # sub/uid, else hashed X-API-Key, else client IP (XFF-aware). Set to
+    # 0 to disable a limiter without redeploying — kill-switch during
+    # incident response. Defaults tuned for the May 2026 incident where
+    # a buggy frontend created 2 655 KBs in minutes: 10 KB-creates/min
+    # comfortably covers legit "one-shot parse" flows (one KB per file,
+    # bursts of a few at a time) while shutting down a runaway loop.
+    # Doc ingest is higher because chunked multipart re-uploads after a
+    # network blip are normal traffic.
+    ratelimit_kb_create_per_min: int = 10
+    ratelimit_doc_ingest_per_min: int = 60
+
     # Worker runtime limits
     # RSS self-kill threshold in bytes. When a worker's resident memory
     # exceeds this between tasks, it exits cleanly and K8s restarts it.

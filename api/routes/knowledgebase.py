@@ -1,9 +1,11 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from fastapi import Query
 from sqlalchemy import select, func
 
 from api.errors import AppError, ErrorCode
+from api.rate_limit import RATE_LIMITED_RESPONSE, rate_limit
 from api.schemas import KnowledgeBaseCreate, KnowledgeBaseResponse, KnowledgeBaseListResponse
+from config import get_settings
 from db.base import get_session
 from db.models import KnowledgeBase
 from storage import get_storage
@@ -12,7 +14,17 @@ from vectorstore.pgvector import PgVectorStore
 router = APIRouter(prefix="/knowledgebases")
 
 
-@router.post("", response_model=KnowledgeBaseResponse, status_code=201)
+@router.post(
+    "",
+    response_model=KnowledgeBaseResponse,
+    status_code=201,
+    responses=RATE_LIMITED_RESPONSE,
+    dependencies=[Depends(rate_limit(
+        "kb_create",
+        rate=lambda: get_settings().ratelimit_kb_create_per_min,
+        per_seconds=60,
+    ))],
+)
 async def create_kb(body: KnowledgeBaseCreate):
     async with get_session() as session:
         kb = KnowledgeBase(name=body.name, description=body.description)

@@ -37,6 +37,24 @@ def _reset_circuit_breakers():
     _reset_breakers_for_tests()
 
 
+@pytest.fixture(autouse=True)
+def _isolated_ratelimit_backend():
+    """Swap the rate-limit singleton to in-memory and reset between tests.
+
+    Without this the inbound route limiter (api.rate_limit) would try the
+    real Redis on first use — CI doesn't run Redis, so every test would
+    pay one connection timeout and then fall back to a process-wide
+    in-memory bucket that bleeds across tests. Using MemoryStorage
+    directly is the cheaper, deterministic equivalent.
+    """
+    from limits.aio.storage import MemoryStorage
+    from infra import ratelimit
+    ratelimit._reset_for_tests()
+    ratelimit._set_storage_for_tests(MemoryStorage())
+    yield
+    ratelimit._reset_for_tests()
+
+
 @pytest.fixture
 async def client():
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:

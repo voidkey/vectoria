@@ -4,6 +4,7 @@ from fastapi import HTTPException
 class ErrorCode:
     # Auth (1001-1099)
     UNAUTHORIZED = 1001
+    RATE_LIMITED = 1002
 
     # URL validation (1101-1199)
     INVALID_URL = 1101
@@ -34,8 +35,20 @@ class ErrorCode:
 
 
 class AppError(HTTPException):
-    """Structured application error with machine-readable code."""
+    """Structured application error with machine-readable code.
 
-    def __init__(self, status_code: int, code: int, detail: str):
-        super().__init__(status_code=status_code, detail=detail)
+    Optional ``headers`` are passed through to the JSONResponse by
+    ``app_error_handler``. Used by the rate limiter to ship
+    ``Retry-After`` and ``X-RateLimit-*`` on 429 (and reserved for
+    401 ``WWW-Authenticate`` / 503 maintenance challenges).
+    """
+
+    def __init__(
+        self,
+        status_code: int,
+        code: int,
+        detail: str,
+        headers: dict[str, str] | None = None,
+    ):
+        super().__init__(status_code=status_code, detail=detail, headers=headers)
         self.code = code

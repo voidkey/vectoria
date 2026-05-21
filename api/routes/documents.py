@@ -4,7 +4,7 @@ import os
 import time
 import uuid
 import logging
-from fastapi import APIRouter, UploadFile, File, Query
+from fastapi import APIRouter, Depends, UploadFile, File, Query
 from sqlalchemy import select, func
 from sqlalchemy.orm import selectinload
 
@@ -14,6 +14,7 @@ from api.schemas import (
     DocumentListResponse, OutlineItem,
 )
 from api.errors import AppError, ErrorCode
+from api.rate_limit import RATE_LIMITED_RESPONSE, rate_limit
 from api.url_validation import validate_url
 from db.base import get_session
 from db.models import Document, KnowledgeBase
@@ -26,6 +27,17 @@ from config import get_settings
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/knowledgebases")
+
+
+# Shared bucket across all three ingest verbs (file/url/text): from the
+# caller's perspective they're the same logical "ingest one document"
+# operation, just over different transport. Sharing the bucket prevents
+# a client from getting 3× the throughput by round-robining endpoints.
+_ingest_limiter = Depends(rate_limit(
+    "doc_ingest",
+    rate=lambda: get_settings().ratelimit_doc_ingest_per_min,
+    per_seconds=60,
+))
 
 
 def _doc_to_response(doc: Document) -> DocumentResponse:
@@ -222,7 +234,13 @@ def _record_upload_reject(
     ).inc()
 
 
-@router.post("/{kb_id}/documents/file", response_model=DocumentIngestResponse, status_code=201)
+@router.post(
+    "/{kb_id}/documents/file",
+    response_model=DocumentIngestResponse,
+    status_code=201,
+    responses=RATE_LIMITED_RESPONSE,
+    dependencies=[_ingest_limiter],
+)
 async def ingest_file(
     kb_id: str,
     file: UploadFile = File(...),
@@ -418,7 +436,13 @@ async def _find_existing_by_hash(
         return None
 
 
-@router.post("/{kb_id}/documents/url", response_model=DocumentIngestResponse, status_code=201)
+@router.post(
+    "/{kb_id}/documents/url",
+    response_model=DocumentIngestResponse,
+    status_code=201,
+    responses=RATE_LIMITED_RESPONSE,
+    dependencies=[_ingest_limiter],
+)
 async def ingest_url(
     kb_id: str,
     body: DocumentURLRequest,
@@ -462,7 +486,13 @@ def _title_from_text(text: str) -> str:
     return ""
 
 
-@router.post("/{kb_id}/documents/text", response_model=DocumentIngestResponse, status_code=201)
+@router.post(
+    "/{kb_id}/documents/text",
+    response_model=DocumentIngestResponse,
+    status_code=201,
+    responses=RATE_LIMITED_RESPONSE,
+    dependencies=[_ingest_limiter],
+)
 async def ingest_text(
     kb_id: str,
     body: DocumentTextRequest,

@@ -133,3 +133,64 @@ async def test_metric_increments_by_result():
 
     assert _read("allowed") == before_allowed + 2
     assert _read("blocked") == before_blocked + 1
+
+
+async def test_metric_label_overrides_key_for_prometheus_labels():
+    """When ``metric_label`` is supplied, the Prometheus label uses it
+    instead of the raw bucket key.
+
+    Inbound limiters key buckets on principal (per-API-key) so the
+    accounting is per-caller, but the metric label must stay low
+    cardinality — otherwise /metrics grows one time series per
+    distinct principal forever.
+    """
+    from prometheus_client import REGISTRY
+
+    def _read(label_key: str, result: str) -> float:
+        v = REGISTRY.get_sample_value(
+            "vectoria_ratelimit_checks_total",
+            {"key": label_key, "result": result},
+        )
+        return float(v or 0)
+
+    before = _read("inbound:bucket-a", "allowed")
+    await ratelimit.acquire(
+        "inbound:bucket-a:principal-7",
+        rate=1, per_seconds=1,
+        metric_label="inbound:bucket-a",
+    )
+    # The high-cardinality principal portion must NOT appear as a label.
+    assert _read("inbound:bucket-a", "allowed") == before + 1
+    assert _read("inbound:bucket-a:principal-7", "allowed") == 0
+
+
+async def test_get_window_stats_returns_remaining_and_reset():
+    """``get_window_stats`` is what the inbound limiter calls to populate
+    X-RateLimit-Remaining / X-RateLimit-Reset response headers."""
+    # Fresh bucket: full headroom.
+    reset, remaining = await ratelimit.get_window_stats(
+        "stats-test", rate=3, per_seconds=60,
+    )
+    assert remaining == 3
+
+    # Consume two — one left.
+    await ratelimit.acquire("stats-test", rate=3, per_seconds=60)
+    await ratelimit.acquire("stats-test", rate=3, per_seconds=60)
+    reset, remaining = await ratelimit.get_window_stats(
+        "stats-test", rate=3, per_seconds=60,
+    )
+    assert remaining == 1
+
+
+async def test_get_window_stats_reset_is_future_unix_ts():
+    """Reset is a Unix timestamp in the future — clients use it to know
+    when the window rolls over."""
+    import time
+
+    await ratelimit.acquire("reset-ts", rate=1, per_seconds=60)
+    reset, _ = await ratelimit.get_window_stats(
+        "reset-ts", rate=1, per_seconds=60,
+    )
+    # Within reason of "now + 60s". Allow a 5s fuzz on either side.
+    now = int(time.time())
+    assert now <= reset <= now + 65
