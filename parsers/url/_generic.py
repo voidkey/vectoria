@@ -289,12 +289,44 @@ class GenericHandler:
                 final_url = page.url
                 if not title:
                     title = urlparse(final_url).netloc
+
+                text = extract_with_trafilatura(html)
+                img_urls = extract_image_urls(html, final_url)
+
+                # Iframe-wrapped content fallback. Some "publish your HTML"
+                # services (html2web.com, certain embedded Notion views)
+                # render an empty shell at the top frame and load the real
+                # article inside an ``<iframe>``. ``page.content()`` only
+                # returns the top frame, so trafilatura sees nothing.
+                # Walk sub-frames once and pick the first one whose body
+                # extracts. Bounded to the top-empty case so ad/tracker
+                # iframes on otherwise-healthy pages don't get scraped.
+                if not text.strip():
+                    for frame in page.frames:
+                        if frame is page.main_frame:
+                            continue
+                        try:
+                            frame_html = await frame.content()
+                        except PlaywrightError:
+                            continue
+                        frame_text = extract_with_trafilatura(frame_html)
+                        if not frame_text.strip():
+                            continue
+                        text = frame_text
+                        # Images in the iframe are relative to the iframe's
+                        # own URL, not the top page's. Replace the empty
+                        # top-frame list outright; mixing would attribute
+                        # wrong base URLs.
+                        img_urls = extract_image_urls(frame_html, frame.url)
+                        logger.info(
+                            "url-generic: extracted content from sub-frame "
+                            "%s (top-frame body was empty)", frame.url,
+                        )
+                        break
         except ModuleNotFoundError:
             # ``_browser.get_browser`` imports ``playwright.async_api`` on
             # first use; absent package surfaces here, not at the outer
             # try/except above.
             return ParseResult(content="", title="")
 
-        text = extract_with_trafilatura(html)
-        img_urls = extract_image_urls(html, final_url)
         return ParseResult(content=text, title=title, image_urls=img_urls)

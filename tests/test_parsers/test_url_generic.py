@@ -389,3 +389,181 @@ async def test_generic_allow_image_only_stays_false():
         result = await handler.parse("https://example.com/post")
 
     assert result.allow_image_only is False
+
+
+# ---------------------------------------------------------------------------
+# Iframe-wrapped content fallback
+# ---------------------------------------------------------------------------
+
+def _make_playwright_page(*, top_html: str, top_url: str,
+                         iframe_htmls: list[tuple[str, str]] | None = None,
+                         iframe_read_errors: dict[int, Exception] | None = None):
+    """Build a MagicMock page with a main_frame and N sub-frames.
+
+    ``iframe_htmls`` is a list of ``(frame_url, frame_html)`` pairs.
+    ``iframe_read_errors`` maps sub-frame index → exception raised by
+    that frame's ``content()`` (for testing read-failure tolerance).
+    """
+    from playwright.async_api import Error as PlaywrightError  # noqa: F401
+
+    page = MagicMock()
+    page.goto = AsyncMock()
+    page.wait_for_timeout = AsyncMock()
+    page.wait_for_load_state = AsyncMock()
+    page.url = top_url
+    page.title = AsyncMock(return_value="Top Title")
+    page.content = AsyncMock(return_value=top_html)
+
+    main_frame = MagicMock()
+    main_frame.url = top_url
+    main_frame.content = AsyncMock(return_value=top_html)
+
+    sub_frames = []
+    for idx, (furl, fhtml) in enumerate(iframe_htmls or []):
+        f = MagicMock()
+        f.url = furl
+        if iframe_read_errors and idx in iframe_read_errors:
+            f.content = AsyncMock(side_effect=iframe_read_errors[idx])
+        else:
+            f.content = AsyncMock(return_value=fhtml)
+        sub_frames.append(f)
+
+    page.main_frame = main_frame
+    page.frames = [main_frame, *sub_frames]
+    return page
+
+
+def _patch_session_with_page(page):
+    from contextlib import asynccontextmanager
+    ctx = MagicMock()
+    ctx.new_page = AsyncMock(return_value=page)
+
+    @asynccontextmanager
+    async def fake_session(**_kwargs):
+        yield ctx
+
+    return patch("parsers.url._browser.parse_session", fake_session)
+
+
+@pytest.mark.asyncio
+async def test_playwright_extracts_from_iframe_when_top_is_empty():
+    """Real-world failure: html2web.com renders an empty shell at the
+    top frame and serves the actual article inside an iframe. When
+    trafilatura on the top frame returns nothing, the handler must
+    walk sub-frames and pick the first one that extracts.
+
+    The image URLs must be resolved against the *frame's* URL — they
+    were relative to the iframe document, not the top page.
+    """
+    page = _make_playwright_page(
+        top_html='<html><body><iframe src="//example.com/view/abc"></iframe></body></html>',
+        top_url="https://example.com/p/kktno10d",
+        iframe_htmls=[
+            ("https://example.com/view/abc",
+             '<html><body><article>iframe body content</article>'
+             '<img src="/media/pic.png"></body></html>'),
+        ],
+    )
+
+    long_content = "Real iframe article body. " * 25
+
+    # trafilatura returns "" for the top frame, content for the iframe.
+    def trafilatura_extract(html, **_kw):
+        return long_content if "iframe body" in html else ""
+
+    with _patch_async_httpx(side_effect=Exception("connection failed")), \
+         patch("parsers.url._handlers.trafilatura.extract",
+               side_effect=trafilatura_extract), \
+         _patch_session_with_page(page):
+        result = await GenericHandler().parse("https://example.com/p/kktno10d")
+
+    assert "Real iframe article body" in result.content
+    # Image URLs resolve against the iframe's URL (example.com/view/abc),
+    # not the top page — same host here, but the helper must pass the
+    # frame URL, not the top URL.
+    assert any("pic.png" in u for u in (result.image_urls or []))
+
+
+@pytest.mark.asyncio
+async def test_playwright_does_not_dive_when_top_extraction_works():
+    """Fast-path preserved: if trafilatura got real content from the
+    top frame, ad-tracker / analytics iframes must NOT be scraped
+    and merged in. The iframe-walk only fires on top-frame-empty."""
+    page = _make_playwright_page(
+        top_html="<html><body>article body</body></html>",
+        top_url="https://example.com/post",
+        iframe_htmls=[
+            ("https://ads.example.net/banner",
+             "<html><body>BUY NOW BUY NOW</body></html>"),
+        ],
+    )
+
+    with _patch_async_httpx(side_effect=Exception("connection failed")), \
+         patch("parsers.url._handlers.trafilatura.extract",
+               side_effect=lambda html, **_kw: (
+                   "Real article body. " * 25 if "article body" in html else ""
+               )), \
+         _patch_session_with_page(page):
+        result = await GenericHandler().parse("https://example.com/post")
+
+    assert "Real article body" in result.content
+    assert "BUY NOW" not in result.content
+    # iframe.content() must not have been invoked at all — the top
+    # frame was good enough.
+    sub_frame = page.frames[1]
+    sub_frame.content.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_playwright_iframe_walk_skips_unreadable_frames():
+    """Cross-origin iframes can raise on .content() (CSP / network).
+    The walker must continue past those, not abort the whole parse."""
+    from playwright.async_api import Error as PlaywrightError
+
+    page = _make_playwright_page(
+        top_html="<html><body><iframe></iframe><iframe></iframe></body></html>",
+        top_url="https://example.com/p/x",
+        iframe_htmls=[
+            ("https://blocked.example/", ""),  # raises
+            ("https://example.com/view/y",
+             "<html><body><article>real frame body</article></body></html>"),
+        ],
+        iframe_read_errors={0: PlaywrightError("frame detached")},
+    )
+
+    def trafilatura_extract(html, **_kw):
+        return "Recovered article. " * 25 if "real frame body" in html else ""
+
+    with _patch_async_httpx(side_effect=Exception("connection failed")), \
+         patch("parsers.url._handlers.trafilatura.extract",
+               side_effect=trafilatura_extract), \
+         _patch_session_with_page(page):
+        result = await GenericHandler().parse("https://example.com/p/x")
+
+    assert "Recovered article" in result.content
+
+
+@pytest.mark.asyncio
+async def test_playwright_returns_empty_when_no_frame_has_content():
+    """If neither the top frame nor any sub-frame yields extractable
+    content, the parser returns empty — the worker handler then
+    classifies as empty_content (correct: nothing extractable exists).
+
+    HTML bodies are literally empty here so trafilatura's
+    ``baseline`` last-resort doesn't latch onto stray body text and
+    paper over the "truly empty" case we're guarding."""
+    page = _make_playwright_page(
+        top_html="<html><head><title>shell</title></head><body></body></html>",
+        top_url="https://example.com/post",
+        iframe_htmls=[
+            ("https://ads.example.net/",
+             "<html><head></head><body></body></html>"),
+        ],
+    )
+
+    with _patch_async_httpx(side_effect=Exception("connection failed")), \
+         patch("parsers.url._handlers.trafilatura.extract", return_value=""), \
+         _patch_session_with_page(page):
+        result = await GenericHandler().parse("https://example.com/post")
+
+    assert result.content.strip() == ""
