@@ -20,12 +20,14 @@ from limits.aio.storage import MemoryStorage
 
 from infra import ratelimit
 from parsers.url import download_images_for_url, find_handler
+from parsers.url._blacklist import UnparseableUrlError
 from parsers.url._xhs import (
     XhsHandler,
     canonicalize_xhs_image_url,
     extract_xhs_from_html,
     get_xhs_headers,
     is_xhs_url,
+    is_xhs_video_note,
 )
 
 
@@ -337,27 +339,83 @@ def test_extract_handles_empty_dom():
 
 
 # ---------------------------------------------------------------------------
-# allow_image_only opt-in
+# Video-note detection — skip until we have a real video pipeline
 # ---------------------------------------------------------------------------
 
-@pytest.mark.asyncio
-async def test_xhs_success_sets_allow_image_only_true():
-    """Structured-source handler opts into image_only rescue."""
+@pytest.mark.parametrize("url", [
+    # Live samples captured 2026-05-25 from xhslink.com share redirects.
+    "https://www.xiaohongshu.com/discovery/item/abc?type=video&xsec_token=foo",
+    "https://www.xiaohongshu.com/discovery/item/abc?app_platform=ios&type=video&xsec_source=app_share",
+])
+def test_is_xhs_video_note_detects_type_video(url):
+    assert is_xhs_video_note(url)
+
+
+@pytest.mark.parametrize("url", [
+    # Image notes either omit ``type`` or set it to something other than ``video``
+    "https://www.xiaohongshu.com/discovery/item/abc?xsec_token=foo",
+    "https://www.xiaohongshu.com/discovery/item/abc?type=normal&xsec_token=foo",
+    "https://www.xiaohongshu.com/explore/abc",
+    # ``xsec_source`` contains the substring "video" — must not false-match
+    "https://www.xiaohongshu.com/discovery/item/abc?xsec_source=videofeed",
+])
+def test_is_xhs_video_note_rejects_non_video(url):
+    assert not is_xhs_video_note(url)
+
+
+# ---------------------------------------------------------------------------
+# allow_image_only opt-in (image notes only)
+# ---------------------------------------------------------------------------
+
+def _xhs_browser_mock(final_url: str, html: str):
+    """Wire up a parse_session mock that yields a page whose ``url`` is
+    ``final_url`` (post-redirect) and whose ``content()`` returns ``html``.
+    """
     mock_page = AsyncMock()
     mock_page.goto = AsyncMock()
     mock_page.wait_for_timeout = AsyncMock()
-    mock_page.content = AsyncMock(return_value=_NEW_VIDEO_NOTE)
+    mock_page.content = AsyncMock(return_value=html)
+    # ``page.url`` is a property in the real API but AsyncMock treats
+    # attribute access as a sync value, which is what we want here.
+    mock_page.url = final_url
 
     mock_ctx = AsyncMock()
     mock_ctx.new_page = AsyncMock(return_value=mock_page)
     mock_ctx.__aenter__ = AsyncMock(return_value=mock_ctx)
     mock_ctx.__aexit__ = AsyncMock(return_value=None)
+    return mock_ctx
 
+
+@pytest.mark.asyncio
+async def test_xhs_image_note_returns_parse_result():
+    """Image-note final URL (no type=video) still flows through extraction."""
+    mock_ctx = _xhs_browser_mock(
+        final_url="https://www.xiaohongshu.com/discovery/item/abc?xsec_token=t",
+        html=_NEW_VIDEO_NOTE,  # the DOM here is fine; what matters is the URL
+    )
     with patch("parsers.url._browser.parse_session", return_value=mock_ctx):
-        h = XhsHandler()
-        result = await h.parse("https://www.xiaohongshu.com/explore/abc")
+        result = await XhsHandler().parse("https://www.xiaohongshu.com/explore/abc")
 
     assert result.allow_image_only is True
     assert result.title == "世界上最好的贵人就是执行力超强的自己"
     assert "#胡楚靓" in result.content
-    assert any("xhscdn.com" in u or "xiaohongshu.com" in u for u in (result.image_urls or []))
+    assert any("xhscdn.com" in u or "xiaohongshu.com" in u
+               for u in (result.image_urls or []))
+
+
+@pytest.mark.asyncio
+async def test_xhs_video_note_raises_unparseable():
+    """Video notes have only hashtag-heavy captions — skip until a real
+    video pipeline (ASR + frame OCR) lands. UnparseableUrlError →
+    worker marks status=failed, image pipeline not enqueued, no retry.
+    """
+    mock_ctx = _xhs_browser_mock(
+        final_url="https://www.xiaohongshu.com/discovery/item/abc?type=video&xsec_token=t",
+        html=_NEW_VIDEO_NOTE,
+    )
+    with patch("parsers.url._browser.parse_session", return_value=mock_ctx):
+        with pytest.raises(UnparseableUrlError) as exc:
+            await XhsHandler().parse("http://xhslink.com/o/abc")
+    # Message must mention the reason — surfaces in documents.error_msg.
+    msg = str(exc.value).lower()
+    assert "video" in msg

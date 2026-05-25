@@ -33,13 +33,14 @@ from __future__ import annotations
 
 import logging
 import re
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 import lxml.html
 
 from config import get_settings
 from infra.metrics import URL_IMAGES_TRUNCATED_TOTAL
 from parsers.base import ParseResult
+from parsers.url._blacklist import UnparseableUrlError
 
 log = logging.getLogger(__name__)
 
@@ -76,6 +77,27 @@ def _is_xhs_image_host(host: str | None) -> bool:
 
 def is_xhs_url(url: str) -> bool:
     return _is_xhs_article_host(urlparse(url).hostname)
+
+
+def is_xhs_video_note(url: str) -> bool:
+    """True when a fully-resolved xhs URL points to a video note.
+
+    xhs share links encode the medium in the ``type`` query arg
+    (``type=video`` for video posts, absent or other values for image
+    notes). Video notes carry only a hashtag-heavy caption — the actual
+    content lives in the video itself, which we can't currently ingest
+    (no ASR / frame OCR pipeline yet). Until that lands we'd rather skip
+    these cleanly than land them as ``image_only`` docs with title
+    "xhslink.com" and noise images.
+
+    Match the ``type`` param exactly so substrings like ``xsec_source``
+    can't false-trigger.
+    """
+    try:
+        qs = parse_qs(urlparse(url).query)
+    except Exception:
+        return False
+    return qs.get("type", [""])[0] == "video"
 
 
 def canonicalize_xhs_image_url(url: str) -> str:
@@ -262,7 +284,22 @@ class XhsHandler:
                 # hydrated page via its meta-tag fallbacks.
                 await page.goto(url, wait_until="domcontentloaded", timeout=30000)
                 await page.wait_for_timeout(2000)  # soft hydration wait
+                final_url = page.url
+                if is_xhs_video_note(final_url):
+                    # Skip BEFORE reading content / scheduling images —
+                    # video-note caption is too noisy to index, and the
+                    # cover-image CDN paths 403 anyway. Worker handler
+                    # marks status=failed with the message below.
+                    raise UnparseableUrlError(
+                        "URL pattern not supported: xiaohongshu video "
+                        "note (text caption only; video content not yet "
+                        "ingestable). "
+                    )
                 html = await page.content()
+        except UnparseableUrlError:
+            # PermanentParseError subclass — must propagate so the worker
+            # short-circuits cleanly (no retry, no image pipeline).
+            raise
         except Exception:
             log.exception("xhs playwright parse failed for %s", url)
             return ParseResult(content="", title="")
