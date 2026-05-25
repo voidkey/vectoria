@@ -12,24 +12,30 @@ Image CDN (xhscdn.com) quirks addressed here:
   * Referer is checked on some asset paths; we set it to the note's
     own article URL via ``download_headers``.
 
-Parse selectors are based on publicly visible DOM at time of writing —
-xhs ships UI refactors often enough that this may drift. The handler
-fails open: empty content is returned rather than raised, so ingest
-completes with a bare title and the upstream caller can still store
-the ``image_urls`` for downstream consumption.
+Extraction strategy (2026-05-25 live capture):
+  xhs ships UI refactors often. The current video-note layout uses a
+  ``reds-text`` class system under ``.new-note-view-container``, with
+  the note body in ``.author-desc``; og:title / og:description are
+  written empty for video posts. We therefore parse the post-hydration
+  HTML returned by ``page.content()`` in this priority:
 
-Known limitation (2026-04-21 smoke): on shared-link URLs with
-``xsec_token`` query args, body extraction returns empty even with the
-expanded selector set and ``og:description`` fallback. Title, figures,
-and phash all still populate correctly. Fixing the body path requires a
-live DOM sample from the current xhs build — tracked, not blocking. If
-downstream consumers need the note body (as opposed to title + images)
-the handler will need attention.
+    Title  : <title> (strip " - 小红书") → og:title → #detail-title → <h1>
+    Body   : <meta name="description"> → .author-desc (new DOM) →
+             #detail-desc (legacy image-note) → og:description
+    Images : <img data-src|src> filtered to xhs CDN hosts, avatars and
+             icon assets dropped, deduped, capped at url_image_cap
+
+Title and body fall through together so a layout drift on one selector
+doesn't kill the whole extract — empty-result still goes through the
+``allow_image_only`` branch downstream.
 """
 from __future__ import annotations
 
 import logging
+import re
 from urllib.parse import urlparse
+
+import lxml.html
 
 from config import get_settings
 from infra.metrics import URL_IMAGES_TRUNCATED_TOTAL
@@ -115,6 +121,110 @@ def get_xhs_headers(article_url: str) -> dict[str, str] | None:
     return {"Referer": article_url, "User-Agent": XHS_UA}
 
 
+# Match xhs CDN hosts in image src/data-src URLs.
+_XHS_IMG_URL_RE = re.compile(r"xhscdn\.com|xiaohongshu\.com")
+# Avatars / qrcodes / icon assets carry these tokens in the URL and add
+# only noise downstream (vision, phash); drop them.
+_NOISE_IMG_RE = re.compile(r"avatar|qrcode|icon", re.IGNORECASE)
+# xhs appends " - 小红书" to every page <title>. Strip the suffix.
+_XHS_TITLE_SUFFIX_RE = re.compile(r"\s*-\s*小红书\s*$")
+
+
+def _text(el) -> str:
+    """text_content() stripped, with None safety."""
+    if el is None:
+        return ""
+    return (el.text_content() or "").strip()
+
+
+def _meta(doc, **attrs) -> str:
+    """First meta tag matching all attrs, returning its content or ''."""
+    parts = [f'@{k}="{v}"' for k, v in attrs.items()]
+    xp = f'//meta[{" and ".join(parts)}]/@content'
+    hits = doc.xpath(xp)
+    return hits[0].strip() if hits else ""
+
+
+def extract_xhs_from_html(html: str, url: str, image_cap: int) -> dict:
+    """Pull title + body + image URLs out of a rendered xhs note page.
+
+    Layered fallbacks (see module docstring) protect against the
+    frequent xhs DOM refactors. ``url`` is currently unused but kept in
+    the signature so callers (and future selectors that need it for
+    relative-URL resolution) don't need to be touched again.
+
+    Returns a dict with keys: ``title``, ``body``, ``imgs``.
+    """
+    del url  # unused for now; kept for signature stability
+    try:
+        doc = lxml.html.fromstring(html)
+    except Exception:
+        return {"title": "", "body": "", "imgs": []}
+
+    # ----- Title -------------------------------------------------------
+    title = ""
+    title_el = doc.find(".//title")
+    if title_el is not None and title_el.text:
+        title = _XHS_TITLE_SUFFIX_RE.sub("", title_el.text.strip())
+    if not title:
+        title = _meta(doc, property="og:title")
+    if not title:
+        legacy_t = doc.xpath('.//*[@id="detail-title"]')
+        if legacy_t:
+            title = _text(legacy_t[0])
+    if not title:
+        title = _text(doc.find(".//h1"))
+
+    # ----- Body --------------------------------------------------------
+    body = _meta(doc, name="description")
+    if not body:
+        # New video-note DOM: note caption lives in .author-desc. Match
+        # only the exact class token to avoid sweeping in .author-desc-wrapper
+        # or .comment-text-box siblings.
+        author_descs = doc.xpath(
+            './/*[contains(concat(" ", normalize-space(@class), " "), " author-desc ")]'
+        )
+        for el in author_descs:
+            # Drop UI hints like "展开" (the in-line trigger) before
+            # extracting text. Setting .text='' (instead of removing the
+            # element) preserves the trigger's tail — i.e. the note body
+            # that follows the closing </i> — which Element.remove would
+            # also delete.
+            for trigger in el.xpath('.//*[contains(@class, "author-desc-trigger")]'):
+                trigger.text = ""
+            t = _text(el)
+            if t:
+                body = t
+                break
+    if not body:
+        # Legacy image-note layout
+        legacy = doc.xpath('.//*[@id="detail-desc"]')
+        if legacy:
+            body = _text(legacy[0])
+    if not body:
+        body = _meta(doc, property="og:description")
+
+    # ----- Images ------------------------------------------------------
+    imgs: list[str] = []
+    seen: set[str] = set()
+    for img in doc.iter("img"):
+        src = img.get("data-src") or img.get("src") or ""
+        if not src or src.startswith("data:"):
+            continue
+        if not _XHS_IMG_URL_RE.search(src):
+            continue
+        if _NOISE_IMG_RE.search(src):
+            continue
+        if src in seen:
+            continue
+        seen.add(src)
+        imgs.append(src)
+        if len(imgs) >= image_cap:
+            break
+
+    return {"title": title, "body": body, "imgs": imgs}
+
+
 class XhsHandler:
     def match(self, url: str) -> bool:
         return is_xhs_url(url)
@@ -128,11 +238,10 @@ class XhsHandler:
     async def parse(self, url: str) -> ParseResult:
         """Render the note via Playwright and extract title + text + image URLs.
 
-        Selectors here are based on the current public DOM layout and
-        may drift over time — the handler fails open (returns whatever
-        was extractable, even if partial) rather than raising, because
-        an empty ParseResult at least preserves the ``image_urls`` and
-        lets the upstream caller decide next steps.
+        See ``extract_xhs_from_html`` for the selector priority. The
+        handler fails open (empty ParseResult) on any browser-level
+        error so the upstream caller can still use ``image_urls`` for
+        the image-only rescue path.
         """
         try:
             from parsers.url._browser import parse_session
@@ -140,6 +249,7 @@ class XhsHandler:
             log.warning("playwright not installed; xhs parse returning empty")
             return ParseResult(content="", title="")
 
+        cap = get_settings().url_image_cap
         try:
             # Browser pool: single Chromium per worker, fresh context
             # per URL. block_heavy drops image / font / media requests
@@ -148,83 +258,19 @@ class XhsHandler:
             async with parse_session(user_agent=XHS_UA, block_heavy=True) as ctx:
                 page = await ctx.new_page()
                 # networkidle is brittle on SPAs; 30 s cap then
-                # proceed regardless — selectors below tolerate a
-                # partially-hydrated page.
+                # proceed regardless — extractor tolerates a partially
+                # hydrated page via its meta-tag fallbacks.
                 await page.goto(url, wait_until="domcontentloaded", timeout=30000)
                 await page.wait_for_timeout(2000)  # soft hydration wait
-
-                cap = get_settings().url_image_cap
-                js = """
-                        () => {
-                            const pickText = sels => {
-                                for (const s of sels) {
-                                    const el = document.querySelector(s);
-                                    if (el && el.textContent.trim()) {
-                                        return el.textContent.trim();
-                                    }
-                                }
-                                return "";
-                            };
-                            // Title: note-detail title, generic h1, or og tag.
-                            const title = pickText([
-                                '#detail-title',
-                                '.title',
-                                'h1',
-                            ]) || (document.querySelector('meta[property="og:title"]')?.content ?? '');
-
-                            // Body: try several known-good selectors, then
-                            // a broader attribute match for any xhs-layout
-                            // shift that moves ``note-content`` / ``note-text``
-                            // onto a new wrapper. og:description is a
-                            // last-resort fallback that survives most
-                            // refactors because the SSR meta tag is generic.
-                            let body = pickText([
-                                '#detail-desc',
-                                '.note-content .desc',
-                                '.note-detail-content',
-                                '[class*="note-text"]',
-                                '[class*="noteContent"]',
-                                '[class*="note-content"]',
-                                '.content',
-                                'article',
-                            ]);
-                            if (!body) {
-                                body = document.querySelector(
-                                    'meta[property="og:description"]'
-                                )?.content || '';
-                            }
-
-                            // Images: hero carousel + inline. Cap matches
-                            // ``settings.url_image_cap`` (injected from Python).
-                            // Exclude avatars / qrcodes / icons — they live on
-                            // sns-avatar-qc.* or carry those words in
-                            // the URL, and only add noise to vision /
-                            // phash downstream.
-                            const imgs = Array.from(
-                                document.querySelectorAll('img')
-                            )
-                              .map(i => i.getAttribute('data-src') || i.src)
-                              .filter(s => s && !s.startsWith('data:'))
-                              .filter(s => /xhscdn\\.com|xiaohongshu\\.com/.test(s))
-                              .filter(s => !/avatar|qrcode|icon/i.test(s));
-                            const seen = new Set();
-                            const uniq = [];
-                            for (const u of imgs) {
-                                if (!seen.has(u)) { seen.add(u); uniq.push(u); }
-                                if (uniq.length >= __IMAGE_CAP__) break;
-                            }
-                            return { title, body, imgs: uniq };
-                        }
-                        """.replace("__IMAGE_CAP__", str(cap))
-                extract = await page.evaluate(js)
-                # Context closes at async-with exit.
+                html = await page.content()
         except Exception:
             log.exception("xhs playwright parse failed for %s", url)
             return ParseResult(content="", title="")
 
-        title = (extract.get("title") or "").strip()
-        body = (extract.get("body") or "").strip()
-        raw_imgs = list(extract.get("imgs") or [])
+        extract = extract_xhs_from_html(html, url, cap)
+        title = extract["title"]
+        body = extract["body"]
+        raw_imgs = extract["imgs"]
         if len(raw_imgs) > cap:
             URL_IMAGES_TRUNCATED_TOTAL.labels(handler="xhs").inc()
         img_urls = raw_imgs[:cap]
