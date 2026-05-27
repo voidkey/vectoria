@@ -141,13 +141,59 @@ async def test_parse_captures_inline_images_as_refs():
 
 
 @pytest.mark.asyncio
-async def test_parse_handles_malformed_bytes():
+async def test_parse_handles_malformed_bytes(monkeypatch):
+    """Garbage that isn't a zip and isn't anything LibreOffice can
+    sniff. Both the legacy-route and the mammoth fast path must end in
+    empty content (not an unhandled exception) so the parse chain can
+    fall through to the next engine.
+    """
     from parsers.docx_parser import DocxParser
+    # Force LibreOffice to fail so the test doesn't depend on whether
+    # the binary is installed in the test environment.
+    def _boom(*_a, **_kw):
+        raise RuntimeError("libreoffice unavailable in test")
+    monkeypatch.setattr(
+        "parsers.docx_parser.convert_legacy_format", _boom,
+    )
     parser = DocxParser()
     result = await parser.parse(b"not a docx", filename="broken.docx")
-    # mammoth raises for garbage; our parser catches and returns empty.
     assert result.content == ""
     assert result.image_refs == []
+
+
+@pytest.mark.asyncio
+async def test_docx_filename_with_non_zip_content_routes_to_libreoffice(monkeypatch):
+    """Reproduces a real prod failure: users upload .doc binary renamed
+    .docx (or .wps, etc.). mammoth raises ``BadZipFile`` and the whole
+    fallback chain silently produces empty_content. The magic-byte
+    sniff must reroute these through LibreOffice so they parse.
+    """
+    from parsers.docx_parser import DocxParser
+    # Non-zip payload — pretend it's a legacy .doc (OLE2 signature).
+    fake_doc_bytes = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"x" * 64
+
+    # Capture which suffix the parser hands to convert_legacy_format,
+    # and return a valid .docx so mammoth has something real to chew.
+    seen: dict = {}
+    def _fake_convert(src_path: str, suffix: str) -> str:
+        seen["suffix"] = suffix
+        seen["src_path"] = src_path
+        converted = src_path.replace(suffix, ".docx")
+        with open(converted, "wb") as f:
+            f.write(_build_docx_bytes())
+        return converted
+    monkeypatch.setattr(
+        "parsers.docx_parser.convert_legacy_format", _fake_convert,
+    )
+
+    parser = DocxParser()
+    result = await parser.parse(fake_doc_bytes, filename="renamed.docx")
+
+    # Routed through libreoffice path, with the .doc suffix hint we
+    # picked when sniffing said "not a zip".
+    assert seen.get("suffix") == ".doc"
+    # And the converted .docx parsed into real content.
+    assert "Main Title" in result.content
 
 
 # ---------------------------------------------------------------------------

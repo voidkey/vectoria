@@ -95,14 +95,37 @@ class DocxParser(BaseParser):
         # ``convert_legacy_format`` writes to a tmp file and returns the
         # converted path; callers drop that tmp at the end. We avoid
         # piping bytes through twice by re-reading the converted file.
+        #
+        # Extension-vs-content mismatch: users routinely upload .doc
+        # (binary OLE2) renamed to .docx, or .wps, or corrupted files.
+        # OOXML is a zip — its magic is ``PK\x03\x04``. Anything else
+        # under a .docx name gets routed through the same LibreOffice
+        # path; libreoffice sniffs the real format from the file body.
         suffix = Path(filename).suffix.lower()
-        if suffix in LEGACY_FORMAT_MAP:
+        needs_legacy = suffix in LEGACY_FORMAT_MAP
+        if not needs_legacy and not raw.startswith(b"PK\x03\x04"):
+            needs_legacy = True
+            suffix = ".doc"
+        if needs_legacy:
             import tempfile
             with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
                 tmp.write(raw)
                 tmp_path = tmp.name
             try:
-                converted_path = convert_legacy_format(tmp_path, suffix)
+                try:
+                    converted_path = convert_legacy_format(tmp_path, suffix)
+                except Exception:
+                    # Truly malformed input or LibreOffice unhappy with
+                    # this specific shape. Mirror mammoth's own
+                    # exception-swallowing branch below — return empty so
+                    # the handler falls through to the next engine
+                    # instead of raising parse_error out of the chain.
+                    logger.exception(
+                        "libreoffice conversion failed for %s", filename,
+                    )
+                    return ParseResult(
+                        content="", title=Path(filename).stem,
+                    )
                 try:
                     with open(converted_path, "rb") as f:
                         raw = f.read()
