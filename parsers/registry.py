@@ -9,19 +9,21 @@ from parsers.base import BaseParser
 # catch exceptions internally and return empty content.
 #
 # PDF: paddle (PaddleOCR-VL gateway) is primary — VLM layout parsing
-# with per-page markdown + lazy base64 images. mineru is fallback B,
-# preserved through the migration so that paddle's documented failure
-# modes (image-density connection-drop, format-unsupported) still land
-# on a high-quality engine before falling through. pdfium is the
+# with per-page markdown + lazy base64 images. pdfium is the
 # lightweight in-process fallback (pure pypdfium2, no ML models) for
-# when both VL paths are out. markitdown is the text-only last resort.
+# when paddle is out. markitdown is the text-only last resort.
+#
+# mineru: parser code is still registered (it's a remote VL gateway
+# we may want again later — see parsers/mineru_parser.py), but it's
+# deliberately NOT in the .pdf chain. The external service is
+# currently shut down; add ``"mineru"`` back here to re-enable.
 #
 # Images (.png/.jpg/.jpeg/.tiff/.bmp/.webp): ocr-native via rapidocr
 # (ONNX runtime, CJK+English). Replaced docling's image OCR path
 # in W6-2 — rapidocr is purpose-built, ~10× smaller on disk, and
 # no torch/transformers stack to maintain.
 _EXT_PREFERENCE: dict[str, list[str]] = {
-    ".pdf":  ["paddle", "mineru", "pdfium", "markitdown"],
+    ".pdf":  ["paddle", "pdfium", "markitdown"],
     # Office native parsers all have markitdown as a "best-effort"
     # last resort. The native libs (python-pptx / mammoth+python-docx
     # / openpyxl) are accurate when they work but each has rare

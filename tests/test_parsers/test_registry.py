@@ -122,17 +122,17 @@ def test_docling_module_removed():
 
 
 def test_fallback_chain_pdf_full():
-    """For .pdf the natural chain is paddle → mineru → pdfium →
-    markitdown. All four are registered, so an unfiltered chain
-    returns all of them in declaration order."""
+    """For .pdf the natural chain is paddle → pdfium → markitdown.
+    mineru is registered as a parser but deliberately not in the
+    chain — see _EXT_PREFERENCE comment in parsers/registry.py."""
     from parsers.registry import registry
     chain = registry.fallback_chain(filename="x.pdf")
-    assert chain == ["paddle", "mineru", "pdfium", "markitdown"]
+    assert chain == ["paddle", "pdfium", "markitdown"]
 
 
 def test_fallback_chain_after_drops_engines_up_to_and_including():
     from parsers.registry import registry
-    chain = registry.fallback_chain(filename="x.pdf", after="mineru")
+    chain = registry.fallback_chain(filename="x.pdf", after="paddle")
     assert chain == ["pdfium", "markitdown"]
     chain = registry.fallback_chain(filename="x.pdf", after="pdfium")
     assert chain == ["markitdown"]
