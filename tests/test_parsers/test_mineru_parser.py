@@ -164,7 +164,7 @@ async def test_parse_fills_page_when_content_list_is_json_string():
     """Real MinerU returns ``content_list`` as a JSON-encoded string,
     not an already-parsed list. Iterating the raw string walks
     characters and silently yields page=None for every image — exactly
-    the bug observed on vtest. Parser must json.loads first.
+    the bug observed during smoke testing. Parser must json.loads first.
     """
     png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 4
     b64 = "data:image/png;base64," + base64.b64encode(png).decode()

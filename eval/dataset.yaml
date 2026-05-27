@@ -19,7 +19,7 @@
 # counts. Keep phrases short (5-15 chars) — longer ones become
 # brittle against chunk boundary placement.
 
-kb_id: 3b6602de-8690-4462-b0cd-e6f5de8178c5   # 视频创作知识库 (Jaspers 教育哲学)
+kb_id: <your-kb-id>   # point at the KB whose contents the queries below were drafted against
 top_k: 5
 
 queries:

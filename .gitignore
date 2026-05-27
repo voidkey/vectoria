@@ -9,3 +9,14 @@ dist/
 .pytest_cache/
 docs/superpowers/
 .claude/scheduled_tasks.lock
+
+# Customer materials, sample data, ad-hoc API response dumps —
+# anything stashed at repo root that isn't source code. Belt-and-
+# braces so a stray `git add .` can't push uploaded docs.
+test.md
+*.pptx
+*.pdf
+*.doc
+*.docx
+*.xls
+*.xlsx
