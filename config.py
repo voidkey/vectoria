@@ -103,6 +103,11 @@ class Settings(BaseSettings):
     # document. Set to a large number (e.g. 9999) to effectively disable.
     url_image_cap: int = 50
 
+    # 逗号分隔的域名后缀;命中即视为"该区域网络不可达"直接 fast-fail。
+    # 默认空 = 不影响任何环境。国内 vprod 配 "wikipedia.org"(翻墙才能访问)。
+    # 对应环境变量: UNREACHABLE_DOMAINS (pydantic-settings 无 prefix)。
+    unreachable_domains: str = ""
+
     # When True, reject uploads whose magic-byte-sniffed MIME family
     # does NOT match the claimed file extension. When False, log +
     # metric but let the upload through (safe rollback during rollout).

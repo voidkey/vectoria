@@ -117,3 +117,30 @@ def test_handler_registration_order_blacklist_before_generic():
     h_other = find_handler("https://example.com/article")
     assert not isinstance(h_other, _BH)
     assert isinstance(h_other, _GH)
+
+
+@pytest.mark.asyncio
+async def test_unreachable_domain_fast_fail(monkeypatch):
+    from config import get_settings
+    monkeypatch.setenv("UNREACHABLE_DOMAINS", "wikipedia.org")
+    get_settings.cache_clear()
+    try:
+        h = BlacklistHandler()
+        assert h.match("https://zh.wikipedia.org/wiki/Spider")
+        with pytest.raises(UnparseableUrlError) as ei:
+            await h.parse("https://zh.wikipedia.org/wiki/Spider")
+        assert "不可达" in str(ei.value) or "unreachable" in str(ei.value).lower()
+        assert not h.match("https://example.com/article")
+    finally:
+        get_settings.cache_clear()
+
+
+def test_empty_unreachable_config_no_effect(monkeypatch):
+    from config import get_settings
+    monkeypatch.delenv("UNREACHABLE_DOMAINS", raising=False)
+    get_settings.cache_clear()
+    try:
+        h = BlacklistHandler()
+        assert not h.match("https://zh.wikipedia.org/wiki/Spider")
+    finally:
+        get_settings.cache_clear()

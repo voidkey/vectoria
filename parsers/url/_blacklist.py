@@ -24,6 +24,7 @@ import logging
 import re
 from urllib.parse import urlparse
 
+from config import get_settings
 from parsers.base import ParseResult, PermanentParseError
 
 logger = logging.getLogger(__name__)
@@ -53,6 +54,21 @@ _BLACKLIST: tuple[tuple[str, "re.Pattern[str] | None", str], ...] = (
 )
 
 
+def _unreachable_suffixes() -> tuple[str, ...]:
+    """Return the operator-configured domain suffixes treated as region-unreachable.
+
+    Reads ``UNREACHABLE_DOMAINS`` env var (no prefix) via pydantic-settings.
+    Returns an empty tuple when the config is unset — no effect on matching.
+    """
+    raw = get_settings().unreachable_domains or ""
+    return tuple(s.strip().lower() for s in raw.split(",") if s.strip())
+
+
+def _host_matches(host: str, suffix: str) -> bool:
+    """Return True if ``host`` equals ``suffix`` or is a subdomain of it."""
+    return host == suffix or host.endswith("." + suffix)
+
+
 class UnparseableUrlError(PermanentParseError):
     """Raised when a URL is on the blacklist. Subclass of
     PermanentParseError so the worker handler short-circuits — marks
@@ -68,19 +84,31 @@ class BlacklistHandler:
     """
 
     def match(self, url: str) -> bool:
-        return _matched_entry(url) is not None
+        if _matched_entry(url) is not None:
+            return True
+        host = (urlparse(url).hostname or "").lower()
+        return any(_host_matches(host, s) for s in _unreachable_suffixes())
 
     async def parse(self, url: str) -> ParseResult:
         entry = _matched_entry(url)
-        # match() returned True so entry should be present; defensive
-        # check protects against a race where _BLACKLIST mutates.
-        reason = entry[2] if entry else "blacklisted URL"
-        logger.info("url_blacklist: rejecting %s (%s)", url, reason)
-        raise UnparseableUrlError(
-            f"URL pattern not supported: {reason}. "
-            "Video / login-gated / hard-anti-bot pages aren't crawlable; "
-            "upload the source content directly instead."
-        )
+        if entry is not None:
+            # Static blacklist hit — use the pre-defined reason.
+            reason = entry[2]
+            logger.info("url_blacklist: rejecting %s (%s)", url, reason)
+            raise UnparseableUrlError(
+                f"URL pattern not supported: {reason}. "
+                "Video / login-gated / hard-anti-bot pages aren't crawlable; "
+                "upload the source content directly instead."
+            )
+        else:
+            # Region-unreachable domain configured via UNREACHABLE_DOMAINS.
+            reason = "该区域网络不可达(region unreachable),请直接上传内容"
+            logger.info("url_blacklist: rejecting %s (%s)", url, reason)
+            raise UnparseableUrlError(
+                f"URL pattern not supported: {reason}. "
+                "Video / login-gated / hard-anti-bot / region-blocked pages "
+                "aren't crawlable; upload the source content directly instead."
+            )
 
     def download_headers(self, url: str) -> dict[str, str] | None:
         return None
