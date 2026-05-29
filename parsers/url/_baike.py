@@ -16,7 +16,7 @@ from lxml import html as _lh
 
 from parsers.base import AntiBotBlockedError, ParseResult
 from parsers.url._fetch import fetch_impersonated
-from parsers.url._handlers import extract_html_title, extract_image_urls
+from parsers.url._handlers import _visible_text, extract_html_title, extract_image_urls
 
 
 # Public appid used by baike's embeddable lemma-card widget (not a private key).
@@ -45,12 +45,6 @@ async def _baike_lemma_card(key: str) -> dict | None:
     except Exception:
         return None
 
-
-def _strip_to_text(html: str) -> str:
-    t = re.sub(r"(?s)<!--.*?-->", " ", html)
-    t = re.sub(r"(?is)<(script|style)\b.*?</\1>", " ", t)
-    t = re.sub(r"(?s)<[^>]+>", " ", t)
-    return re.sub(r"\s+", " ", t).strip()
 
 logger = logging.getLogger(__name__)
 
@@ -98,8 +92,10 @@ class BaikeHandler:
         except Exception:
             body = ""
         if len(body) < 200:
-            # Fallback: strip all tags and denoise
-            text = _strip_to_text(html)
+            # Fallback: strip all tags (reuse shared _visible_text) and denoise.
+            # The denoise replacements below can re-introduce multi-space runs,
+            # so the final whitespace collapse is intentional, not redundant.
+            text = _visible_text(html)
             text = re.sub(r"目录\s*(?:\d+\s+\S+\s*)+", " ", text)
             text = text.replace("播报", " ").replace("编辑", " ")
             body = re.sub(r"\s+", " ", text).strip()
