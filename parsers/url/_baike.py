@@ -51,11 +51,20 @@ class BaikeHandler:
         body = ""
         try:
             tree = _lh.fromstring(html)
-            # Primary path: target article paragraph nodes (para_SkYG9 is the
-            # server-rendered body class; covers summary, content, and list
-            # paragraphs).  Catalog nodes (catalogWrapper_*, catalog_*) live
-            # in a separate DOM branch and are not included in para_ results.
-            nodes = tree.xpath('//*[contains(@class,"para_SkYG9")]')
+            # Primary path: target article paragraph nodes.  Baike uses CSS
+            # modules whose class names are "<semantic>_<hash>" (e.g.
+            # "para_SkYG9").  Matching on the hash-free prefix "para_" captures
+            # all body-paragraph variants regardless of webpack rebuild.
+            # False-positive risk is low: sibling prefixes (paraTitle_*,
+            # paraList_*, paragraph_*) all have a letter immediately after
+            # "para", not "_", so they are not matched.
+            # NOTE: paraTitle_* section headers (形态特征/生活习性/...) are
+            # intentionally excluded in P1 — body prose only.  Capturing
+            # structured headers requires cleaning up embedded 播报/编辑
+            # control-text and is deferred to a later enhancement.
+            # Catalog nodes (catalogWrapper_*, catalog_*) live in a separate
+            # DOM branch and are also not matched.
+            nodes = tree.xpath('//*[contains(@class,"para_")]')
             parts = [(n.text_content() or "").strip() for n in nodes]
             body = "\n".join(p for p in parts if p)
         except Exception:

@@ -37,3 +37,17 @@ def test_extract_baike_body_from_fixture():
     assert "节肢动物" in r.content       # real body present (first sentence of lemma summary)
     assert "目录" not in r.content[:50]  # catalog noise stripped from the start
     assert len(r.content) > 2000         # full long-lemma text
+
+
+def test_extract_fallback_when_primary_selector_misses(monkeypatch):
+    """If the primary container selector matches nothing (e.g. baike rebuilt
+    with new class hashes), the strip-tag fallback must still produce body."""
+    import pathlib
+    from parsers.url._baike import BaikeHandler
+    import parsers.url._baike as b
+    html = pathlib.Path("tests/test_parsers/fixtures/baike_spider.html").read_text(encoding="utf-8")
+    # Simulate selector miss: rename the body class so the XPath finds 0 nodes
+    broken = html.replace("para_", "XXXX_")
+    r = BaikeHandler()._extract(broken, "https://baike.baidu.com/item/%E8%9C%98%E8%9B%9B")
+    assert len(r.content) > 2000          # fallback still recovers full body
+    assert "节肢动物" in r.content         # real text present
