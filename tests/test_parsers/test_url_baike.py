@@ -26,3 +26,14 @@ async def test_fetch_all_fail_raises_antibot(monkeypatch):
     monkeypatch.setattr(BaikeHandler, "_openapi_fallback", staticmethod(fake_openapi))
     with pytest.raises(AntiBotBlockedError):
         await BaikeHandler().parse("https://baike.baidu.com/item/x/123")
+
+
+def test_extract_baike_body_from_fixture():
+    import pathlib
+    from parsers.url._baike import BaikeHandler
+    html = pathlib.Path("tests/test_parsers/fixtures/baike_spider.html").read_text(encoding="utf-8")
+    r = BaikeHandler()._extract(html, "https://baike.baidu.com/item/%E8%9C%98%E8%9B%9B")
+    assert "蜘蛛" in r.title
+    assert "节肢动物" in r.content       # real body present (first sentence of lemma summary)
+    assert "目录" not in r.content[:50]  # catalog noise stripped from the start
+    assert len(r.content) > 2000         # full long-lemma text
