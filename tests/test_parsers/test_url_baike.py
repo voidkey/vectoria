@@ -51,3 +51,17 @@ def test_extract_fallback_when_primary_selector_misses(monkeypatch):
     r = BaikeHandler()._extract(broken, "https://baike.baidu.com/item/%E8%9C%98%E8%9B%9B")
     assert len(r.content) > 2000          # fallback still recovers full body
     assert "节肢动物" in r.content         # real text present
+
+
+def test_extract_baike_images_from_fixture():
+    import pathlib
+    from parsers.url._baike import BaikeHandler
+    html = pathlib.Path("tests/test_parsers/fixtures/baike_spider.html").read_text(encoding="utf-8")
+    r = BaikeHandler()._extract(html, "https://baike.baidu.com/item/%E8%9C%98%E8%9B%9B")
+    # baike content images are bkimg.cdn.bcebos.com/pic/... (no extension; via <img src/data-src>)
+    assert any("bkimg.cdn.bcebos.com/pic/" in u for u in (r.image_urls or []))
+
+
+def test_baike_download_headers_none():
+    from parsers.url._baike import BaikeHandler
+    assert BaikeHandler().download_headers("https://baike.baidu.com/item/x") is None
