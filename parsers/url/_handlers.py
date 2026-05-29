@@ -86,14 +86,17 @@ _JS_CHALLENGE_MARKERS = (
     "javascript required",
 )
 
-# 真实桌面 Chrome UA。httpx 默认 "python-httpx/x" 会被很多站点直接判 bot;
-# 各 site handler 若已设自己的 UA(wechat 移动 / x 桌面)则不受此影响。
+# Real desktop Chrome UA. The httpx default "python-httpx/x" is flagged as a
+# bot by many sites; site handlers that set their own UA (WeChat mobile, X
+# desktop, etc.) are unaffected.
 DEFAULT_BROWSER_UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 )
 
-# 反爬 / 验证 / 登录墙信号。保守:漏判退回现状,误判才有害(拒掉合法页)。
+# Anti-bot / verification / login-wall signals. Conservative: a miss just
+# falls back to the existing path; a false positive is the harmful case
+# (rejecting a legitimate page).
 _BLOCK_TITLE_MARKERS = (
     "安全验证", "百度百科-验证", "人机验证", "验证中心",
 )
@@ -101,22 +104,23 @@ _BLOCK_BODY_MARKERS = (
     "安全验证", "请完成下方验证", "人机验证", "滑动验证", "captcha",
     "verify you are human", "登录后查看", "sign in to continue",
 )
-_BLOCK_BODY_TEXT_CAP = 500  # 正文可见文本超过此长度,只信任标题信号(防长文误判)
+_BLOCK_BODY_TEXT_CAP = 500  # beyond this length, rely on title signals only (prevents false positives on long articles)
 
 
 def _visible_text(html: str) -> str:
-    """粗略去标签得到可见文本,用于"正文很短"判定。不求精确,够判长短。"""
-    t = re.sub(r"(?s)<!--.*?-->", " ", html)          # 先去 HTML 注释,避免注释内文字泄漏
+    """Roughly strip tags to get visible text, used for the "body is very short" check. Precision not required — good enough to judge length."""
+    t = re.sub(r"(?s)<!--.*?-->", " ", html)          # strip HTML comments first so comment text doesn't bleed into the output
     t = re.sub(r"(?is)<(script|style)\b.*?</\1>", " ", t)
     t = re.sub(r"(?s)<[^>]+>", " ", t)
     return re.sub(r"\s+", " ", t).strip()
 
 
 def detect_block_reason(html: str, title: str = "") -> str | None:
-    """识别反爬 / 验证 / 登录墙页。命中返回简短原因,否则 None。
+    """Detect anti-bot / verification / login-wall pages. Returns a short reason on match, else None.
 
-    判定:标题命中 OR(可见正文 < cap 且正文命中)OR JS-challenge。
-    长正文里偶现"验证码"等词(讲安全的正常文章)不判 block。
+    Logic: title match OR (visible body < cap AND body match) OR JS-challenge.
+    Marker words appearing in long articles (e.g. a security tutorial) don't
+    trigger a block verdict.
     """
     title_l = (title or "").lower()
     for m in _BLOCK_TITLE_MARKERS:

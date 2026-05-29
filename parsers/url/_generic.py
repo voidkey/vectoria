@@ -206,8 +206,9 @@ class GenericHandler:
         downloaded = resp.text
         final_url = str(resp.url)
         title = extract_html_title(downloaded, final_url)
-        # 反爬页:返回空,让 GenericHandler.parse 的 needs_browser_fallback
-        # 触发 playwright 兜底(浏览器可能过),且防止长反爬页因字数达标被当正文。
+        # Block page: return empty so GenericHandler.parse's needs_browser_fallback
+        # triggers the Playwright fallback (browser may pass the challenge), and to
+        # prevent a verbose block page from being accepted as real content.
         if detect_block_reason(downloaded, title):
             return ParseResult(content="", title="")
         text = extract_with_trafilatura(downloaded)

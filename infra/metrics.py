@@ -191,8 +191,9 @@ DOCUMENT_OUTCOMES = Counter(
     #   too_large        — content exceeded max_content_chars
     #   parse_error      — parser raised an exception
     #   indexing_error   — embedding / vector insert failed
-    #   permanent        — 内容固有不可解(黑名单/反爬/区域不可达/cert);
-    #                      不 fallback、不重试、不刷死信告警
+    #   permanent        — content is permanently unresolvable (blacklisted /
+    #                      anti-bot blocked / region-unreachable / bad cert);
+    #                      no fallback, no retry, no dead-task alert
     # }
 )
 
