@@ -66,6 +66,10 @@ dependencies = [
     # way that lets the wrong runtime wheel win.
     "rapidocr>=2.0",
     "onnxruntime>=1.17",
+    # JA3-impersonated HTTP fetches for sites that gate on TLS fingerprint
+    # (e.g. baike.baidu.com).  Wraps libcurl-impersonate; sync API is used
+    # via asyncio.to_thread in the URL parser layer.
+    "curl_cffi>=0.7",
 ]
 
 [build-system]
