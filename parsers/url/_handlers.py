@@ -86,6 +86,55 @@ _JS_CHALLENGE_MARKERS = (
     "javascript required",
 )
 
+# 真实桌面 Chrome UA。httpx 默认 "python-httpx/x" 会被很多站点直接判 bot;
+# 各 site handler 若已设自己的 UA(wechat 移动 / x 桌面)则不受此影响。
+DEFAULT_BROWSER_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+)
+
+# 反爬 / 验证 / 登录墙信号。保守:漏判退回现状,误判才有害(拒掉合法页)。
+_BLOCK_TITLE_MARKERS = (
+    "安全验证", "百度安全验证", "百度百科-验证", "人机验证", "验证中心",
+)
+_BLOCK_BODY_MARKERS = (
+    "安全验证", "请完成下方验证", "人机验证", "滑动验证", "captcha",
+    "verify you are human", "请登录后查看", "登录后查看", "sign in to continue",
+)
+_BLOCK_BODY_TEXT_CAP = 500  # 正文可见文本超过此长度,只信任标题信号(防长文误判)
+
+
+def _visible_text(html: str) -> str:
+    """粗略去标签得到可见文本,用于"正文很短"判定。不求精确,够判长短。"""
+    t = re.sub(r"(?is)<(script|style)\b.*?</\1>", " ", html)
+    t = re.sub(r"(?s)<[^>]+>", " ", t)
+    return re.sub(r"\s+", " ", t).strip()
+
+
+def detect_block_reason(html: str, title: str = "") -> str | None:
+    """识别反爬 / 验证 / 登录墙页。命中返回简短原因,否则 None。
+
+    判定:标题命中 OR(可见正文 < cap 且正文命中)OR JS-challenge。
+    长正文里偶现"验证码"等词(讲安全的正常文章)不判 block。
+    """
+    title_l = (title or "").lower()
+    for m in _BLOCK_TITLE_MARKERS:
+        if m.lower() in title_l:
+            return f"anti-bot/verification page (title marker: {m})"
+
+    head = html[:2000].lower()
+    for m in _JS_CHALLENGE_MARKERS:
+        if m in head:
+            return f"JS challenge page ({m})"
+
+    text = _visible_text(html)
+    if len(text) < _BLOCK_BODY_TEXT_CAP:
+        low = text.lower()
+        for m in _BLOCK_BODY_MARKERS:
+            if m.lower() in low:
+                return f"anti-bot/verification page (body marker: {m})"
+    return None
+
 
 @runtime_checkable
 class SiteHandler(Protocol):
