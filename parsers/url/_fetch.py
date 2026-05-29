@@ -34,6 +34,19 @@ async def _sleep(seconds: float) -> None:
     await asyncio.sleep(seconds)
 
 
+async def _acquire_token(host: str, *, max_wait: float = 6.0) -> None:
+    """Wait (politely) until a rate token is available, bounded by max_wait
+    so we never hang forever. Acquiring a token must NOT consume a fetch
+    attempt — it's the per-IP politeness gate, separate from block-retry.
+    """
+    waited = 0.0
+    while not await _ratelimit(host):
+        await _sleep(0.5)
+        waited += 0.5
+        if waited >= max_wait:
+            return  # proceed anyway rather than starve
+
+
 async def fetch_impersonated(
     url: str, *, retries: int = 3, proxy: str | None = None,
 ) -> str | None:
@@ -43,9 +56,7 @@ async def fetch_impersonated(
     """
     host = (urlparse(url).hostname or "").lower()
     for attempt in range(retries):
-        if not await _ratelimit(host):
-            await _sleep(_BACKOFFS[min(attempt, len(_BACKOFFS) - 1)])
-            continue
+        await _acquire_token(host)        # politeness gate, does NOT consume the attempt
         try:
             kw = {"proxies": {"http": proxy, "https": proxy}} if proxy else {}
             resp = await asyncio.to_thread(_cc_get, url, **kw)
