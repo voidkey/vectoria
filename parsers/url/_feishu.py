@@ -20,10 +20,10 @@ from urllib.parse import urlparse
 
 from config import get_settings
 from infra.metrics import URL_IMAGES_TRUNCATED_TOTAL
-from parsers.base import ParseResult, PermanentParseError
+from parsers.base import AntiBotBlockedError, ParseResult, PermanentParseError
 from parsers.image_ref import BytesFactory, ImageRef
 from parsers.url._browser import parse_session
-from parsers.url._handlers import extract_html_title, extract_with_trafilatura
+from parsers.url._handlers import detect_block_reason, extract_html_title, extract_with_trafilatura
 
 logger = logging.getLogger(__name__)
 
@@ -279,6 +279,10 @@ class FeishuHandler:
             markdown = (markdown + "\n\n" + tail) if markdown else tail
 
         title = extract_html_title(html, url)
+
+        reason = detect_block_reason(html, title)
+        if reason:
+            raise AntiBotBlockedError(f"{reason} at {url}")
 
         return ParseResult(
             content=markdown,

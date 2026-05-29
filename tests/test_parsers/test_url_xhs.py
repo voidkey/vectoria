@@ -20,6 +20,7 @@ from limits.aio.storage import MemoryStorage
 
 from infra import ratelimit
 from parsers.url import download_images_for_url, find_handler
+from parsers.base import AntiBotBlockedError
 from parsers.url._blacklist import UnparseableUrlError
 from parsers.url._xhs import (
     XhsHandler,
@@ -419,3 +420,40 @@ async def test_xhs_video_note_raises_unparseable():
     # Message must mention the reason — surfaces in documents.error_msg.
     msg = str(exc.value).lower()
     assert "video" in msg
+
+
+# ---------------------------------------------------------------------------
+# Block-page detection
+# ---------------------------------------------------------------------------
+
+_VERIFICATION_PAGE_HTML = """
+<html>
+  <head>
+    <title>安全验证</title>
+  </head>
+  <body>
+    <div class="verify-container">
+      <p>请完成下方验证</p>
+      <div id="captcha"></div>
+    </div>
+  </body>
+</html>
+"""
+
+
+@pytest.mark.asyncio
+async def test_xhs_verification_page_raises_antibot_blocked():
+    """When the post-render page is an anti-bot verification wall
+    (title '安全验证' / body '请完成下方验证'), AntiBotBlockedError is
+    raised instead of storing the verification page as content.
+    AntiBotBlockedError is a PermanentParseError → worker short-circuits,
+    no retry, no dead-task noise.
+    """
+    mock_ctx = _xhs_browser_mock(
+        final_url="https://www.xiaohongshu.com/explore/abc",
+        html=_VERIFICATION_PAGE_HTML,
+    )
+    with patch("parsers.url._browser.parse_session", return_value=mock_ctx):
+        with pytest.raises(AntiBotBlockedError) as exc:
+            await XhsHandler().parse("https://www.xiaohongshu.com/explore/abc")
+    assert "安全验证" in str(exc.value) or "anti-bot" in str(exc.value).lower()
