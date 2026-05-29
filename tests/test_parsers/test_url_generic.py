@@ -275,6 +275,68 @@ def test_chromium_cert_error_code_extraction():
         assert _chromium_cert_error_code(Exception(msg)) is None, msg
 
 
+def test_chromium_permanent_ssl_code_extraction():
+    """A small allowlist of ``net::ERR_SSL_*`` codes are permanent even
+    though most SSL errors are transient handshake hiccups. The clearest
+    is ERR_SSL_UNRECOGNIZED_NAME_ALERT — TLS SNI: the server has no cert
+    for the requested host, so it can never serve content there.
+
+    Must NOT match transient SSL errors (PROTOCOL_ERROR), cert errors
+    (those go through _chromium_cert_error_code), or non-TLS failures.
+    """
+    from parsers.url._generic import _chromium_permanent_ssl_code
+
+    msg = ("Page.goto: net::ERR_SSL_UNRECOGNIZED_NAME_ALERT at https://d.school/\n"
+           "Call log:\n  - navigating to \"https://d.school/\"")
+    assert _chromium_permanent_ssl_code(Exception(msg)) == "ERR_SSL_UNRECOGNIZED_NAME_ALERT"
+
+    # Negatives: transient SSL, cert (handled elsewhere), and non-TLS.
+    for msg in (
+        "Page.goto: net::ERR_SSL_PROTOCOL_ERROR at https://x/",  # transient handshake
+        "Page.goto: net::ERR_CERT_DATE_INVALID at https://x/",   # cert path
+        "Page.goto: net::ERR_CONNECTION_REFUSED at https://x/",
+        "Page.goto: Timeout 30000ms exceeded.",
+    ):
+        assert _chromium_permanent_ssl_code(Exception(msg)) is None, msg
+
+
+@pytest.mark.asyncio
+async def test_playwright_ssl_unrecognized_name_raises_permanent():
+    """Chromium ``net::ERR_SSL_UNRECOGNIZED_NAME_ALERT`` from page.goto
+    must escalate to PermanentParseError so the worker short-circuits —
+    no queue retries, no dead-task alert. The server's TLS layer doesn't
+    recognise the hostname (parked/apex domain with no cert for it), so
+    retrying just burns 3 worker slots × 30 s of playwright startup.
+
+    Real-world trigger: https://d.school/ — repeatedly re-uploaded,
+    dead-lettered 10× and spiked the document failure-rate alert.
+    """
+    from contextlib import asynccontextmanager
+    from playwright.async_api import Error as PlaywrightError
+    from parsers.base import PermanentParseError
+
+    page = MagicMock()
+    page.goto = AsyncMock(side_effect=PlaywrightError(
+        "Page.goto: net::ERR_SSL_UNRECOGNIZED_NAME_ALERT at https://d.school/\n"
+        "Call log:\n  - navigating to \"https://d.school/\", "
+        "waiting until \"domcontentloaded\"\n"
+    ))
+
+    ctx = MagicMock()
+    ctx.new_page = AsyncMock(return_value=page)
+
+    @asynccontextmanager
+    async def fake_session(**_kwargs):
+        yield ctx
+
+    with _patch_async_httpx(side_effect=Exception("connection failed")), \
+         patch("parsers.url._generic.fetch_impersonated", new=AsyncMock(return_value=None)), \
+         patch("parsers.url._browser.parse_session", fake_session):
+        h = GenericHandler()
+        with pytest.raises(PermanentParseError, match="ERR_SSL_UNRECOGNIZED_NAME_ALERT"):
+            await h.parse("https://d.school/")
+
+
 @pytest.mark.asyncio
 async def test_handler_routes_pdf_content_type_to_pdf_parser():
     """When the URL serves ``application/pdf``, hand the bytes off to

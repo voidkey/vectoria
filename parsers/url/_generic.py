@@ -87,6 +87,8 @@ def _chromium_cert_error_code(exc: BaseException) -> str | None:
     Deliberately does NOT match ``net::ERR_SSL_*`` or other TLS errors
     (protocol negotiation, handshake) — those can be transient
     (server reload, intermediate proxy hiccup) and are worth retrying.
+    The narrow set of SSL codes that *are* permanent is handled
+    separately by ``_chromium_permanent_ssl_code``.
     """
     msg = str(exc)
     marker = "net::ERR_CERT_"
@@ -98,6 +100,33 @@ def _chromium_cert_error_code(exc: BaseException) -> str | None:
     while end < len(tail) and (tail[end].isalnum() or tail[end] == "_"):
         end += 1
     return tail[:end] or None
+
+
+# A handful of ``net::ERR_SSL_*`` codes are permanent despite the
+# general rule (above) that SSL/handshake errors are transient. These
+# mean the server simply does not serve TLS for this hostname and never
+# will, so they get the same skip-retry treatment as cert errors:
+#   ERR_SSL_UNRECOGNIZED_NAME_ALERT — TLS SNI unrecognized: the cert /
+#     vhost doesn't cover the requested host (parked/apex domain, wrong
+#     name). Retrying burns three worker slots per dead URL and spikes
+#     the document failure-rate alert (real case: https://d.school/).
+_PERMANENT_SSL_CODES = frozenset({"ERR_SSL_UNRECOGNIZED_NAME_ALERT"})
+
+
+def _chromium_permanent_ssl_code(exc: BaseException) -> str | None:
+    """Return a permanent ``net::ERR_SSL_*`` token (see
+    ``_PERMANENT_SSL_CODES``) from a playwright Error message, or
+    ``None`` if the exception isn't one of the permanent SSL failures.
+
+    Counterpart to ``_chromium_cert_error_code`` for the small set of
+    SSL alerts that are content-intrinsic (server doesn't serve this
+    host) rather than transient handshake hiccups.
+    """
+    msg = str(exc)
+    for code in _PERMANENT_SSL_CODES:
+        if f"net::{code}" in msg:
+            return code
+    return None
 
 _BROWSER_ONLY_DOMAINS = {"threads.net", "instagram.com"}
 
@@ -267,6 +296,12 @@ class GenericHandler:
                         raise PermanentParseError(
                             f"TLS certificate invalid ({cert_code}) at {url}; "
                             "site cert is expired or misconfigured — not retryable"
+                        ) from exc
+                    ssl_code = _chromium_permanent_ssl_code(exc)
+                    if ssl_code is not None:
+                        raise PermanentParseError(
+                            f"TLS hostname not served ({ssl_code}) at {url}; "
+                            "server has no cert for this host — not retryable"
                         ) from exc
                     raise
 
