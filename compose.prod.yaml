@@ -26,13 +26,20 @@ services:
   app:
     image: ${VECTORIA_IMAGE:-voidkey/vectoria:latest}
     env_file: ${ENV_FILE:-.env.prod}
-    # --limit-max-requests recycles each uvicorn worker after N requests to
+    # --limit-max-requests recycles the uvicorn process after N requests to
     # bound pseudo-leak accumulation (glibc arena fragmentation, Python arena
-    # retention). Supervisor brings it back automatically; restart cost is low
-    # because heavy imports are already warmed in the image's model cache.
+    # retention). This is a single-process server (no --workers supervisor), so
+    # the "supervisor" that brings it back is Docker's `restart: unless-stopped`
+    # below — which only fires when the process actually EXITS. Without a
+    # graceful-shutdown deadline, a lingering keepalive/long-poll connection
+    # pins the process in "Waiting for connections to close" forever: it stops
+    # serving but never exits, so Docker never restarts it and /metrics goes
+    # absent (VectoriaApiAbsent). --timeout-graceful-shutdown forces exit after
+    # the deadline so the recycle completes in seconds; restart cost is low
+    # because heavy imports are warmed in the image's model cache.
     command:
       ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000",
-       "--limit-max-requests", "1000"]
+       "--limit-max-requests", "1000", "--timeout-graceful-shutdown", "30"]
     ports:
       - "8000:8000"
     depends_on:
