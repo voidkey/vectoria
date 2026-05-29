@@ -9,13 +9,41 @@ from __future__ import annotations
 
 import logging
 import re
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
+import httpx
 from lxml import html as _lh
 
 from parsers.base import AntiBotBlockedError, ParseResult
 from parsers.url._fetch import fetch_impersonated
 from parsers.url._handlers import extract_html_title, extract_image_urls
+
+
+# Public appid used by baike's embeddable lemma-card widget (not a private key).
+_LEMMA_CARD_API = "https://baike.baidu.com/api/openapi/BaikeLemmaCardApi"
+_LEMMA_CARD_APPID = "379020"
+
+
+def _url_lemma_id(url: str) -> int | None:
+    m = re.search(r"/item/[^/]+/(\d+)", url)
+    return int(m.group(1)) if m else None
+
+
+def _url_lemma_key(url: str) -> str:
+    m = re.search(r"/item/([^/?#]+)", url)
+    return unquote(m.group(1)) if m else ""
+
+
+async def _baike_lemma_card(key: str) -> dict | None:
+    """One shot, no retry (weak fallback). Returns parsed JSON dict or None."""
+    params = {"scope": "103", "format": "json", "appid": _LEMMA_CARD_APPID,
+              "bk_length": "600", "bk_key": key}
+    try:
+        async with httpx.AsyncClient(timeout=15) as c:
+            r = await c.get(_LEMMA_CARD_API, params=params)
+        return r.json()
+    except Exception:
+        return None
 
 
 def _strip_to_text(html: str) -> str:
@@ -79,5 +107,23 @@ class BaikeHandler:
 
     @staticmethod
     async def _openapi_fallback(url: str) -> "ParseResult | None":
-        # filled in T6
-        return None
+        key = _url_lemma_key(url)
+        if not key:
+            return None
+        card = await _baike_lemma_card(key)
+        if not card or "errno" in card:
+            return None
+        url_id = _url_lemma_id(url)
+        if url_id is not None and card.get("newLemmaId") != url_id:
+            logger.info("baike openapi lemma mismatch url_id=%s card=%s; rejecting",
+                        url_id, card.get("newLemmaId"))
+            return None
+        abstract = (card.get("abstract") or "").strip()
+        if not abstract:
+            return None
+        title = (card.get("title") or key).strip()
+        desc = (card.get("desc") or "").strip()
+        content = (desc + "\n\n" + abstract).strip() if desc else abstract
+        img = card.get("image")
+        return ParseResult(content=content, title=title,
+                           image_urls=[img] if img else None)

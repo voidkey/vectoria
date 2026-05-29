@@ -65,3 +65,31 @@ def test_extract_baike_images_from_fixture():
 def test_baike_download_headers_none():
     from parsers.url._baike import BaikeHandler
     assert BaikeHandler().download_headers("https://baike.baidu.com/item/x") is None
+
+
+@pytest.mark.asyncio
+async def test_openapi_fallback_lemma_id_match(monkeypatch):
+    import parsers.url._baike as b
+    async def fake_card(key): return {"newLemmaId": 65074591, "title": "神舟二十三号",
+                                      "abstract": "由中国航天科技集团...", "desc": "载人飞船"}
+    monkeypatch.setattr(b, "_baike_lemma_card", fake_card)
+    r = await b.BaikeHandler._openapi_fallback("https://baike.baidu.com/item/x/65074591")
+    assert r is not None and "中国航天" in r.content
+
+
+@pytest.mark.asyncio
+async def test_openapi_fallback_lemma_id_mismatch_rejected(monkeypatch):
+    import parsers.url._baike as b
+    async def fake_card(key): return {"newLemmaId": 5503879, "abstract": "另一个义项..."}
+    monkeypatch.setattr(b, "_baike_lemma_card", fake_card)
+    r = await b.BaikeHandler._openapi_fallback("https://baike.baidu.com/item/%E7%8E%8B%E4%B8%96%E8%BF%9B/61863047")
+    assert r is None
+
+
+@pytest.mark.asyncio
+async def test_openapi_fallback_errno_returns_none(monkeypatch):
+    import parsers.url._baike as b
+    async def fake_card(key): return {"errno": 2}
+    monkeypatch.setattr(b, "_baike_lemma_card", fake_card)
+    r = await b.BaikeHandler._openapi_fallback("https://baike.baidu.com/item/x/123")
+    assert r is None
