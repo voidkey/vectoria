@@ -7,7 +7,7 @@ from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 import httpx
 
-from parsers.base import ParseResult, PermanentParseError
+from parsers.base import AntiBotBlockedError, ParseResult, PermanentParseError
 from parsers.url._handlers import (
     DEFAULT_BROWSER_UA,
     detect_block_reason,
@@ -335,5 +335,9 @@ class GenericHandler:
             # first use; absent package surfaces here, not at the outer
             # try/except above.
             return ParseResult(content="", title="")
+
+        reason = detect_block_reason(html, title)
+        if reason:
+            raise AntiBotBlockedError(f"{reason} at {url}")
 
         return ParseResult(content=text, title=title, image_urls=img_urls)

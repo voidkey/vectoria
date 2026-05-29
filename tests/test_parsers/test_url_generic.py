@@ -618,3 +618,84 @@ async def test_httpx_block_page_returns_empty(monkeypatch):
     monkeypatch.setattr(_httpx_mod, "AsyncClient", FakeClient)
     res = await GenericHandler()._parse_httpx("https://baike.baidu.com/x")
     assert res.content == ""
+
+
+# ---------------------------------------------------------------------------
+# Task 4: post-render block-page detection → AntiBotBlockedError
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_playwright_block_page_raises_antibot_error():
+    """浏览器渲染后页面仍是反爬/验证页 → raise AntiBotBlockedError,
+    绝不返回验证页文本作为内容。
+
+    Uses the real _parse_with_playwright path driven through a mocked
+    parse_session (same pattern as test_playwright_recovers_from_navigation_race).
+    The page title is "百度安全验证" (a _BLOCK_TITLE_MARKERS hit) so
+    detect_block_reason fires even before body-text length is considered.
+    """
+    from parsers.base import AntiBotBlockedError
+
+    block_html = "<html><head><title>百度安全验证</title></head><body>请完成下方验证</body></html>"
+    block_title = "百度安全验证"
+
+    page = _make_playwright_page(
+        top_html=block_html,
+        top_url="https://baike.baidu.com/x",
+    )
+    # Override title() to return the block title (default helper returns "Top Title")
+    page.title = AsyncMock(return_value=block_title)
+
+    with _patch_async_httpx(side_effect=Exception("connection failed")), \
+         _patch_session_with_page(page):
+        with pytest.raises(AntiBotBlockedError):
+            await GenericHandler().parse("https://baike.baidu.com/x")
+
+
+@pytest.mark.asyncio
+async def test_playwright_block_page_error_message_contains_url():
+    """AntiBotBlockedError message must contain the URL so operators
+    know which site triggered the block."""
+    from parsers.base import AntiBotBlockedError
+
+    block_html = "<html><head><title>百度安全验证</title></head><body>请完成下方验证</body></html>"
+    block_title = "百度安全验证"
+    target_url = "https://baike.baidu.com/item/python"
+
+    page = _make_playwright_page(
+        top_html=block_html,
+        top_url=target_url,
+    )
+    page.title = AsyncMock(return_value=block_title)
+
+    with _patch_async_httpx(side_effect=Exception("connection failed")), \
+         _patch_session_with_page(page):
+        with pytest.raises(AntiBotBlockedError, match="baike.baidu.com"):
+            await GenericHandler().parse(target_url)
+
+
+@pytest.mark.asyncio
+async def test_playwright_non_block_page_is_not_raised():
+    """Regression guard: a normal page must NOT trigger AntiBotBlockedError.
+    Only genuine block/verification pages should raise."""
+    from parsers.base import AntiBotBlockedError
+
+    normal_html = ("<html><head><title>Python编程</title></head>"
+                   "<body><article>" + ("正常文章内容。" * 100) + "</article></body></html>")
+
+    page = _make_playwright_page(
+        top_html=normal_html,
+        top_url="https://example.com/article",
+    )
+    page.title = AsyncMock(return_value="Python编程")
+
+    long_content = "正常文章内容。" * 50
+
+    with _patch_async_httpx(side_effect=Exception("connection failed")), \
+         patch("parsers.url._handlers.trafilatura.extract", return_value=long_content), \
+         _patch_session_with_page(page):
+        # Must not raise — should return a normal ParseResult
+        result = await GenericHandler().parse("https://example.com/article")
+
+    assert isinstance(result, ParseResult)
+    assert "正常文章内容" in result.content
