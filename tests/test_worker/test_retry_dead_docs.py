@@ -202,3 +202,51 @@ async def test_eligibility_caps_repeated_dead_tasks():
     assert "< 2" in sql or "<2" in sql, (
         f"expected cap <2 (max_dead_tasks=2) in SQL, got:\n{sql}"
     )
+
+
+@pytest.mark.asyncio
+async def test_permanent_error_type_excluded_parse_error_included():
+    """Regression guard: docs with error_type='permanent' must NEVER be
+    re-queued by retry_dead_docs; docs with error_type='parse_error'
+    within the same age/task window MUST be re-queued.
+
+    This is the contract that makes the permanent-failure fix safe:
+    find_eligible_docs filters on error_type == 'parse_error' exactly,
+    so inserting a 'permanent' doc (as handlers.py now does for
+    PermanentParseError) is automatically excluded without any change
+    to retry_dead_docs logic.
+
+    Uses the SQL-inspection pattern from the query-shape test above so
+    we don't need a live DB while still asserting the WHERE-clause
+    contract directly.
+    """
+    from worker.retry_dead_docs import find_eligible_docs
+
+    captured = {}
+
+    class _FakeResult:
+        def scalars(self): return self
+        def all(self): return []
+
+    class _FakeSession:
+        async def execute(self, stmt, params=None):
+            captured["sql"] = str(stmt.compile(compile_kwargs={"literal_binds": True}))
+            return _FakeResult()
+
+    await find_eligible_docs(
+        _FakeSession(),
+        max_age_hours=24, retry_lockout_minutes=60,
+        max_dead_tasks=2, limit=50,
+    )
+
+    sql = captured["sql"]
+    # The WHERE clause must pin to 'parse_error' exactly.
+    # A permanent doc (error_type='permanent') won't match this predicate,
+    # so it is silently excluded — no change to retry_dead_docs required.
+    assert "parse_error" in sql, (
+        f"expected 'parse_error' filter in eligibility SQL, got:\n{sql}"
+    )
+    assert "permanent" not in sql, (
+        "retry_dead_docs must NOT include 'permanent' in its eligibility "
+        f"query — that would accidentally re-queue permanent failures:\n{sql}"
+    )

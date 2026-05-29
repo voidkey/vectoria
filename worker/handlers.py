@@ -218,11 +218,11 @@ async def handle_parse_document(payload: dict) -> None:
                     "(%s: %s); not falling back, not retrying",
                     engine_name, doc_id, type(e).__name__, e,
                 )
-                DOCUMENT_OUTCOMES.labels(outcome="parse_error").inc()
+                DOCUMENT_OUTCOMES.labels(outcome="permanent").inc()
                 await update_doc(
                     doc_id, status="failed",
                     error_msg=f"Parsing failed: {e}"[:500],
-                    error_type="parse_error",
+                    error_type="permanent",
                     error_trace=traceback.format_exc(),
                 )
                 return

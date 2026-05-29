@@ -53,7 +53,8 @@ class Document(Base):
     # error_msg: short human summary (UI-facing, bounded so an error with a
     #   3MB pdfium traceback doesn't balloon the doc list response).
     # error_type: structured outcome label — one of {parse_error,
-    #   empty_content, too_large, indexing_error, url_fetch_error, ...}.
+    #   empty_content, too_large, indexing_error, url_fetch_error,
+    #   permanent, ...}.
     #   Matches the DOCUMENT_OUTCOMES prom label so digest SQL and
     #   Grafana Prom panels agree on category.
     # error_trace: full Python traceback, uncapped. Populated only for

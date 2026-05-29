@@ -801,12 +801,13 @@ async def test_permanent_parse_error_short_circuits_no_retry():
     # Only the original engine was tried; fallback never invoked.
     assert parsers_used == ["url"]
     other.parse.assert_not_called()
-    # Doc marked failed (terminal state), error_type=parse_error so it
-    # shows up correctly in digests + dashboards.
+    # Doc marked failed (terminal state), error_type='permanent' so
+    # retry_dead_docs (which only selects parse_error) automatically
+    # skips it — no infinite re-queue loop.
     statuses = [u.get("status") for u in update_calls if "status" in u]
     assert "failed" in statuses
     failed = next(u for u in update_calls if u.get("status") == "failed")
-    assert failed.get("error_type") == "parse_error"
+    assert failed.get("error_type") == "permanent"
     assert "blacklist" in failed.get("error_msg", "").lower() or \
            "URL on blacklist" in failed.get("error_msg", "")
 
