@@ -183,6 +183,7 @@ _TYPE_MARKER = {
     "too_large":      "📦",
     "indexing_error": "💾",
     "url_fetch_error": "🔗",
+    "permanent":      "🚫",
     "unclassified":   "❓",
 }
 

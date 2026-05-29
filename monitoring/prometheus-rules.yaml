@@ -222,6 +222,7 @@ groups:
               • too_large → 上游文件超过 max_content_chars
               • parse_error → Parser 抛异常
               • indexing_error → embedding / 向量写入失败
+              • permanent → 内容固有不可解(黑名单/反爬/区域不可达),不重试
             仪表盘：http://grafana.internal:3000/d/vectoria-core
 
       - alert: VectoriaParseEmptyRate
