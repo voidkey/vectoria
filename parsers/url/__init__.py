@@ -38,6 +38,9 @@ register_handler(FeishuHandler())
 from parsers.url._blacklist import BlacklistHandler
 register_handler(BlacklistHandler())
 
+from parsers.url._baike import BaikeHandler
+register_handler(BaikeHandler())
+
 from parsers.url._generic import GenericHandler
 register_handler(GenericHandler())  # catch-all, must be last
 
