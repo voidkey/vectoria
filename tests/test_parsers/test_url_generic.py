@@ -567,3 +567,54 @@ async def test_playwright_returns_empty_when_no_frame_has_content():
         result = await GenericHandler().parse("https://example.com/post")
 
     assert result.content.strip() == ""
+
+
+# ---------------------------------------------------------------------------
+# Task 3: browser UA + block-page detection
+# ---------------------------------------------------------------------------
+
+import httpx as _httpx_mod
+from parsers.url._handlers import DEFAULT_BROWSER_UA
+
+
+@pytest.mark.asyncio
+async def test_httpx_sends_browser_ua(monkeypatch):
+    captured = {}
+
+    class FakeResp:
+        status_code = 200
+        url = "https://example.com/a"
+        headers = {"content-type": "text/html"}
+        text = "<html><body>" + ("正常正文。" * 100) + "</body></html>"
+        def raise_for_status(self): pass
+
+    class FakeClient:
+        def __init__(self, *a, **kw):
+            captured["headers"] = kw.get("headers")
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def get(self, url): return FakeResp()
+
+    monkeypatch.setattr(_httpx_mod, "AsyncClient", FakeClient)
+    res = await GenericHandler()._parse_httpx("https://example.com/a")
+    assert captured["headers"]["User-Agent"] == DEFAULT_BROWSER_UA
+
+
+@pytest.mark.asyncio
+async def test_httpx_block_page_returns_empty(monkeypatch):
+    class FakeResp:
+        status_code = 200
+        url = "https://baike.baidu.com/x"
+        headers = {"content-type": "text/html"}
+        text = "<html><body>请完成下方验证后继续操作</body></html>"
+        def raise_for_status(self): pass
+
+    class FakeClient:
+        def __init__(self, *a, **kw): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def get(self, url): return FakeResp()
+
+    monkeypatch.setattr(_httpx_mod, "AsyncClient", FakeClient)
+    res = await GenericHandler()._parse_httpx("https://baike.baidu.com/x")
+    assert res.content == ""

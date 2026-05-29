@@ -9,6 +9,8 @@ import httpx
 
 from parsers.base import ParseResult, PermanentParseError
 from parsers.url._handlers import (
+    DEFAULT_BROWSER_UA,
+    detect_block_reason,
     extract_html_title,
     extract_image_urls,
     extract_with_trafilatura,
@@ -190,6 +192,7 @@ class GenericHandler:
         try:
             async with httpx.AsyncClient(
                 timeout=15, follow_redirects=True,
+                headers={"User-Agent": DEFAULT_BROWSER_UA},
             ) as client:
                 resp = await client.get(url)
             resp.raise_for_status()
@@ -202,8 +205,12 @@ class GenericHandler:
 
         downloaded = resp.text
         final_url = str(resp.url)
-        text = extract_with_trafilatura(downloaded)
         title = extract_html_title(downloaded, final_url)
+        # 反爬页:返回空,让 GenericHandler.parse 的 needs_browser_fallback
+        # 触发 playwright 兜底(浏览器可能过),且防止长反爬页因字数达标被当正文。
+        if detect_block_reason(downloaded, title):
+            return ParseResult(content="", title="")
+        text = extract_with_trafilatura(downloaded)
         img_urls = extract_image_urls(downloaded, final_url)
         return ParseResult(content=text, title=title, image_urls=img_urls)
 
