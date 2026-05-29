@@ -8,6 +8,7 @@ from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 import httpx
 
 from parsers.base import AntiBotBlockedError, ParseResult, PermanentParseError
+from parsers.url._fetch import fetch_impersonated
 from parsers.url._handlers import (
     DEFAULT_BROWSER_UA,
     detect_block_reason,
@@ -171,6 +172,15 @@ class GenericHandler:
         if isinstance(result, _PdfHandled):
             return result.result
         if needs_browser_fallback(result):
+            html = await fetch_impersonated(url)
+            if html is not None:
+                text = extract_with_trafilatura(html)
+                if text.strip():
+                    return ParseResult(
+                        content=text,
+                        title=extract_html_title(html, url),
+                        image_urls=extract_image_urls(html, url),
+                    )
             return await self._parse_with_playwright(url)
         return result
 

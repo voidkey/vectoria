@@ -99,6 +99,7 @@ async def test_handler_falls_back_to_playwright_on_js_challenge():
              url="https://example.com/spa",
          ), \
          patch("parsers.url._handlers.trafilatura.extract", return_value="Just a moment..."), \
+         patch("parsers.url._generic.fetch_impersonated", new=AsyncMock(return_value=None)), \
          patch.object(GenericHandler, "_parse_with_playwright", new_callable=AsyncMock,
                       return_value=pw_result):
         h = GenericHandler()
@@ -112,6 +113,7 @@ async def test_handler_returns_empty_on_total_failure():
     # httpx fails → empty result → needs_browser_fallback → playwright fallback
     # Playwright import raises → returns empty
     with _patch_async_httpx(side_effect=Exception("connection failed")), \
+         patch("parsers.url._generic.fetch_impersonated", new=AsyncMock(return_value=None)), \
          patch.dict("sys.modules", {"playwright.async_api": None}):
         h = GenericHandler()
         result = await h.parse("https://bad-url.example")
@@ -165,6 +167,7 @@ async def test_playwright_recovers_from_navigation_race():
 
     with _patch_async_httpx(side_effect=Exception("connection failed")), \
          patch("parsers.url._handlers.trafilatura.extract", return_value=long_content), \
+         patch("parsers.url._generic.fetch_impersonated", new=AsyncMock(return_value=None)), \
          patch("parsers.url._browser.parse_session", fake_session):
         h = GenericHandler()
         result = await h.parse("https://example.com/article")
@@ -206,6 +209,7 @@ async def test_playwright_cert_error_raises_permanent():
         yield ctx
 
     with _patch_async_httpx(side_effect=Exception("connection failed")), \
+         patch("parsers.url._generic.fetch_impersonated", new=AsyncMock(return_value=None)), \
          patch("parsers.url._browser.parse_session", fake_session):
         h = GenericHandler()
         with pytest.raises(PermanentParseError, match="ERR_CERT_DATE_INVALID"):
@@ -235,6 +239,7 @@ async def test_playwright_non_cert_error_still_propagates():
         yield ctx
 
     with _patch_async_httpx(side_effect=Exception("connection failed")), \
+         patch("parsers.url._generic.fetch_impersonated", new=AsyncMock(return_value=None)), \
          patch("parsers.url._browser.parse_session", fake_session):
         h = GenericHandler()
         with pytest.raises(PlaywrightError):
@@ -474,6 +479,7 @@ async def test_playwright_extracts_from_iframe_when_top_is_empty():
     with _patch_async_httpx(side_effect=Exception("connection failed")), \
          patch("parsers.url._handlers.trafilatura.extract",
                side_effect=trafilatura_extract), \
+         patch("parsers.url._generic.fetch_impersonated", new=AsyncMock(return_value=None)), \
          _patch_session_with_page(page):
         result = await GenericHandler().parse("https://example.com/p/kktno10d")
 
@@ -503,6 +509,7 @@ async def test_playwright_does_not_dive_when_top_extraction_works():
                side_effect=lambda html, **_kw: (
                    "Real article body. " * 25 if "article body" in html else ""
                )), \
+         patch("parsers.url._generic.fetch_impersonated", new=AsyncMock(return_value=None)), \
          _patch_session_with_page(page):
         result = await GenericHandler().parse("https://example.com/post")
 
@@ -537,6 +544,7 @@ async def test_playwright_iframe_walk_skips_unreadable_frames():
     with _patch_async_httpx(side_effect=Exception("connection failed")), \
          patch("parsers.url._handlers.trafilatura.extract",
                side_effect=trafilatura_extract), \
+         patch("parsers.url._generic.fetch_impersonated", new=AsyncMock(return_value=None)), \
          _patch_session_with_page(page):
         result = await GenericHandler().parse("https://example.com/p/x")
 
@@ -563,6 +571,7 @@ async def test_playwright_returns_empty_when_no_frame_has_content():
 
     with _patch_async_httpx(side_effect=Exception("connection failed")), \
          patch("parsers.url._handlers.trafilatura.extract", return_value=""), \
+         patch("parsers.url._generic.fetch_impersonated", new=AsyncMock(return_value=None)), \
          _patch_session_with_page(page):
         result = await GenericHandler().parse("https://example.com/post")
 
@@ -647,6 +656,7 @@ async def test_playwright_block_page_raises_antibot_error():
     page.title = AsyncMock(return_value=block_title)
 
     with _patch_async_httpx(side_effect=Exception("connection failed")), \
+         patch("parsers.url._generic.fetch_impersonated", new=AsyncMock(return_value=None)), \
          _patch_session_with_page(page):
         with pytest.raises(AntiBotBlockedError):
             await GenericHandler().parse("https://baike.baidu.com/x")
@@ -669,6 +679,7 @@ async def test_playwright_block_page_error_message_contains_url():
     page.title = AsyncMock(return_value=block_title)
 
     with _patch_async_httpx(side_effect=Exception("connection failed")), \
+         patch("parsers.url._generic.fetch_impersonated", new=AsyncMock(return_value=None)), \
          _patch_session_with_page(page):
         with pytest.raises(AntiBotBlockedError, match="baike.baidu.com"):
             await GenericHandler().parse(target_url)
@@ -693,9 +704,35 @@ async def test_playwright_non_block_page_is_not_raised():
 
     with _patch_async_httpx(side_effect=Exception("connection failed")), \
          patch("parsers.url._handlers.trafilatura.extract", return_value=long_content), \
+         patch("parsers.url._generic.fetch_impersonated", new=AsyncMock(return_value=None)), \
          _patch_session_with_page(page):
         # Must not raise — should return a normal ParseResult
         result = await GenericHandler().parse("https://example.com/article")
 
     assert isinstance(result, ParseResult)
     assert "正常文章内容" in result.content
+
+
+# ---------------------------------------------------------------------------
+# P1-T7: curl_cffi tier inserted between httpx and playwright
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_generic_uses_curl_cffi_before_playwright(monkeypatch):
+    from parsers.url._generic import GenericHandler
+    import parsers.url._generic as g
+    from parsers.base import ParseResult
+    async def fake_httpx(self, url):
+        return ParseResult(content="", title="")          # httpx blocked → empty
+    async def fake_fetch(url, **kw):
+        return "<html><body>" + ("真正文。" * 100) + "</body></html>"
+    pw_called = {"n": 0}
+    async def fake_pw(self, url):
+        pw_called["n"] += 1
+        return ParseResult(content="pw", title="")
+    monkeypatch.setattr(GenericHandler, "_parse_httpx", fake_httpx)
+    monkeypatch.setattr(g, "fetch_impersonated", fake_fetch)
+    monkeypatch.setattr(GenericHandler, "_parse_with_playwright", fake_pw)
+    r = await GenericHandler().parse("https://example.com/x")
+    assert "真正文" in r.content
+    assert pw_called["n"] == 0    # curl_cffi succeeded → playwright NOT called
