@@ -137,15 +137,22 @@ groups:
             401/404 已排除（常规噪音）。
 
       - alert: VectoriaUploadRejected
-        # 上传被 API 网关 4xx 拒（mime sniff / 大小超限），10m 内累计 ≥3 次。
-        # 阈值偏松：每条 mismatch 都是真实用户在被 400/413 拦下，3 次足够冒头通知。
-        # 比 VectoriaApiClientErrorSpike 更早：那个要 0.5/s（10m ≥ 300 次）才烧，
-        # 5 个真实用户在踩同一个 sniff bug 永远到不了那个阈值。
+        # 只对 reason="mime_mismatch" 告警 —— 那是唯一"可能是我们的 bug"的拒绝
+        # （sniff 规则误伤某家族 / 客户端后缀错 / 真实跨家族伪造）。10m 内 ≥3 次
+        # 冒头：5 个真实用户踩同一个 sniff bug 到不了 VectoriaApiClientErrorSpike
+        # 的 0.5/s（10m ≥ 300 次）阈值，需要这条更早烧。
+        #
+        # 刻意排除 too_large / too_many_pages / too_many_slides —— 那些是用户传了
+        # 超限文件、API 按 max_upload_bytes / max_pdf_pages 正确拒绝，属于预期行为，
+        # 不是事故，不该 page 人（历史上这条 100% 的触发都是 too_many_pages 噪音）。
+        # 这三类仍计入 vectoria_upload_rejected_total，在 Grafana 看趋势即可；
+        # 真要调高 limit 是产品决策，不是告警事件。
+        #
         # 与 dead-task / digest 那一路（管线内失败）正交：管线那边告警是"已建 doc
         # 后处理失败"，这个告警是"上传当场拒，没建 doc"——两类失败路径互补。
         expr: |
-          sum by (reason, claimed_ext) (
-            increase(vectoria_upload_rejected_total[10m])
+          sum by (claimed_ext) (
+            increase(vectoria_upload_rejected_total{reason="mime_mismatch"}[10m])
           ) >= 3
         for: 0m
         labels:
@@ -153,15 +160,14 @@ groups:
           service: vectoria
           component: api
         annotations:
-          summary: "[{{ $externalLabels.env }}] 上传被 4xx 拒：{{ $labels.reason }} on {{ $labels.claimed_ext }}（{{ $value | humanize }} 次/10m）"
+          summary: "[{{ $externalLabels.env }}] 上传被拒 mime_mismatch on {{ $labels.claimed_ext }}（{{ $value | humanize }} 次/10m）"
           description: |
-            过去 10 分钟有 {{ $value | humanize }} 个上传被 4xx 拒。
-            原因：{{ $labels.reason }}    声明扩展名：{{ $labels.claimed_ext }}
-            可能：
-              • mime_mismatch：sniff 规则对该家族有 bug → 拿文件复现修
-                          / 客户端传了错的后缀 → 反馈用户
-                          / 真实跨家族伪造（detected=executable 等）→ 拦得对
-              • too_large：用户文件超 max_upload_bytes，看是否需要调高 limit
+            过去 10 分钟有 {{ $value | humanize }} 个上传因 mime_mismatch 被 4xx 拒。
+            声明扩展名：{{ $labels.claimed_ext }}
+            sniff 检测到的字节家族与后缀不符，三种可能：
+              • sniff 规则对该家族有 bug → 拿文件复现修
+              • 客户端传了错的后缀 → 反馈用户
+              • 真实跨家族伪造（detected=executable 等）→ 拦得对
             排查具体文件名（cardinality 没法上 metric，只能从日志取）：
               docker logs vectoria-app-1 --since 30m | grep upload_rejected
 
@@ -197,32 +203,44 @@ groups:
     rules:
 
       - alert: VectoriaDocumentFailureRate
-        # 文档非 completed 结束 >20% 持续 10 分钟。
-        # 流量闸门 > 0.01 docs/s（10 分钟 ≥6 文档）才算样本够。
-        # 20% 阈值偏宽 —— 正常就有坏输入；语料可控的部署可调严。
+        # 双闸门，专打"系统性入库失败"，不再被坏输入和小分母带偏：
+        #   1. 分子只数 parse_error + indexing_error —— 真正该查的"意外失败"。
+        #      刻意排除 empty_content / too_large（设计内终态，不重试）和
+        #      permanent（黑名单/反爬/SSL 不可达等内容固有不可解，系统已正确
+        #      放弃）。老规则用 outcome!="completed" 把这些良性 outcome 全算成
+        #      失败 —— 这是历史误报的主因（如几个 d.school 死信顶到 77.7%）。
+        #   2. 比率 >20%（分母=全部 outcome）挡高流量误报：100 篇里 6 个
+        #      parse_error 是 6%，不该烧。
+        #   3. 绝对失败数 ≥5/10m 挡低流量小分母：本实例中位数才 ~3 篇/10m，
+        #      1 个坏 doc = 33% 但只有 1 个，不该烧；真出系统性故障（embedding
+        #      挂了 → indexing_error 暴涨）会迅速越过 5 这条线。
+        # 两条都满足才告 —— 高流量靠比率收，低流量靠绝对数收。
         expr: |
           (
-            sum(rate(vectoria_documents_total{outcome!="completed"}[10m]))
+            sum(increase(vectoria_documents_total{outcome=~"parse_error|indexing_error"}[10m]))
             /
-            sum(rate(vectoria_documents_total[10m]))
+            sum(increase(vectoria_documents_total[10m]))
           ) > 0.2
           and
-          sum(rate(vectoria_documents_total[10m])) > 0.01
+          sum(increase(vectoria_documents_total{outcome=~"parse_error|indexing_error"}[10m])) >= 5
         for: 10m
         labels:
           severity: warning
           service: vectoria
           component: documents
         annotations:
-          summary: "[{{ $externalLabels.env }}] 文档入库失败率 {{ $value | humanizePercentage }}"
+          summary: "[{{ $externalLabels.env }}] 文档入库意外失败率 {{ $value | humanizePercentage }}"
           description: |
-            过去 10 分钟失败率：{{ $value | humanizePercentage }}（阈值 20%）
-            定位原因（Grafana 按 outcome 拆开）：
-              • empty_content → 某 Parser 返回空（常见：扫描版 PDF 没 OCR）
-              • too_large → 上游文件超过 max_content_chars
+            过去 10 分钟 parse_error + indexing_error 占比 {{ $value | humanizePercentage }}
+            （阈值 20%，且这两类绝对数已 ≥5）。这条只数"意外失败"：
               • parse_error → Parser 抛异常
               • indexing_error → embedding / 向量写入失败
-              • permanent → 内容固有不可解(黑名单/反爬/区域不可达),不重试
+            已排除的良性 outcome（不计入、不告警，Grafana 仍可看）：
+              • empty_content → 解析成功但无可抽取内容（扫描版 PDF 等）
+              • too_large → 上游文件超 max_content_chars
+              • permanent → 内容固有不可解(黑名单/反爬/SSL 不可达),系统已正确放弃
+            排查顺序：embedding/向量库是否健康 → 某 Parser 引擎错误率
+            （见 VectoriaParseErrorRate）→ 最近是否发版。
             仪表盘：http://grafana.internal:3000/d/vectoria-core
 
       - alert: VectoriaParseEmptyRate
@@ -297,29 +315,41 @@ groups:
               • 任务本身过大（打量看 max_content_chars）
 
       - alert: VectoriaDeadTaskAccumulating
-        expr: vectoria_queue_dead_tasks > 0
+        # 按 (source, task_type) 聚合，不按 task_id —— 一个坏来源 = 一条告警。
+        # 之前 expr 是 `vectoria_queue_dead_tasks > 0`，每条 dead task 一个
+        # series，同一个 URL 的 N 个死信就炸成 N 条 series。它们 group_by
+        # (alertname,severity) 归到同一组，但每来一条新 series 就让
+        # alertmanager 的 group_interval(5m) 把整组重发一次 —— 这才是
+        # "同一链接刷屏 + 一小时发好几遍" 的真因（不是 repeat_interval）。
+        # count by 把同源折叠成单一稳定 series：组成员不再抖动，96h child
+        # route 的 repeat_interval 才真正生效 → 每个来源只推一次。
+        expr: count by (source, task_type) (vectoria_queue_dead_tasks) > 0
         for: 1m
         labels:
           severity: warning
           service: vectoria
           component: queue
         annotations:
-          summary: "[{{ $externalLabels.env }}] 死信 {{ $labels.task_type }}: {{ $labels.source }}"
-          # Edge-triggered alert：每条 dead task 一个 series → 一条告警。
-          # alertmanager 侧 child route 把 repeat_interval 拉到 96h，所以
-          # 这条只会推一次。description 必须自洽 —— 第一条信息就要让运维
-          # 知道默认动作（不动），UPDATE/DELETE 是 escape hatch 而非默认。
+          summary: "[{{ $externalLabels.env }}] 死信 {{ $labels.task_type }}: {{ $labels.source }}（{{ $value | humanize }} 个）"
+          # Edge-triggered alert：聚合后每个 source 一条 series → 一条告警。
+          # alertmanager child route 把 repeat_interval 拉到 96h，所以这条
+          # 只会推一次。description 必须自洽 —— 第一条信息就要让运维知道
+          # 默认动作（不动）；具体 task_id 用下面的 SQL 现查（聚合后 metric
+          # 上没有 task_id 标签，故不在告警正文内联，改为可复制的查询）。
           description: |
             来源: {{ $labels.source }}
-            任务: {{ $labels.task_id }}
-            已耗尽重试。retry_dead_docs 的 cap 已经把这个 doc 排除在 auto-retry
-            之外，dead 行留作 cap 证据，告警 24h 后随 metric 自动消失。
+            该来源已耗尽重试的死信任务数: {{ $value | humanize }}
+            retry_dead_docs 的 cap 已经把这些 doc 排除在 auto-retry 之外，
+            dead 行留作 cap 证据，告警 24h 后随 metric 自动消失。
 
-            默认动作：不动。下面两条 SQL 是 escape hatch，按需选用：
+            默认动作：不动。需要介入时，先列出这些 task_id：
+              SELECT id, attempts, updated_at FROM tasks
+              WHERE source='{{ $labels.source }}' AND status='dead';
+            下面两条 SQL 是 escape hatch（把 :id 换成上面查到的具体值）：
               • 若失败明显是临时（外部 API 当时抖动、worker 当时挂）→ 重入队：
-                  UPDATE tasks SET status='pending',attempts=0 WHERE id='{{ $labels.task_id }}';
+                  UPDATE tasks SET status='pending',attempts=0 WHERE id=':id';
               • 极少需要：彻底清掉（会让同 doc 重新进入 auto-retry 池，慎用）：
-                  DELETE FROM tasks WHERE id='{{ $labels.task_id }}';
+                  DELETE FROM tasks WHERE id=':id';
 
   # -------------------------------------------------------------------
   # Worker 资源
