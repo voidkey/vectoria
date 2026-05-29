@@ -28,6 +28,15 @@ class PermanentParseError(Exception):
     """
 
 
+class AntiBotBlockedError(PermanentParseError):
+    """页面被反爬 / 验证码 / 登录墙拦截,内容不可得。
+
+    继承 PermanentParseError → worker 不 fallback、不 queue 重试、
+    不刷死信告警。与 UnparseableUrlError 并列,但语义专指"被拦截"
+    而非"模式不支持"。
+    """
+
+
 @dataclass
 class ParseResult:
     content: str          # Markdown text
