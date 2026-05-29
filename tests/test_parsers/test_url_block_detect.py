@@ -42,3 +42,9 @@ def test_no_false_positive_on_normal_short_page():
 def test_default_ua_is_browser_like():
     assert "Mozilla/5.0" in DEFAULT_BROWSER_UA
     assert "python-httpx" not in DEFAULT_BROWSER_UA.lower()
+
+
+def test_no_false_positive_on_marker_inside_html_comment():
+    # marker 只出现在 HTML 注释里,可见正文正常 → 不应判 block
+    html = "<html><body><!-- 请登录后查看 --><p>这是正常的短文内容,记录今天的事情。</p></body></html>"
+    assert detect_block_reason(html, "今日随笔") is None

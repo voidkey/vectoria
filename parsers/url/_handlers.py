@@ -95,18 +95,19 @@ DEFAULT_BROWSER_UA = (
 
 # 反爬 / 验证 / 登录墙信号。保守:漏判退回现状,误判才有害(拒掉合法页)。
 _BLOCK_TITLE_MARKERS = (
-    "安全验证", "百度安全验证", "百度百科-验证", "人机验证", "验证中心",
+    "安全验证", "百度百科-验证", "人机验证", "验证中心",
 )
 _BLOCK_BODY_MARKERS = (
     "安全验证", "请完成下方验证", "人机验证", "滑动验证", "captcha",
-    "verify you are human", "请登录后查看", "登录后查看", "sign in to continue",
+    "verify you are human", "登录后查看", "sign in to continue",
 )
 _BLOCK_BODY_TEXT_CAP = 500  # 正文可见文本超过此长度,只信任标题信号(防长文误判)
 
 
 def _visible_text(html: str) -> str:
     """粗略去标签得到可见文本,用于"正文很短"判定。不求精确,够判长短。"""
-    t = re.sub(r"(?is)<(script|style)\b.*?</\1>", " ", html)
+    t = re.sub(r"(?s)<!--.*?-->", " ", html)          # 先去 HTML 注释,避免注释内文字泄漏
+    t = re.sub(r"(?is)<(script|style)\b.*?</\1>", " ", t)
     t = re.sub(r"(?s)<[^>]+>", " ", t)
     return re.sub(r"\s+", " ", t).strip()
 
