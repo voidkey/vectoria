@@ -25,6 +25,8 @@
 | POST | `/analyze/file` | 上传文件解析为 Markdown（multipart/form-data） |
 | POST | `/analyze/url` | 传入 URL 解析为 Markdown |
 
+> `/analyze/*` 仅接受静态 `X-API-Key` 认证（内部/运维用途）；JWT 调用方返回 403。纯 JWT 部署（只设 `JWT_SECRET`、未设 `API_KEY`）下 analyze 不可用 —— 需 analyze 时请配置 `API_KEY`。
+
 #### 请求 - `/analyze/url`（AnalyzeURLRequest）
 
 | 字段 | 类型 | 必填 | 说明 |

@@ -75,8 +75,8 @@ Logs: `logs/uvicorn-<timestamp>.log` (one file per deploy, never overwritten). O
 ### Document Parsing
 
 ```
-POST /v1/analyze/file   # upload a file (multipart/form-data)
-POST /v1/analyze/url    # provide a URL (JSON body)
+POST /v1/analyze/file   # internal / API-key only (X-API-Key); JWT callers get 403
+POST /v1/analyze/url    # internal / API-key only (X-API-Key); JWT callers get 403
 ```
 
 Parse a file or URL into Markdown without storing it. Returns parsed Markdown along with extracted images.
