@@ -52,8 +52,10 @@ async def acquire_page_token(host: str, *, max_wait: float = 6.0) -> None:
 async def fetch_impersonated(
     url: str, *, retries: int = 3, proxy: str | None = None,
 ) -> str | None:
-    """Fetch HTML via curl_cffi (Chrome JA3). Returns HTML, or None if every
-    attempt was blocked / errored. Retries with backoff on anti-bot pages.
+    """Fetch HTML via curl_cffi (Chrome JA3). Returns HTML, or None on a
+    confirmed anti-bot block or after exhausting retries. Retries with backoff
+    on transient errors (exception / empty body) only; a *confirmed* block
+    stops immediately (re-hitting a challenge just escalates the ban).
     ``proxy`` is reserved for future use (kuaidaili); unused in P1.
     """
     host = (urlparse(url).hostname or "").lower()
