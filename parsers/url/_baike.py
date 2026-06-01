@@ -11,7 +11,6 @@ import logging
 import re
 from urllib.parse import unquote, urlparse
 
-import httpx
 from lxml import html as _lh
 
 from parsers.base import AntiBotBlockedError, ParseResult

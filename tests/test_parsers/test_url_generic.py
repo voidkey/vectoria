@@ -658,10 +658,11 @@ import parsers.url._http as _http_mod
 
 @pytest.mark.asyncio
 async def test_httpx_sends_browser_ua(monkeypatch):
-    """make_async_client() (in _http.py) passes DEFAULT_BROWSER_UA as the
-    User-Agent header by default.  Verify the factory is called without
-    overrides so the default UA is used, then verify _http.make_async_client
-    was invoked (UA contract lives there, not in _generic.py post-migration).
+    """_generic._parse_httpx calls make_async_client() with NO explicit
+    headers override, so the UA default set inside make_async_client wins.
+    Verify the factory is called and that the call kwargs do not include a
+    'headers' key carrying a different User-Agent (the real UA contract is
+    tested in test_http_capped.py::test_make_async_client_sets_browser_ua).
     """
     captured = {}
 
@@ -675,8 +676,6 @@ async def test_httpx_sends_browser_ua(monkeypatch):
     mock_resp.url = "https://example.com/a"
     mock_resp.headers = {"content-type": "text/html"}
 
-    original_make = _http_mod.make_async_client
-
     def _spy_make(**kw):
         captured["kw"] = kw
         return mock_client
@@ -686,14 +685,12 @@ async def test_httpx_sends_browser_ua(monkeypatch):
 
     monkeypatch.setattr(_http_mod, "make_async_client", _spy_make)
     monkeypatch.setattr(_http_mod, "fetch_capped", _fake_fetch)
-    res = await GenericHandler()._parse_httpx("https://example.com/a")
-    # _generic._parse_httpx calls make_async_client() with no explicit headers,
-    # so _http.make_async_client must supply DEFAULT_BROWSER_UA.  Verify by
-    # calling the real factory with the same kwargs and inspecting its defaults.
-    real_opts = {}
-    real_opts.update({"headers": {"User-Agent": DEFAULT_BROWSER_UA}})
-    real_opts.update(captured.get("kw", {}))
-    assert real_opts["headers"]["User-Agent"] == DEFAULT_BROWSER_UA
+    await GenericHandler()._parse_httpx("https://example.com/a")
+    # The factory must have been called.
+    assert "kw" in captured, "make_async_client was not called"
+    # No explicit headers override — the default UA inside make_async_client applies.
+    kw = captured["kw"]
+    assert "headers" not in kw or "User-Agent" not in kw.get("headers", {})
 
 
 @pytest.mark.asyncio

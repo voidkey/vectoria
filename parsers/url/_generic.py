@@ -229,8 +229,8 @@ class GenericHandler:
         Download is starting" failure.
         """
         from parsers.url._http import ResponseTooLargeError, fetch_capped, make_async_client
-        await acquire_page_token((urlparse(url).hostname or "").lower())
         try:
+            await acquire_page_token((urlparse(url).hostname or "").lower())
             async with make_async_client() as client:
                 resp, body = await fetch_capped(client, url)
         except (ResponseTooLargeError, httpx.TooManyRedirects):

@@ -63,3 +63,11 @@ async def test_fetch_capped_explicit_max_bytes_overrides_config(monkeypatch):
     with pytest.raises(_http.ResponseTooLargeError):
         await _http.fetch_capped(client, "https://x.test/p", max_bytes=5)
     await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_make_async_client_sets_browser_ua():
+    from parsers.url._handlers import DEFAULT_BROWSER_UA
+    client = _http.make_async_client()
+    assert client.headers.get("user-agent") == DEFAULT_BROWSER_UA
+    await client.aclose()

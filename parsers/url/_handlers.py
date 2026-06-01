@@ -6,7 +6,6 @@ import re
 from typing import Protocol, runtime_checkable
 from urllib.parse import urljoin, urlparse
 
-import httpx
 import trafilatura
 
 from config import get_settings

@@ -8,8 +8,6 @@ from __future__ import annotations
 import re
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
-import httpx
-
 from config import get_settings
 from infra.metrics import URL_IMAGES_TRUNCATED_TOTAL
 from parsers.base import ParseResult

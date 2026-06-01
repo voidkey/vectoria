@@ -11,7 +11,6 @@ from __future__ import annotations
 import logging
 from urllib.parse import urlparse, urlunparse, parse_qsl, urlencode
 
-import httpx
 import lxml.html
 
 from config import get_settings
