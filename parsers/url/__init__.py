@@ -9,7 +9,11 @@ External code should import from this package:
 """
 from __future__ import annotations
 
-from parsers.base import BaseParser, ParseResult
+from urllib.parse import urlparse
+
+from api.url_validation import reresolve_and_check_ssrf
+from parsers.base import AntiBotBlockedError, BaseParser, ParseResult
+from parsers.url._block_cooldown import is_blocked, mark_blocked
 from parsers.url._handlers import (
     canonicalize_via,
     download_images,
@@ -52,19 +56,26 @@ class UrlParser(BaseParser):
     async def parse(self, source: bytes | str, filename: str = "", **kwargs) -> ParseResult:
         url = source.decode() if isinstance(source, bytes) else source
 
-        # W5-1: close the DNS-rebinding window. The API validated this
-        # URL at enqueue time, but DNS may have flipped since then. Re-
-        # resolve right before the handler fires its own HTTP fetch so
-        # an attacker can't make us crawl internal metadata between
-        # validate and fetch. AppError propagates so worker.handlers
-        # marks the task failed with a clear error code.
-        from api.url_validation import reresolve_and_check_ssrf
+        # Close the DNS-rebinding window (validated at enqueue; DNS may have
+        # flipped since). AppError propagates so worker.handlers marks failed.
         await reresolve_and_check_ssrf(url)
+
+        host = (urlparse(url).hostname or "").lower()
+        # Fleet-shared anti-bot cooldown: skip httpx + Playwright entirely for
+        # a domain that recently blocked us, instead of re-probing it.
+        if host and await is_blocked(host):
+            raise AntiBotBlockedError(f"domain in anti-bot cooldown: {host}")
 
         handler = find_handler(url)
         if handler is None:
             return ParseResult(content="", title="")
-        return await handler.parse(url)
+        try:
+            return await handler.parse(url)
+        except AntiBotBlockedError:
+            # Terminal block — trip the cooldown so sibling URLs back off.
+            if host:
+                await mark_blocked(host)
+            raise
 
 
 async def download_images_for_url(
