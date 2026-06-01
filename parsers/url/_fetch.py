@@ -12,13 +12,13 @@ import asyncio
 import logging
 from urllib.parse import urlparse
 
+from config import get_settings
 from curl_cffi import requests as _cc
 from infra.ratelimit import acquire as _rl_acquire
 from parsers.url._handlers import detect_block_reason, extract_html_title
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_RATE, _DEFAULT_PER = 1, 2  # ~0.5/s, polite single-IP
 _BACKOFFS = (0.5, 1.0, 2.0)
 
 
@@ -27,17 +27,19 @@ def _cc_get(url: str, **kw):  # wrapper so tests can monkeypatch
 
 
 async def _ratelimit(host: str) -> bool:
-    return await _rl_acquire(host, rate=_DEFAULT_RATE, per_seconds=_DEFAULT_PER)
+    s = get_settings()
+    return await _rl_acquire(host, rate=s.url_page_fetch_rate, per_seconds=s.url_page_fetch_per)
 
 
 async def _sleep(seconds: float) -> None:
     await asyncio.sleep(seconds)
 
 
-async def _acquire_token(host: str, *, max_wait: float = 6.0) -> None:
-    """Wait (politely) until a rate token is available, bounded by max_wait
+async def acquire_page_token(host: str, *, max_wait: float = 6.0) -> None:
+    """Per-host politeness gate for any page-fetch tier (curl_cffi, httpx,
+    Playwright). Waits until a rate token is available, bounded by max_wait
     so we never hang forever. Acquiring a token must NOT consume a fetch
-    attempt — it's the per-IP politeness gate, separate from block-retry.
+    attempt — it is the per-IP politeness gate, separate from block-retry.
     """
     waited = 0.0
     while not await _ratelimit(host):
@@ -56,7 +58,7 @@ async def fetch_impersonated(
     """
     host = (urlparse(url).hostname or "").lower()
     for attempt in range(retries):
-        await _acquire_token(host)        # politeness gate, does NOT consume the attempt
+        await acquire_page_token(host)    # politeness gate, does NOT consume the attempt
         try:
             kw = {"proxies": {"http": proxy, "https": proxy}} if proxy else {}
             resp = await asyncio.to_thread(_cc_get, url, **kw)

@@ -8,7 +8,7 @@ from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 import httpx
 
 from parsers.base import AntiBotBlockedError, ParseResult, PermanentParseError
-from parsers.url._fetch import fetch_impersonated
+from parsers.url._fetch import acquire_page_token, fetch_impersonated
 from parsers.url._handlers import (
     DEFAULT_BROWSER_UA,
     detect_block_reason,
@@ -229,6 +229,7 @@ class GenericHandler:
         Download is starting" failure.
         """
         try:
+            await acquire_page_token((urlparse(url).hostname or "").lower())
             async with httpx.AsyncClient(
                 timeout=15, follow_redirects=True,
                 headers={"User-Agent": DEFAULT_BROWSER_UA},
@@ -288,6 +289,7 @@ class GenericHandler:
                 init_script=anti_webdriver,
             ) as ctx:
                 page = await ctx.new_page()
+                await acquire_page_token((urlparse(url).hostname or "").lower())
                 try:
                     await page.goto(url, wait_until="domcontentloaded", timeout=30000)
                 except PlaywrightError as exc:
