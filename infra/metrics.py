@@ -230,6 +230,12 @@ UPLOAD_REJECTED_TOTAL = Counter(
 # Rate limiting (infra/ratelimit.py)
 # ---------------------------------------------------------------------------
 
+URL_BLOCK_COOLDOWN_TOTAL = Counter(
+    "url_block_cooldown_total",
+    "Per-domain anti-bot cooldown events.",
+    ["action"],  # marked | shortcircuit
+)
+
 RATELIMIT_CHECKS_TOTAL = Counter(
     "vectoria_ratelimit_checks_total",
     "Distributed rate-limit decisions labelled by outcome. "
