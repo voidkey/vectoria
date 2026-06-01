@@ -43,8 +43,13 @@ async def fetch_capped(
     async with client.stream("GET", url, **req) as resp:
         resp.raise_for_status()
         cl = resp.headers.get("content-length")
-        if cl is not None and cl.isdigit() and int(cl) > cap:
-            raise ResponseTooLargeError(f"{url}: content-length {cl} > {cap}")
+        if cl is not None:
+            try:
+                declared = int(cl.strip())
+            except ValueError:
+                declared = None  # malformed CL; the aiter loop below still caps
+            if declared is not None and declared > cap:
+                raise ResponseTooLargeError(f"{url}: content-length {cl} > {cap}")
         total = 0
         chunks: list[bytes] = []
         async for chunk in resp.aiter_bytes():
