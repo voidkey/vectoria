@@ -280,6 +280,9 @@ class GenericHandler:
             "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
         )
 
+        # Pace before allocating a browser context so we don't hold a scarce
+        # page slot idle while waiting on the per-host token.
+        await acquire_page_token((urlparse(url).hostname or "").lower())
         try:
             async with parse_session(
                 user_agent=ua,
@@ -289,7 +292,6 @@ class GenericHandler:
                 init_script=anti_webdriver,
             ) as ctx:
                 page = await ctx.new_page()
-                await acquire_page_token((urlparse(url).hostname or "").lower())
                 try:
                     await page.goto(url, wait_until="domcontentloaded", timeout=30000)
                 except PlaywrightError as exc:

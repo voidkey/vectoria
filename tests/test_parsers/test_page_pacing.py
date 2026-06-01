@@ -1,5 +1,6 @@
 import pytest
 
+from config import get_settings
 from parsers.url import _fetch
 
 
@@ -13,4 +14,9 @@ async def test_acquire_page_token_uses_config_rate(monkeypatch):
 
     monkeypatch.setattr(_fetch, "_rl_acquire", fake_acquire)
     await _fetch.acquire_page_token("example.com")
-    assert calls == {"key": "example.com", "rate": 1, "per": 2}
+    s = get_settings()
+    assert calls == {
+        "key": "example.com",
+        "rate": s.url_page_fetch_rate,
+        "per": s.url_page_fetch_per,
+    }
