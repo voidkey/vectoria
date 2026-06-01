@@ -233,14 +233,18 @@ class Settings(BaseSettings):
     # Inbound rate limits (per principal, per minute). Principal = JWT
     # sub/uid, else hashed X-API-Key, else client IP (XFF-aware). Set to
     # 0 to disable a limiter without redeploying — kill-switch during
-    # incident response. Defaults are conservative amplification caps
-    # (sustained ~1 write/sec per caller); retune via env when the
-    # expected traffic shape includes legitimate batch usage.
-    ratelimit_kb_create_per_min: int = 60
-    ratelimit_doc_ingest_per_min: int = 60
+    # incident response. These are PER-END-USER caps (tokens carry a distinct
+    # sub per user), sized as burst ceilings against scripted/CLI abuse —
+    # normal interactive users never approach them. They do NOT cap aggregate
+    # load across users (N users = N×limit); aggregate/GPU protection is a
+    # separate concern. kb_create matches doc_ingest because the deployment
+    # creates one KB per document (KB-per-doc), so KB creation is as frequent
+    # as ingest. Retune via env without redeploy.
+    ratelimit_kb_create_per_min: int = 20
+    ratelimit_doc_ingest_per_min: int = 20
     # /query is the most expensive endpoint (embedding + 1-2 LLM calls +
-    # rerank per request); cap tighter than writes. 0 disables (kill-switch).
-    ratelimit_query_per_min: int = 30
+    # rerank per request); capped tightest. 0 disables (kill-switch).
+    ratelimit_query_per_min: int = 15
 
     # Worker runtime limits
     # RSS self-kill threshold in bytes. When a worker's resident memory
