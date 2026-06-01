@@ -1,10 +1,17 @@
 import pytest
 from unittest.mock import patch, AsyncMock
-from pydantic import SecretStr
 from parsers.base import ParseResult
 from parsers.image_ref import ImageRef
 from api.errors import ErrorCode
 from config import get_settings
+
+
+@pytest.fixture
+def api_key_required(monkeypatch):
+    s = get_settings()
+    monkeypatch.setattr(s, "allow_unauthenticated", False)
+    monkeypatch.setattr(s.api_key, "get_secret_value", lambda: "secret")
+    return s
 
 
 def _png_bytes() -> bytes:
@@ -98,10 +105,7 @@ async def test_analyze_url_no_engine_param(client):
 
 
 @pytest.mark.asyncio
-async def test_analyze_url_rejects_jwt_caller(client, monkeypatch):
-    s = get_settings()
-    monkeypatch.setattr(s, "allow_unauthenticated", False)
-    monkeypatch.setattr(s, "api_key", SecretStr("secret"))
+async def test_analyze_url_rejects_jwt_caller(client, api_key_required):
     resp = await client.post(
         "/v1/analyze/url",
         json={"url": "https://example.com"},
@@ -112,10 +116,7 @@ async def test_analyze_url_rejects_jwt_caller(client, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_analyze_url_accepts_api_key(client, monkeypatch):
-    s = get_settings()
-    monkeypatch.setattr(s, "allow_unauthenticated", False)
-    monkeypatch.setattr(s, "api_key", SecretStr("secret"))
+async def test_analyze_url_accepts_api_key(client, api_key_required):
     fake_result = ParseResult(content="# Test", title="Test")
     with patch("api.routes.analyze.registry") as mock_reg:
         mock_parser = AsyncMock()
