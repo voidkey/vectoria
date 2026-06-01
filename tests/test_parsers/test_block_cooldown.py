@@ -69,6 +69,15 @@ async def test_fail_open_on_redis_error():
 
 
 @pytest.mark.asyncio
+async def test_mark_blocked_fail_open_independently():
+    """mark_blocked's OWN error path (not piggybacking on a prior is_blocked
+    outage) must fail open and mark the outage."""
+    bc._set_client_for_tests(_RaisingRedis())
+    await bc.mark_blocked("example.com")  # first call, must not raise
+    assert bc._in_outage() is True  # its error path tripped the backoff
+
+
+@pytest.mark.asyncio
 async def test_outage_backoff_skips_redis_within_window():
     """After a Redis error, calls within the backoff window must NOT hit Redis
     again (no per-fetch reconnect / log spam)."""

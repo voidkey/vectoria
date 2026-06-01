@@ -60,9 +60,12 @@ def _in_outage() -> bool:
 def _note_error() -> None:
     global _last_redis_error_ts  # noqa: PLW0603
     if not _in_outage():  # log once per outage window, not per fetch
+        # Called from within an ``except`` block, so exc_info captures the
+        # triggering error (timeout vs refused vs auth) for diagnosis.
         logger.warning(
             "block-cooldown Redis unavailable; fail-open for ~%ds",
             int(_REDIS_RETRY_SECONDS),
+            exc_info=True,
         )
     _last_redis_error_ts = time.monotonic()
 
