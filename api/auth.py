@@ -91,3 +91,29 @@ async def verify_auth(request: Request) -> dict[str, Any] | None:
         raise AppError(401, ErrorCode.UNAUTHORIZED, "Invalid API key")
 
     raise AppError(401, ErrorCode.UNAUTHORIZED, "Missing authentication credentials")
+
+
+async def require_api_key(request: Request) -> None:
+    """Authorize endpoints restricted to internal/operator use.
+
+    Unlike ``verify_auth`` (which accepts JWT *or* API key), this requires a
+    valid ``X-API-Key`` and rejects JWT-only callers. Used to keep the
+    synchronous, queue-bypassing analyze endpoints off the end-user surface.
+
+    In dev mode (``allow_unauthenticated``) it lets everything through so
+    local development and the test suite work without secrets. Otherwise a
+    request must present an ``X-API-Key`` matching the configured key;
+    everything else — JWT-only callers, wrong/missing keys, or an
+    unconfigured key — is closed with 403.
+    """
+    settings = get_settings()
+    if settings.allow_unauthenticated:
+        return
+    api_key = settings.api_key.get_secret_value()
+    presented = request.headers.get(API_KEY_HEADER)
+    if api_key and presented and hmac.compare_digest(presented, api_key):
+        return
+    raise AppError(
+        403, ErrorCode.FORBIDDEN,
+        "This endpoint requires API-key authentication",
+    )
