@@ -66,8 +66,11 @@ async def fetch_impersonated(
         except Exception:
             logger.warning("fetch_impersonated error on %s (attempt %d)", url, attempt + 1, exc_info=True)
             html = ""
-        if html and detect_block_reason(html, extract_html_title(html, url)) is None:
-            return html
+        if html:
+            if detect_block_reason(html, extract_html_title(html, url)) is None:
+                return html
+            logger.info("fetch_impersonated: confirmed block on %s; not retrying", url)
+            return None
         if attempt < retries - 1:
             await _sleep(_BACKOFFS[min(attempt, len(_BACKOFFS) - 1)])
     logger.info("fetch_impersonated gave up on %s after %d attempts", url, retries)

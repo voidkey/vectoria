@@ -17,7 +17,8 @@ async def test_fetch_returns_html_on_clean_page(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_fetch_retries_then_none_on_block(monkeypatch):
+async def test_confirmed_block_does_not_retry(monkeypatch):
+    # A confirmed anti-bot block must stop immediately — no inner retries.
     calls = {"n": 0}
     def fake_get(url, **kw):
         calls["n"] += 1
@@ -28,19 +29,19 @@ async def test_fetch_retries_then_none_on_block(monkeypatch):
     monkeypatch.setattr(_fetch, "_sleep", _noop_sleep)
     html = await _fetch.fetch_impersonated("https://baike.baidu.com/item/x", retries=3)
     assert html is None
-    assert calls["n"] == 3
+    assert calls["n"] == 1  # confirmed block => single attempt, no retry
 
 
 @pytest.mark.asyncio
 async def test_ratelimit_wait_does_not_consume_retries(monkeypatch):
-    """Rate-limit misses must NOT eat block-retry attempts: even if the token
-    is unavailable for the first few checks, all `retries` real fetches happen."""
+    """Rate-limit misses must NOT eat fetch attempts: even if the token is
+    unavailable for the first few checks, all `retries` real fetches happen.
+    Uses transient errors (exception) to exercise the retry path."""
     fetch_calls = {"n": 0}
     rl_state = {"calls": 0}
     def fake_get(url, **kw):
         fetch_calls["n"] += 1
-        class R: text = "<html><head><title>百度安全验证</title></head><body>请完成下方验证</body></html>"
-        return R()
+        raise RuntimeError("transient network error")
     async def flaky_ratelimit(host):
         # unavailable for first 2 checks of each acquire, then available
         rl_state["calls"] += 1
@@ -50,7 +51,7 @@ async def test_ratelimit_wait_does_not_consume_retries(monkeypatch):
     monkeypatch.setattr(_fetch, "_sleep", _noop_sleep)
     html = await _fetch.fetch_impersonated("https://baike.baidu.com/item/x", retries=3)
     assert html is None
-    assert fetch_calls["n"] == 3   # all 3 block-retry attempts really fetched, despite RL waits
+    assert fetch_calls["n"] == 3   # all 3 retry attempts really fetched, despite RL waits
 
 
 async def _noop_ratelimit(*a, **kw): return True
