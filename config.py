@@ -223,6 +223,13 @@ class Settings(BaseSettings):
     # don't show up in debug dumps or error traces.
     redis_url: SecretStr = SecretStr("redis://localhost:6379/0")
 
+    # URL fetch hardening (S2)
+    url_page_fetch_rate: int = 1          # tokens per window, per-host page pacing
+    url_page_fetch_per: int = 2           # window seconds (=> ~0.5 req/s/host)
+    url_block_cooldown_seconds: int = 900  # anti-bot cooldown per domain (15 min)
+    url_max_redirects: int = 5
+    max_url_response_bytes: int = 20 * 1024 * 1024  # 20 MiB
+
     # Inbound rate limits (per principal, per minute). Principal = JWT
     # sub/uid, else hashed X-API-Key, else client IP (XFF-aware). Set to
     # 0 to disable a limiter without redeploying — kill-switch during
