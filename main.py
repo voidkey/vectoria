@@ -9,7 +9,7 @@ from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import JSONResponse
 from prometheus_fastapi_instrumentator import Instrumentator
 
-from api.auth import verify_auth
+from api.auth import require_api_key, verify_auth
 from api.errors import AppError, ErrorCode
 from api.middleware import RequestIdMiddleware, RequestIdFilter
 from api.routes.analyze import router as analyze_router
@@ -103,7 +103,7 @@ app.include_router(health_router)
 # --- Protected routes (require JWT or API key when configured) ---
 _auth = [Depends(verify_auth)]
 
-app.include_router(analyze_router, prefix="/v1", dependencies=_auth)
+app.include_router(analyze_router, prefix="/v1", dependencies=[Depends(require_api_key)])
 app.include_router(kb_router, prefix="/v1", dependencies=_auth)
 app.include_router(docs_router, prefix="/v1", dependencies=_auth)
 app.include_router(query_router, prefix="/v1", dependencies=_auth)

@@ -1,7 +1,10 @@
 import pytest
 from unittest.mock import patch, AsyncMock
+from pydantic import SecretStr
 from parsers.base import ParseResult
 from parsers.image_ref import ImageRef
+from api.errors import ErrorCode
+from config import get_settings
 
 
 def _png_bytes() -> bytes:
@@ -92,3 +95,36 @@ async def test_analyze_url_no_engine_param(client):
 
     assert resp.status_code == 200
     mock_reg.auto_select.assert_called_once_with(url="https://example.com")
+
+
+@pytest.mark.asyncio
+async def test_analyze_url_rejects_jwt_caller(client, monkeypatch):
+    s = get_settings()
+    monkeypatch.setattr(s, "allow_unauthenticated", False)
+    monkeypatch.setattr(s, "api_key", SecretStr("secret"))
+    resp = await client.post(
+        "/v1/analyze/url",
+        json={"url": "https://example.com"},
+        headers={"Authorization": "Bearer faketoken"},
+    )
+    assert resp.status_code == 403
+    assert resp.json()["code"] == ErrorCode.FORBIDDEN
+
+
+@pytest.mark.asyncio
+async def test_analyze_url_accepts_api_key(client, monkeypatch):
+    s = get_settings()
+    monkeypatch.setattr(s, "allow_unauthenticated", False)
+    monkeypatch.setattr(s, "api_key", SecretStr("secret"))
+    fake_result = ParseResult(content="# Test", title="Test")
+    with patch("api.routes.analyze.registry") as mock_reg:
+        mock_parser = AsyncMock()
+        mock_parser.parse = AsyncMock(return_value=fake_result)
+        mock_reg.auto_select.return_value = "url"
+        mock_reg.get_by_engine.return_value = mock_parser
+        resp = await client.post(
+            "/v1/analyze/url",
+            json={"url": "https://example.com"},
+            headers={"X-API-Key": "secret"},
+        )
+    assert resp.status_code == 200
