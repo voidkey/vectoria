@@ -5,6 +5,7 @@ class ErrorCode:
     # Auth (1001-1099)
     UNAUTHORIZED = 1001
     RATE_LIMITED = 1002
+    FORBIDDEN = 1003
 
     # URL validation (1101-1199)
     INVALID_URL = 1101
