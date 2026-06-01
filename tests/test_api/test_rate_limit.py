@@ -411,6 +411,7 @@ async def test_openapi_schema_documents_429_on_limited_routes(client):
         ("/v1/knowledgebases/{kb_id}/documents/file", "post"),
         ("/v1/knowledgebases/{kb_id}/documents/url", "post"),
         ("/v1/knowledgebases/{kb_id}/documents/text", "post"),
+        ("/v1/knowledgebases/{kb_id}/query", "post"),
     ]
     for path, method in limited:
         responses = paths[path][method]["responses"]
@@ -459,6 +460,40 @@ async def test_doc_ingest_text_returns_429_after_threshold(client, monkeypatch):
         resp = await client.post(
             "/v1/knowledgebases/kb-x/documents/text",
             json={"text": "third body"},
+            headers={"X-API-Key": "alice"},
+        )
+        assert resp.status_code == 429, resp.text
+        assert resp.json()["code"] == ErrorCode.RATE_LIMITED
+
+
+async def test_query_returns_429_after_threshold(client, monkeypatch):
+    """/query is the expensive RAG endpoint; prove the per-principal limiter
+    is wired. The pipeline is fully mocked — we're testing the gate, not RAG."""
+    monkeypatch.setattr(get_settings(), "ratelimit_query_per_min", 2)
+
+    pipeline = MagicMock()
+    pipeline.steps = []
+    ctx = MagicMock()
+    ctx.answer = "stub answer"
+    ctx.sources = []
+    pipeline.run = AsyncMock(return_value=ctx)
+
+    with (
+        patch("api.routes.query.PgVectorStore.create", new=AsyncMock()),
+        patch("api.routes.query.get_embedder", new=MagicMock()),
+        patch("api.routes.query.build_default_pipeline", return_value=pipeline),
+    ):
+        for _ in range(2):
+            resp = await client.post(
+                "/v1/knowledgebases/kb-x/query",
+                json={"query": "hello"},
+                headers={"X-API-Key": "alice"},
+            )
+            assert resp.status_code == 200, resp.text
+
+        resp = await client.post(
+            "/v1/knowledgebases/kb-x/query",
+            json={"query": "hello"},
             headers={"X-API-Key": "alice"},
         )
         assert resp.status_code == 429, resp.text

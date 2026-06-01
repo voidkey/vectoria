@@ -1,8 +1,9 @@
 import httpx
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from openai import AsyncOpenAI
 
 from api.errors import AppError, ErrorCode
+from api.rate_limit import RATE_LIMITED_RESPONSE, rate_limit
 from api.schemas import QueryRequest, QueryResponse
 from config import get_settings
 from rag.embedder import get_embedder
@@ -36,7 +37,16 @@ def _get_rerank_client() -> httpx.AsyncClient:
     return _rerank_client
 
 
-@router.post("/{kb_id}/query", response_model=QueryResponse)
+@router.post(
+    "/{kb_id}/query",
+    response_model=QueryResponse,
+    responses=RATE_LIMITED_RESPONSE,
+    dependencies=[Depends(rate_limit(
+        "query",
+        rate=lambda: get_settings().ratelimit_query_per_min,
+        per_seconds=60,
+    ))],
+)
 async def query_kb(kb_id: str, body: QueryRequest):
     if not body.query.strip():
         raise AppError(422, ErrorCode.QUERY_ERROR, "query must not be empty")

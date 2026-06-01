@@ -238,6 +238,9 @@ class Settings(BaseSettings):
     # expected traffic shape includes legitimate batch usage.
     ratelimit_kb_create_per_min: int = 60
     ratelimit_doc_ingest_per_min: int = 60
+    # /query is the most expensive endpoint (embedding + 1-2 LLM calls +
+    # rerank per request); cap tighter than writes. 0 disables (kill-switch).
+    ratelimit_query_per_min: int = 30
 
     # Worker runtime limits
     # RSS self-kill threshold in bytes. When a worker's resident memory
