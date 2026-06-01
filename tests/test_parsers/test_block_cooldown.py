@@ -62,3 +62,18 @@ async def test_fail_open_on_redis_error():
     bc._set_client_for_tests(_RaisingRedis())
     assert await bc.is_blocked("example.com") is False
     await bc.mark_blocked("example.com")  # must not raise
+
+
+@pytest.mark.asyncio
+async def test_metric_increments_on_mark_and_hit():
+    from infra.metrics import URL_BLOCK_COOLDOWN_TOTAL
+
+    bc._set_client_for_tests(_FakeRedis())
+    marked = URL_BLOCK_COOLDOWN_TOTAL.labels(action="marked")._value.get()
+    short = URL_BLOCK_COOLDOWN_TOTAL.labels(action="shortcircuit")._value.get()
+
+    await bc.mark_blocked("example.com")
+    assert await bc.is_blocked("example.com") is True
+
+    assert URL_BLOCK_COOLDOWN_TOTAL.labels(action="marked")._value.get() == marked + 1
+    assert URL_BLOCK_COOLDOWN_TOTAL.labels(action="shortcircuit")._value.get() == short + 1

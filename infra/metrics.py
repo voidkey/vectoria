@@ -231,7 +231,7 @@ UPLOAD_REJECTED_TOTAL = Counter(
 # ---------------------------------------------------------------------------
 
 URL_BLOCK_COOLDOWN_TOTAL = Counter(
-    "url_block_cooldown_total",
+    "vectoria_url_block_cooldown_total",
     "Per-domain anti-bot cooldown events.",
     ["action"],  # marked | shortcircuit
 )

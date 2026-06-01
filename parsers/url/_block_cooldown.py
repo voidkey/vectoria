@@ -18,7 +18,7 @@ from infra.metrics import URL_BLOCK_COOLDOWN_TOTAL
 
 logger = logging.getLogger(__name__)
 
-_KEY = "urlblock:{host}"
+_KEY_TEMPLATE = "urlblock:{host}"
 _client: "aioredis.Redis | None" = None
 
 
@@ -35,7 +35,7 @@ async def is_blocked(host: str) -> bool:
     if not host:
         return False
     try:
-        present = await _get_client().exists(_KEY.format(host=host))
+        present = await _get_client().exists(_KEY_TEMPLATE.format(host=host))
     except Exception:  # noqa: BLE001 — fail open, never block fetching
         logger.warning("block-cooldown check failed for %s; fail-open", host, exc_info=True)
         return False
@@ -51,7 +51,7 @@ async def mark_blocked(host: str) -> None:
         return
     ttl = get_settings().url_block_cooldown_seconds
     try:
-        await _get_client().set(_KEY.format(host=host), "1", ex=ttl)
+        await _get_client().set(_KEY_TEMPLATE.format(host=host), "1", ex=ttl)
         URL_BLOCK_COOLDOWN_TOTAL.labels(action="marked").inc()
     except Exception:  # noqa: BLE001 — fail open
         logger.warning("block-cooldown mark failed for %s; fail-open", host, exc_info=True)
@@ -62,6 +62,6 @@ def _reset_for_tests() -> None:
     _client = None
 
 
-def _set_client_for_tests(client) -> None:
+def _set_client_for_tests(client: "aioredis.Redis") -> None:
     global _client  # noqa: PLW0603
     _client = client
