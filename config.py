@@ -228,7 +228,7 @@ class Settings(BaseSettings):
     url_page_fetch_per: int = 2           # window seconds (=> ~0.5 req/s/host)
     url_block_cooldown_seconds: int = 900  # anti-bot cooldown per domain (15 min)
     url_max_redirects: int = 5
-    max_url_response_bytes: int = 20 * 1024 * 1024  # 20 MiB
+    max_url_response_bytes: int = 50 * 1024 * 1024  # 50 MiB — aligned with max_upload_bytes so URL-fetched PDFs aren't capped tighter than uploads
 
     # Inbound rate limits (per principal, per minute). Principal = JWT
     # sub/uid, else hashed X-API-Key, else client IP (XFF-aware). Set to
