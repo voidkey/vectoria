@@ -17,7 +17,11 @@ class _FakeRedis:
 
 
 class _RaisingRedis:
+    def __init__(self):
+        self.exists_calls = 0
+
     async def exists(self, key):
+        self.exists_calls += 1
         raise RuntimeError("redis down")
 
     async def set(self, *a, **k):
@@ -62,6 +66,22 @@ async def test_fail_open_on_redis_error():
     bc._set_client_for_tests(_RaisingRedis())
     assert await bc.is_blocked("example.com") is False
     await bc.mark_blocked("example.com")  # must not raise
+
+
+@pytest.mark.asyncio
+async def test_outage_backoff_skips_redis_within_window():
+    """After a Redis error, calls within the backoff window must NOT hit Redis
+    again (no per-fetch reconnect / log spam)."""
+    raising = _RaisingRedis()
+    bc._set_client_for_tests(raising)
+    assert await bc.is_blocked("example.com") is False
+    assert raising.exists_calls == 1  # first call attempted Redis and failed
+    # Subsequent calls within the 60s window short-circuit before Redis.
+    assert await bc.is_blocked("example.com") is False
+    assert await bc.is_blocked("other.com") is False
+    assert raising.exists_calls == 1  # no further Redis calls during outage
+    # mark_blocked also skips Redis during the outage (no raise, no-op).
+    await bc.mark_blocked("example.com")
 
 
 @pytest.mark.asyncio
