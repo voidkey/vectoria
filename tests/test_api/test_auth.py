@@ -361,6 +361,7 @@ async def test_require_api_key_closed_when_unconfigured(monkeypatch, settings):
     with pytest.raises(AppError) as ei:
         await require_api_key(_make_request({"X-API-Key": "anything"}))
     assert ei.value.status_code == 403
+    assert ei.value.code == ErrorCode.FORBIDDEN
 
 
 @pytest.mark.asyncio
