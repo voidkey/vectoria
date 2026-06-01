@@ -16,16 +16,29 @@ def _public_dns():
 
 @contextmanager
 def _async_httpx(module: str, *, html: str, url: str = ""):
-    """Patch the ``httpx.AsyncClient`` referenced from a given module."""
-    mock_resp = MagicMock()
-    mock_resp.text = html
-    mock_resp.url = url
-    mock_resp.raise_for_status = MagicMock()
+    """Patch ``parsers.url._http.make_async_client`` / ``fetch_capped``
+    so handlers that route through the capped factory return canned HTML.
+
+    The ``module`` argument is kept for backward-compat call-site
+    readability but is no longer used as a patch target — after Task 7
+    every handler imports from ``parsers.url._http``.
+    """
+    import parsers.url._http as _http_mod
+
+    html_bytes = html.encode("utf-8") if isinstance(html, str) else html
     mock_client = AsyncMock()
     mock_client.__aenter__ = AsyncMock(return_value=mock_client)
     mock_client.__aexit__ = AsyncMock(return_value=None)
-    mock_client.get = AsyncMock(return_value=mock_resp)
-    with patch(f"{module}.httpx.AsyncClient", return_value=mock_client):
+
+    mock_resp = MagicMock()
+    mock_resp.encoding = "utf-8"
+    mock_resp.url = url
+
+    async def _fake_fetch(client, fetch_url, **kw):
+        return mock_resp, html_bytes
+
+    with patch.object(_http_mod, "make_async_client", return_value=mock_client), \
+         patch.object(_http_mod, "fetch_capped", side_effect=_fake_fetch):
         yield
 
 

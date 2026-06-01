@@ -92,11 +92,12 @@ class XHandler:
             f"https://cdn.syndication.twimg.com/tweet-result"
             f"?id={tweet_id}&lang=en&token=1"
         )
+        import json
+        from parsers.url._http import fetch_capped, make_async_client
         try:
-            async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
-                resp = await client.get(api, headers={"User-Agent": "Mozilla/5.0"})
-                resp.raise_for_status()
-                data = resp.json()
+            async with make_async_client(headers={"User-Agent": "Mozilla/5.0"}) as client:
+                _resp, body = await fetch_capped(client, api)
+            data = json.loads(body)
         except Exception:
             return ParseResult(content="", title="")
 

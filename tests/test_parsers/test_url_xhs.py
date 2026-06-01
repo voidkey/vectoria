@@ -150,19 +150,24 @@ def test_handler_registered_in_url_package():
 async def test_download_images_for_url_applies_xhs_canonicalize():
     """Article URL points to xiaohongshu.com → handler resolves →
     image URL at xhscdn.com gets its format rewritten before fetch.
+
+    After migrating to the capped factory, the canonicalized URL is
+    passed to ``fetch_capped`` in ``_http.py``.
     """
+    import parsers.url._http as _http_mod
+
     fetched: list[str] = []
     ok = MagicMock(status_code=200, content=b"x")
-    client = MagicMock()
+    mock_client = MagicMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
 
-    async def _get(u, **kw):
-        fetched.append(u)
-        return ok
-    client.get = _get
-    client.__aenter__ = AsyncMock(return_value=client)
-    client.__aexit__ = AsyncMock(return_value=False)
+    async def _fake_fetch(client, url, **kw):
+        fetched.append(url)
+        return ok, ok.content
 
-    with patch("parsers.url._handlers.httpx.AsyncClient", return_value=client):
+    with patch.object(_http_mod, "make_async_client", return_value=mock_client), \
+         patch.object(_http_mod, "fetch_capped", side_effect=_fake_fetch):
         result = await download_images_for_url(
             "https://www.xiaohongshu.com/explore/xyz",
             ["https://sns-img-bd.xhscdn.com/abc?imageView2/2/w/1080/format/webp"],
@@ -178,18 +183,28 @@ async def test_download_images_for_url_applies_xhs_canonicalize():
 
 @pytest.mark.asyncio
 async def test_download_images_for_url_sends_xhs_referer():
+    """For a XHS article, the handler's Referer must be sent.
+
+    After migrating, headers are forwarded to ``make_async_client``
+    in ``_http.py``.
+    """
+    import parsers.url._http as _http_mod
+
     captured: dict = {}
     ok = MagicMock(status_code=200, content=b"x")
-    client = MagicMock()
-    client.get = AsyncMock(return_value=ok)
-    client.__aenter__ = AsyncMock(return_value=client)
-    client.__aexit__ = AsyncMock(return_value=False)
+    mock_client = MagicMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
 
-    def _capture(*a, **kw):
+    def _spy_make(**kw):
         captured.update(kw)
-        return client
+        return mock_client
 
-    with patch("parsers.url._handlers.httpx.AsyncClient", side_effect=_capture):
+    async def _fake_fetch(client, url, **kw):
+        return ok, ok.content
+
+    with patch.object(_http_mod, "make_async_client", side_effect=_spy_make), \
+         patch.object(_http_mod, "fetch_capped", side_effect=_fake_fetch):
         await download_images_for_url(
             "https://www.xiaohongshu.com/explore/xyz",
             ["https://ci.xiaohongshu.com/img.jpg"],

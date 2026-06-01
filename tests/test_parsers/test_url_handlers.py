@@ -125,24 +125,37 @@ def test_extract_with_trafilatura_recovers_via_article_subtree():
 
 
 async def test_download_images_with_headers():
-    """Happy path: respects provided Referer header and returns bytes."""
+    """Happy path: respects provided Referer header and returns bytes.
+
+    After migrating to the capped factory, ``download_images`` calls
+    ``make_async_client(timeout=10, headers=headers)`` in ``_http.py``.
+    We capture the kwargs forwarded to ``make_async_client`` and verify
+    the Referer header is included.
+    """
     from unittest.mock import AsyncMock, MagicMock, patch
     from limits.aio.storage import MemoryStorage
     from infra import ratelimit
+    import parsers.url._http as _http_mod
 
     ratelimit._reset_for_tests()
     ratelimit._set_storage_for_tests(MemoryStorage())
     try:
         fake_resp = MagicMock(status_code=200, content=b"\x89PNG fake")
         mock_client = MagicMock()
-        mock_client.get = AsyncMock(return_value=fake_resp)
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
-        with patch(
-            "parsers.url._handlers.httpx.AsyncClient",
-            return_value=mock_client,
-        ) as ctor:
+        captured_kw: dict = {}
+
+        def _spy_make(**kw):
+            captured_kw.update(kw)
+            return mock_client
+
+        async def _fake_fetch(client, url, **kw):
+            return fake_resp, fake_resp.content
+
+        with patch.object(_http_mod, "make_async_client", side_effect=_spy_make), \
+             patch.object(_http_mod, "fetch_capped", side_effect=_fake_fetch):
             result = await download_images(
                 ["https://mmbiz.qpic.cn/img1.jpg"],
                 headers={"Referer": "https://mp.weixin.qq.com/"},
@@ -150,8 +163,8 @@ async def test_download_images_with_headers():
 
         assert "https://mmbiz.qpic.cn/img1.jpg" in result
         assert result["https://mmbiz.qpic.cn/img1.jpg"] == b"\x89PNG fake"
-        # Referer flows into the AsyncClient constructor (per-session).
-        sent_headers = ctor.call_args.kwargs.get("headers") or {}
+        # Headers are forwarded to make_async_client (per-session).
+        sent_headers = captured_kw.get("headers") or {}
         assert sent_headers.get("Referer") == "https://mp.weixin.qq.com/"
     finally:
         ratelimit._reset_for_tests()

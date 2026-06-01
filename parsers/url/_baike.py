@@ -38,10 +38,12 @@ async def _baike_lemma_card(key: str) -> dict | None:
     """One shot, no retry (weak fallback). Returns parsed JSON dict or None."""
     params = {"scope": "103", "format": "json", "appid": _LEMMA_CARD_APPID,
               "bk_length": "600", "bk_key": key}
+    import json
+    from parsers.url._http import fetch_capped, make_async_client
     try:
-        async with httpx.AsyncClient(timeout=15) as c:
-            r = await c.get(_LEMMA_CARD_API, params=params)
-        return r.json()
+        async with make_async_client() as c:
+            _resp, body = await fetch_capped(c, _LEMMA_CARD_API, params=params)
+        return json.loads(body)
     except Exception:
         return None
 

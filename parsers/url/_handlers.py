@@ -343,12 +343,11 @@ async def download_images(
     """
     from api.url_validation import reresolve_and_check_ssrf
     from api.errors import AppError
+    from parsers.url._http import ResponseTooLargeError, fetch_capped, make_async_client
 
     images: dict[str, bytes] = {}
     cap = get_settings().url_image_cap
-    async with httpx.AsyncClient(
-        timeout=10, follow_redirects=True, headers=headers or {},
-    ) as client:
+    async with make_async_client(timeout=10, headers=headers or {}) as client:
         for original in urls[:cap]:
             fetch_url = canonicalize(original) if canonicalize else original
             try:
@@ -361,11 +360,14 @@ async def download_images(
             if not await _gate(fetch_url):
                 continue
             try:
-                resp = await client.get(fetch_url)
-                if resp.status_code == 200 and resp.content:
+                resp, body = await fetch_capped(client, fetch_url)
+                if resp.status_code == 200 and body:
                     # Key by the URL as it appeared in markdown so
                     # ``extract_metadata_into_refs`` can still match.
-                    images[original] = resp.content
+                    images[original] = body
+            except ResponseTooLargeError:
+                logger.warning("image too large, skipped: %s", fetch_url)
+                continue
             except Exception:
                 logger.debug("image fetch failed for %s", fetch_url, exc_info=True)
                 continue

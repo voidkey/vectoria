@@ -15,23 +15,22 @@ from parsers.base import ParseResult
 
 @contextmanager
 def _patch_async_httpx(html: str):
-    """Patch parsers.url._wechat.httpx.AsyncClient to return ``html``.
-
-    The handler builds ``async with httpx.AsyncClient(...) as client``;
-    tests need the client's ``.get()`` to resolve to a mock response
-    carrying the canned HTML. Wrapped as a contextmanager so test
-    readability isn't hurt by the mock plumbing.
+    """Patch ``parsers.url._http.make_async_client`` / ``fetch_capped``
+    used by ``_wechat._parse_raw`` after migrating to the capped factory.
     """
-    mock_resp = MagicMock()
-    mock_resp.text = html
-    mock_resp.raise_for_status = MagicMock()
-
+    html_bytes = html.encode("utf-8")
     mock_client = AsyncMock()
-    mock_client.get = AsyncMock(return_value=mock_resp)
     mock_client.__aenter__ = AsyncMock(return_value=mock_client)
     mock_client.__aexit__ = AsyncMock(return_value=None)
 
-    with patch("parsers.url._wechat.httpx.AsyncClient", return_value=mock_client):
+    mock_resp = MagicMock()
+    mock_resp.encoding = "utf-8"
+
+    async def _fake_fetch(client, url, **kw):
+        return mock_resp, html_bytes
+
+    with patch("parsers.url._http.make_async_client", return_value=mock_client), \
+         patch("parsers.url._http.fetch_capped", side_effect=_fake_fetch):
         yield
 
 

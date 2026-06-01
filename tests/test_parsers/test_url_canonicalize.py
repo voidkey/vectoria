@@ -122,21 +122,26 @@ async def test_download_images_for_url_applies_wechat_canonicalize():
     """End-to-end: article from mp.weixin.qq.com + image from
     mmbiz.qpic.cn → fetch URL must carry ``wx_fmt=jpeg`` even though
     the caller passed the plain URL.
+
+    After migrating to the capped factory, ``download_images`` calls
+    ``fetch_capped(client, fetch_url)`` where ``fetch_url`` is the
+    canonicalized URL. We capture it from the fetch_capped stub.
     """
+    import parsers.url._http as _http_mod
+
     fetched_urls: list[str] = []
 
     ok_resp = MagicMock(status_code=200, content=b"IMG")
-    client = MagicMock()
+    mock_client = MagicMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
 
-    async def _get(u, **kw):
-        fetched_urls.append(u)
-        return ok_resp
+    async def _fake_fetch(client, url, **kw):
+        fetched_urls.append(url)
+        return ok_resp, ok_resp.content
 
-    client.get = _get
-    client.__aenter__ = AsyncMock(return_value=client)
-    client.__aexit__ = AsyncMock(return_value=False)
-
-    with patch("parsers.url._handlers.httpx.AsyncClient", return_value=client):
+    with patch.object(_http_mod, "make_async_client", return_value=mock_client), \
+         patch.object(_http_mod, "fetch_capped", side_effect=_fake_fetch):
         result = await download_images_for_url(
             "https://mp.weixin.qq.com/s/abc123",
             ["https://mmbiz.qpic.cn/mmbiz_jpg/xxx/640"],
@@ -152,26 +157,35 @@ async def test_download_images_for_url_applies_wechat_canonicalize():
 
 @pytest.mark.asyncio
 async def test_download_images_for_url_uses_handler_headers():
-    """For a WeChat article, the handler's Referer + UA must be sent."""
-    captured_kwargs: dict = {}
+    """For a WeChat article, the handler's Referer + UA must be sent.
+
+    After migrating, headers are forwarded to ``make_async_client``
+    in ``_http.py``.  Capture them from there.
+    """
+    import parsers.url._http as _http_mod
+
+    captured_kw: dict = {}
 
     ok_resp = MagicMock(status_code=200, content=b"x")
-    client = MagicMock()
-    client.get = AsyncMock(return_value=ok_resp)
-    client.__aenter__ = AsyncMock(return_value=client)
-    client.__aexit__ = AsyncMock(return_value=False)
+    mock_client = MagicMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
 
-    def _capture(*args, **kwargs):
-        captured_kwargs.update(kwargs)
-        return client
+    def _spy_make(**kw):
+        captured_kw.update(kw)
+        return mock_client
 
-    with patch("parsers.url._handlers.httpx.AsyncClient", side_effect=_capture):
+    async def _fake_fetch(client, url, **kw):
+        return ok_resp, ok_resp.content
+
+    with patch.object(_http_mod, "make_async_client", side_effect=_spy_make), \
+         patch.object(_http_mod, "fetch_capped", side_effect=_fake_fetch):
         await download_images_for_url(
             "https://mp.weixin.qq.com/s/xxx",
             ["https://mmbiz.qpic.cn/pic/640"],
         )
 
-    hdrs = captured_kwargs.get("headers") or {}
+    hdrs = captured_kw.get("headers") or {}
     assert hdrs.get("Referer") == "https://mp.weixin.qq.com/"
     assert "MicroMessenger" in (hdrs.get("User-Agent") or "")
 
@@ -182,18 +196,20 @@ async def test_download_images_for_url_with_generic_source_no_canonicalize():
     handler has no canonicalize_image_url, so the fetch URL must
     equal the original.
     """
+    import parsers.url._http as _http_mod
+
     fetched_urls: list[str] = []
     ok_resp = MagicMock(status_code=200, content=b"x")
-    client = MagicMock()
+    mock_client = MagicMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
 
-    async def _get(u, **kw):
-        fetched_urls.append(u)
-        return ok_resp
-    client.get = _get
-    client.__aenter__ = AsyncMock(return_value=client)
-    client.__aexit__ = AsyncMock(return_value=False)
+    async def _fake_fetch(client, url, **kw):
+        fetched_urls.append(url)
+        return ok_resp, ok_resp.content
 
-    with patch("parsers.url._handlers.httpx.AsyncClient", return_value=client):
+    with patch.object(_http_mod, "make_async_client", return_value=mock_client), \
+         patch.object(_http_mod, "fetch_capped", side_effect=_fake_fetch):
         await download_images_for_url(
             "https://example.com/blog/post",
             ["https://example.com/fig.jpg"],

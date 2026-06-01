@@ -89,6 +89,7 @@ def test_canonicalize_is_idempotent():
 
 @pytest.mark.asyncio
 async def test_handler_parse_tweet():
+    import json as _json
     api_response = {
         "user": {"name": "Test User", "screen_name": "testuser"},
         "text": "Hello world tweet",
@@ -97,16 +98,18 @@ async def test_handler_parse_tweet():
         ],
     }
 
-    mock_resp = MagicMock()
-    mock_resp.json.return_value = api_response
-    mock_resp.raise_for_status = MagicMock()
-
     mock_client = AsyncMock()
-    mock_client.get = AsyncMock(return_value=mock_resp)
     mock_client.__aenter__ = AsyncMock(return_value=mock_client)
     mock_client.__aexit__ = AsyncMock(return_value=False)
 
-    with patch("parsers.url._x.httpx.AsyncClient", return_value=mock_client):
+    mock_resp = MagicMock()
+    body_bytes = _json.dumps(api_response).encode()
+
+    async def _fake_fetch(client, url, **kw):
+        return mock_resp, body_bytes
+
+    with patch("parsers.url._http.make_async_client", return_value=mock_client), \
+         patch("parsers.url._http.fetch_capped", side_effect=_fake_fetch):
         h = XHandler()
         result = await h.parse("https://x.com/testuser/status/12345")
 
@@ -118,11 +121,14 @@ async def test_handler_parse_tweet():
 @pytest.mark.asyncio
 async def test_handler_parse_returns_empty_on_api_failure():
     mock_client = AsyncMock()
-    mock_client.get = AsyncMock(side_effect=Exception("API down"))
     mock_client.__aenter__ = AsyncMock(return_value=mock_client)
     mock_client.__aexit__ = AsyncMock(return_value=False)
 
-    with patch("parsers.url._x.httpx.AsyncClient", return_value=mock_client):
+    async def _fake_fetch_raise(client, url, **kw):
+        raise Exception("API down")
+
+    with patch("parsers.url._http.make_async_client", return_value=mock_client), \
+         patch("parsers.url._http.fetch_capped", side_effect=_fake_fetch_raise):
         h = XHandler()
         result = await h.parse("https://x.com/user/status/99999")
 
@@ -132,6 +138,7 @@ async def test_handler_parse_returns_empty_on_api_failure():
 @pytest.mark.asyncio
 async def test_x_success_sets_allow_image_only_true():
     """Syndication API is structured — X handler opts into image_only."""
+    import json as _json
     api_response = {
         "user": {"name": "Test User", "screen_name": "testuser"},
         "text": "Hello world tweet",
@@ -140,16 +147,18 @@ async def test_x_success_sets_allow_image_only_true():
         ],
     }
 
-    mock_resp = MagicMock()
-    mock_resp.json.return_value = api_response
-    mock_resp.raise_for_status = MagicMock()
-
     mock_client = AsyncMock()
-    mock_client.get = AsyncMock(return_value=mock_resp)
     mock_client.__aenter__ = AsyncMock(return_value=mock_client)
     mock_client.__aexit__ = AsyncMock(return_value=False)
 
-    with patch("parsers.url._x.httpx.AsyncClient", return_value=mock_client):
+    mock_resp = MagicMock()
+    body_bytes = _json.dumps(api_response).encode()
+
+    async def _fake_fetch(client, url, **kw):
+        return mock_resp, body_bytes
+
+    with patch("parsers.url._http.make_async_client", return_value=mock_client), \
+         patch("parsers.url._http.fetch_capped", side_effect=_fake_fetch):
         handler = XHandler()
         result = await handler.parse("https://x.com/testuser/status/123")
 

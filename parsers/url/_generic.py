@@ -228,22 +228,21 @@ class GenericHandler:
         re-enter Playwright and re-trigger the original "Page.goto:
         Download is starting" failure.
         """
+        from parsers.url._http import ResponseTooLargeError, fetch_capped, make_async_client
+        await acquire_page_token((urlparse(url).hostname or "").lower())
         try:
-            await acquire_page_token((urlparse(url).hostname or "").lower())
-            async with httpx.AsyncClient(
-                timeout=15, follow_redirects=True,
-                headers={"User-Agent": DEFAULT_BROWSER_UA},
-            ) as client:
-                resp = await client.get(url)
-            resp.raise_for_status()
+            async with make_async_client() as client:
+                resp, body = await fetch_capped(client, url)
+        except (ResponseTooLargeError, httpx.TooManyRedirects):
+            return ParseResult(content="", title="")
         except Exception:
             return ParseResult(content="", title="")
 
         ct = resp.headers.get("content-type", "").split(";", 1)[0].strip().lower()
         if ct == "application/pdf":
-            return _PdfHandled(await _parse_pdf_bytes(resp.content, url=url))
+            return _PdfHandled(await _parse_pdf_bytes(body, url=url))
 
-        downloaded = resp.text
+        downloaded = body.decode(resp.encoding or "utf-8", errors="replace")
         final_url = str(resp.url)
         title = extract_html_title(downloaded, final_url)
         # Block page: return empty so GenericHandler.parse's needs_browser_fallback

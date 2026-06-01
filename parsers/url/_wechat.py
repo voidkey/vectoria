@@ -127,15 +127,11 @@ class WechatHandler:
         load the two sides competed for the same 40 threads and p95
         wobbled. Native async fetch removes that coupling.
         """
+        from parsers.url._http import fetch_capped, make_async_client
         try:
-            async with httpx.AsyncClient(
-                timeout=15,
-                follow_redirects=True,
-                headers=get_wechat_headers(url) or {},
-            ) as client:
-                resp = await client.get(url)
-            resp.raise_for_status()
-            html = resp.text
+            async with make_async_client(headers=get_wechat_headers(url) or {}) as client:
+                resp, body = await fetch_capped(client, url)
+            html = body.decode(resp.encoding or "utf-8", errors="replace")
         except Exception:
             log.debug("WeChat httpx fetch failed: %s", url, exc_info=True)
             return ParseResult(content="", title="")

@@ -27,14 +27,29 @@ def _fresh_limiter():
 
 
 def _fake_client_ctx(resp):
-    """Build an AsyncClient context-manager double that returns ``resp``
-    from every ``.get()``.
+    """Build an AsyncClient context-manager double and a matching
+    ``fetch_capped`` stub.  After migrating to the capped factory,
+    ``download_images`` uses ``make_async_client`` + ``fetch_capped``
+    from ``_http.py``.  Tests that need to stub out responses must
+    patch both at ``parsers.url._http.*`` (the import site).
     """
     client = MagicMock()
-    client.get = AsyncMock(return_value=resp)
     client.__aenter__ = AsyncMock(return_value=client)
     client.__aexit__ = AsyncMock(return_value=False)
+    # Attach the legacy .get mock so callers can still assert on it.
+    client.get = AsyncMock(return_value=resp)
     return client
+
+
+def _make_fetch_capped_stub(resp):
+    """Return an async callable that emulates ``fetch_capped`` returning
+    ``(resp, resp.content)``.  When ``resp.status_code != 200`` or
+    ``resp.content`` is falsy the return value is still yielded —
+    callers reproduce the original ``if resp.status_code == 200`` guard.
+    """
+    async def _stub(client, url, **kw):
+        return resp, resp.content
+    return _stub
 
 
 # ---------------------------------------------------------------------------
@@ -101,15 +116,17 @@ async def test_skips_image_when_rate_bucket_exhausted():
 
     resp = MagicMock(status_code=200, content=b"x")
     client_ctx = _fake_client_ctx(resp)
+    fetch_mock = AsyncMock(side_effect=_make_fetch_capped_stub(resp))
 
     with (
         patch("parsers.url._handlers.rl_acquire", new=_always_block),
-        patch("parsers.url._handlers.httpx.AsyncClient", return_value=client_ctx),
+        patch("parsers.url._http.make_async_client", return_value=client_ctx),
+        patch("parsers.url._http.fetch_capped", new=fetch_mock),
     ):
         result = await download_images(["https://xhscdn.com/img.jpg"])
 
     assert result == {}
-    client_ctx.get.assert_not_called(), "blocked URL must not hit the network"
+    fetch_mock.assert_not_called(), "blocked URL must not hit the network"
 
 
 @pytest.mark.asyncio
@@ -126,7 +143,8 @@ async def test_limiter_called_per_image_with_host_key():
 
     with (
         patch("parsers.url._handlers.rl_acquire", new=_record),
-        patch("parsers.url._handlers.httpx.AsyncClient", return_value=client_ctx),
+        patch("parsers.url._http.make_async_client", return_value=client_ctx),
+        patch("parsers.url._http.fetch_capped", new=_make_fetch_capped_stub(resp)),
     ):
         await download_images([
             "https://mmbiz.qpic.cn/a.jpg",
@@ -153,7 +171,8 @@ async def test_rate_table_used_when_gating():
 
     with (
         patch("parsers.url._handlers.rl_acquire", new=_spy),
-        patch("parsers.url._handlers.httpx.AsyncClient", return_value=client_ctx),
+        patch("parsers.url._http.make_async_client", return_value=client_ctx),
+        patch("parsers.url._http.fetch_capped", new=_make_fetch_capped_stub(resp)),
     ):
         await download_images([
             "https://mmbiz.qpic.cn/a.jpg",   # wechat → (10, 1)
@@ -180,14 +199,21 @@ async def test_http_exception_does_not_break_batch():
 
     ok_resp = MagicMock(status_code=200, content=b"img")
     client = MagicMock()
-    # First call raises, second returns success.
-    client.get = AsyncMock(side_effect=[ConnectionError("dns dead"), ok_resp])
     client.__aenter__ = AsyncMock(return_value=client)
     client.__aexit__ = AsyncMock(return_value=False)
 
+    call_count = {"n": 0}
+
+    async def _fetch_first_fails(c, url, **kw):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            raise ConnectionError("dns dead")
+        return ok_resp, ok_resp.content
+
     with (
         patch("parsers.url._handlers.rl_acquire", new=_allow_all),
-        patch("parsers.url._handlers.httpx.AsyncClient", return_value=client),
+        patch("parsers.url._http.make_async_client", return_value=client),
+        patch("parsers.url._http.fetch_capped", side_effect=_fetch_first_fails),
         patch("api.url_validation.reresolve_and_check_ssrf", new=_noop_ssrf),
     ):
         result = await download_images([
@@ -212,10 +238,12 @@ async def test_cap_at_20_urls(monkeypatch):
 
     ok_resp = MagicMock(status_code=200, content=b"img")
     client_ctx = _fake_client_ctx(ok_resp)
+    fetch_mock = AsyncMock(side_effect=_make_fetch_capped_stub(ok_resp))
 
     with (
         patch("parsers.url._handlers.rl_acquire", new=_allow_all),
-        patch("parsers.url._handlers.httpx.AsyncClient", return_value=client_ctx),
+        patch("parsers.url._http.make_async_client", return_value=client_ctx),
+        patch("parsers.url._http.fetch_capped", new=fetch_mock),
     ):
         result = await download_images([
             f"https://example.com/{i}.jpg" for i in range(50)
@@ -223,4 +251,4 @@ async def test_cap_at_20_urls(monkeypatch):
 
     # Exactly 20 succeed; the other 30 are trimmed.
     assert len(result) == 20
-    assert client_ctx.get.await_count == 20
+    assert fetch_mock.await_count == 20

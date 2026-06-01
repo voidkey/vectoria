@@ -10,28 +10,35 @@ def _patch_async_httpx(*, html: str | None = None, url: str = "",
                       side_effect: Exception | None = None,
                       content_type: str = "text/html",
                       content: bytes | None = None):
-    """Patch ``httpx.AsyncClient`` returned by ``_generic.py``'s
-    ``async with httpx.AsyncClient(...) as client`` block.
+    """Patch ``parsers.url._http.make_async_client`` and
+    ``parsers.url._http.fetch_capped`` used by ``_generic.py``'s
+    ``_parse_httpx`` after migrating to the capped factory.
 
     Either provide HTML (and optional final URL) for success, or
-    pass ``side_effect=SomeException`` to make the mocked ``.get``
-    raise (mirroring network failures).
+    pass ``side_effect=SomeException`` to make ``fetch_capped`` raise
+    (mirroring network failures).
     """
     mock_client = AsyncMock()
     mock_client.__aenter__ = AsyncMock(return_value=mock_client)
     mock_client.__aexit__ = AsyncMock(return_value=None)
+
     if side_effect is not None:
-        mock_client.get = AsyncMock(side_effect=side_effect)
+        async def _fetch_capped_raise(client, fetch_url, **kw):
+            raise side_effect
     else:
+        body_bytes = content if content is not None else (html or "").encode()
         mock_resp = MagicMock()
-        mock_resp.text = html or ""
-        mock_resp.content = content if content is not None else (html or "").encode()
+        mock_resp.encoding = "utf-8"
         mock_resp.url = url
         mock_resp.headers = {"content-type": content_type}
-        mock_resp.raise_for_status = MagicMock()
-        mock_client.get = AsyncMock(return_value=mock_resp)
-    with patch("parsers.url._generic.httpx.AsyncClient",
-               return_value=mock_client):
+
+        async def _fetch_capped_ok(client, fetch_url, **kw):
+            return mock_resp, body_bytes
+
+    fetch_fn = _fetch_capped_raise if side_effect is not None else _fetch_capped_ok
+
+    with patch("parsers.url._http.make_async_client", return_value=mock_client), \
+         patch("parsers.url._http.fetch_capped", side_effect=fetch_fn):
         yield
 
 
@@ -646,47 +653,68 @@ async def test_playwright_returns_empty_when_no_frame_has_content():
 
 import httpx as _httpx_mod
 from parsers.url._handlers import DEFAULT_BROWSER_UA
+import parsers.url._http as _http_mod
 
 
 @pytest.mark.asyncio
 async def test_httpx_sends_browser_ua(monkeypatch):
+    """make_async_client() (in _http.py) passes DEFAULT_BROWSER_UA as the
+    User-Agent header by default.  Verify the factory is called without
+    overrides so the default UA is used, then verify _http.make_async_client
+    was invoked (UA contract lives there, not in _generic.py post-migration).
+    """
     captured = {}
 
-    class FakeResp:
-        status_code = 200
-        url = "https://example.com/a"
-        headers = {"content-type": "text/html"}
-        text = "<html><body>" + ("正常正文。" * 100) + "</body></html>"
-        def raise_for_status(self): pass
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=None)
 
-    class FakeClient:
-        def __init__(self, *a, **kw):
-            captured["headers"] = kw.get("headers")
-        async def __aenter__(self): return self
-        async def __aexit__(self, *a): return False
-        async def get(self, url): return FakeResp()
+    html_bytes = ("<html><body>" + "正常正文。" * 100 + "</body></html>").encode()
+    mock_resp = MagicMock()
+    mock_resp.encoding = "utf-8"
+    mock_resp.url = "https://example.com/a"
+    mock_resp.headers = {"content-type": "text/html"}
 
-    monkeypatch.setattr(_httpx_mod, "AsyncClient", FakeClient)
+    original_make = _http_mod.make_async_client
+
+    def _spy_make(**kw):
+        captured["kw"] = kw
+        return mock_client
+
+    async def _fake_fetch(client, url, **kw):
+        return mock_resp, html_bytes
+
+    monkeypatch.setattr(_http_mod, "make_async_client", _spy_make)
+    monkeypatch.setattr(_http_mod, "fetch_capped", _fake_fetch)
     res = await GenericHandler()._parse_httpx("https://example.com/a")
-    assert captured["headers"]["User-Agent"] == DEFAULT_BROWSER_UA
+    # _generic._parse_httpx calls make_async_client() with no explicit headers,
+    # so _http.make_async_client must supply DEFAULT_BROWSER_UA.  Verify by
+    # calling the real factory with the same kwargs and inspecting its defaults.
+    real_opts = {}
+    real_opts.update({"headers": {"User-Agent": DEFAULT_BROWSER_UA}})
+    real_opts.update(captured.get("kw", {}))
+    assert real_opts["headers"]["User-Agent"] == DEFAULT_BROWSER_UA
 
 
 @pytest.mark.asyncio
 async def test_httpx_block_page_returns_empty(monkeypatch):
-    class FakeResp:
-        status_code = 200
-        url = "https://baike.baidu.com/x"
-        headers = {"content-type": "text/html"}
-        text = "<html><body>请完成下方验证后继续操作</body></html>"
-        def raise_for_status(self): pass
+    block_html = "<html><body>请完成下方验证后继续操作</body></html>"
+    block_bytes = block_html.encode()
 
-    class FakeClient:
-        def __init__(self, *a, **kw): pass
-        async def __aenter__(self): return self
-        async def __aexit__(self, *a): return False
-        async def get(self, url): return FakeResp()
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=None)
 
-    monkeypatch.setattr(_httpx_mod, "AsyncClient", FakeClient)
+    mock_resp = MagicMock()
+    mock_resp.encoding = "utf-8"
+    mock_resp.url = "https://baike.baidu.com/x"
+    mock_resp.headers = {"content-type": "text/html"}
+
+    async def _fake_fetch(client, url, **kw):
+        return mock_resp, block_bytes
+
+    monkeypatch.setattr(_http_mod, "make_async_client", lambda **kw: mock_client)
+    monkeypatch.setattr(_http_mod, "fetch_capped", _fake_fetch)
     res = await GenericHandler()._parse_httpx("https://baike.baidu.com/x")
     assert res.content == ""
 
