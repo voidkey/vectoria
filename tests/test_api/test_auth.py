@@ -4,7 +4,6 @@ import time
 import jwt as pyjwt
 import pytest
 from fastapi import Request
-from pydantic import SecretStr
 
 from api.auth import require_api_key, verify_auth
 from api.errors import AppError, ErrorCode
@@ -320,55 +319,55 @@ async def test_protected_route_rejects_unauthed_request(client, monkeypatch):
 
 # --- require_api_key dependency ---
 
-def _req(headers: dict) -> Request:
-    raw = [(k.lower().encode(), v.encode()) for k, v in headers.items()]
-    return Request({"type": "http", "method": "POST", "path": "/v1/analyze/url", "headers": raw})
+@pytest.mark.asyncio
+async def test_require_api_key_accepts_valid_key(monkeypatch, settings):
+    _set_api_key(monkeypatch, settings, "secret")
+    monkeypatch.setattr(settings, "allow_unauthenticated", False)
+    assert await require_api_key(_make_request({"X-API-Key": "secret"})) is None
 
 
 @pytest.mark.asyncio
-async def test_require_api_key_accepts_valid_key(monkeypatch):
-    s = get_settings()
-    monkeypatch.setattr(s, "allow_unauthenticated", False)
-    monkeypatch.setattr(s, "api_key", SecretStr("secret"))
-    assert await require_api_key(_req({"X-API-Key": "secret"})) is None
-
-
-@pytest.mark.asyncio
-async def test_require_api_key_rejects_wrong_key(monkeypatch):
-    s = get_settings()
-    monkeypatch.setattr(s, "allow_unauthenticated", False)
-    monkeypatch.setattr(s, "api_key", SecretStr("secret"))
+async def test_require_api_key_rejects_wrong_key(monkeypatch, settings):
+    _set_api_key(monkeypatch, settings, "secret")
+    monkeypatch.setattr(settings, "allow_unauthenticated", False)
     with pytest.raises(AppError) as ei:
-        await require_api_key(_req({"X-API-Key": "wrong"}))
+        await require_api_key(_make_request({"X-API-Key": "wrong"}))
     assert ei.value.status_code == 403
     assert ei.value.code == ErrorCode.FORBIDDEN
 
 
 @pytest.mark.asyncio
-async def test_require_api_key_rejects_jwt_caller(monkeypatch):
+async def test_require_api_key_rejects_jwt_caller(monkeypatch, settings):
     """A Bearer/JWT credential must NOT grant access to API-key-only routes."""
-    s = get_settings()
-    monkeypatch.setattr(s, "allow_unauthenticated", False)
-    monkeypatch.setattr(s, "api_key", SecretStr("secret"))
+    _set_api_key(monkeypatch, settings, "secret")
+    monkeypatch.setattr(settings, "allow_unauthenticated", False)
     with pytest.raises(AppError) as ei:
-        await require_api_key(_req({"Authorization": "Bearer faketoken"}))
+        await require_api_key(_make_request({"Authorization": "Bearer faketoken"}))
+    assert ei.value.status_code == 403
+    assert ei.value.code == ErrorCode.FORBIDDEN
+
+
+@pytest.mark.asyncio
+async def test_require_api_key_allows_dev_mode(monkeypatch, settings):
+    # allow_unauthenticated=True is already set by the fixture; dev mode returns
+    # before the key is ever read, so no key setup is needed.
+    assert await require_api_key(_make_request({})) is None
+
+
+@pytest.mark.asyncio
+async def test_require_api_key_closed_when_unconfigured(monkeypatch, settings):
+    """No api_key configured and not dev mode -> closed by default (403)."""
+    monkeypatch.setattr(settings, "allow_unauthenticated", False)
+    with pytest.raises(AppError) as ei:
+        await require_api_key(_make_request({"X-API-Key": "anything"}))
     assert ei.value.status_code == 403
 
 
 @pytest.mark.asyncio
-async def test_require_api_key_allows_dev_mode(monkeypatch):
-    s = get_settings()
-    monkeypatch.setattr(s, "allow_unauthenticated", True)
-    monkeypatch.setattr(s, "api_key", SecretStr(""))
-    assert await require_api_key(_req({})) is None
-
-
-@pytest.mark.asyncio
-async def test_require_api_key_closed_when_unconfigured(monkeypatch):
-    """No api_key configured and not dev mode -> closed by default (403)."""
-    s = get_settings()
-    monkeypatch.setattr(s, "allow_unauthenticated", False)
-    monkeypatch.setattr(s, "api_key", SecretStr(""))
+async def test_require_api_key_rejects_empty_header(monkeypatch, settings):
+    """Empty X-API-Key header is rejected (documents the `presented and ...` short-circuit)."""
+    _set_api_key(monkeypatch, settings, "secret")
+    monkeypatch.setattr(settings, "allow_unauthenticated", False)
     with pytest.raises(AppError) as ei:
-        await require_api_key(_req({"X-API-Key": "anything"}))
+        await require_api_key(_make_request({"X-API-Key": ""}))
     assert ei.value.status_code == 403
