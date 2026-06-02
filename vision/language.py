@@ -13,7 +13,10 @@ import re
 
 from config import get_settings
 
-_LOCALE_RE = re.compile(r"^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*$")
+# ``\Z`` (not ``$``) so a trailing newline can't slip through: Python's
+# ``$`` matches just before a final ``\n``, which would let "en\n…" pass.
+# The guard must be airtight at the regex level, not rely on .strip().
+_LOCALE_RE = re.compile(r"^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*\Z")
 
 _NAMES = {
     "en": "English", "zh": "Chinese", "pt": "Portuguese", "es": "Spanish",
@@ -30,5 +33,9 @@ def resolve_language(raw: str | None) -> str:
     candidate = (raw or "").strip()
     if not _LOCALE_RE.match(candidate):
         candidate = get_settings().vision_default_language.strip()
+    if not _LOCALE_RE.match(candidate):
+        # Misconfigured default (not a locale code) — never let arbitrary
+        # config text reach the prompt; settle on a safe constant.
+        candidate = "en"
     primary = candidate.split("-", 1)[0].lower()
     return _NAMES.get(primary, candidate)
