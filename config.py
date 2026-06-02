@@ -156,6 +156,11 @@ class Settings(BaseSettings):
     vision_base_url: str = ""
     vision_api_key: SecretStr = SecretStr("")
     vision_model: str = "gpt-4o"
+    # Default output language for vision results when a request doesn't
+    # specify one. "zh" preserves the original Chinese behavior; overseas
+    # deployments set VISION_DEFAULT_LANGUAGE=en (per-request locale is the
+    # primary driver there).
+    vision_default_language: str = "zh"
     vision_breaker_threshold: int = 5
     vision_breaker_reset_timeout: float = 300.0
     # Rough per-call USD cost estimate, used by the cost counter and
