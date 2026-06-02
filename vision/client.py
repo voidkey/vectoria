@@ -131,10 +131,12 @@ class VisionClient:
         """Whole-image markdown extraction for vision-native parser.
 
         Returns markdown with ``## Description`` + ``## Verbatim`` sections,
-        empty string on failure. Caller is responsible for treating
-        empty as "vision didn't help, registry should fall back".
+        or empty string when the VLM itself returns no content. Caller is
+        responsible for treating empty as "vision didn't help, registry
+        should fall back".
 
-        Failures (breaker open / API error) are *raised* so the worker
+        Failures (breaker open / API error) are *raised* (not returned as
+        empty) so the worker
         handler's per-attempt fallback chain can route to the next
         engine — different from ``describe()`` which fails soft for
         post-parse enrichment.
