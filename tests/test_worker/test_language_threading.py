@@ -56,13 +56,15 @@ async def test_parse_document_passes_language_to_parser():
             "selected_engine": "vision-native",
             "language": "pt-BR",
         }
+        _setup_exc: Exception | None = None
         try:
             await h.handle_parse_document(payload)
-        except Exception:
-            pass  # downstream mocks may not be complete; only care that parse was called
+        except Exception as _e:
+            _setup_exc = _e  # downstream mocks may not be complete; only care that parse was called
 
     assert captured.get("language") == "pt-BR", (
         f"Expected language='pt-BR' to reach parser.parse; got {captured!r}"
+        + (f" (handler raised: {_setup_exc!r})" if _setup_exc else "")
     )
 
 
@@ -104,10 +106,11 @@ async def test_parse_document_language_none_when_absent():
             "selected_engine": "markitdown",
             # no "language" key
         }
+        _setup_exc2: Exception | None = None
         try:
             await h.handle_parse_document(payload)
-        except Exception:
-            pass
+        except Exception as _e:
+            _setup_exc2 = _e
 
     assert captured.get("language") is None, (
         f"Expected language=None when absent from payload; got {captured!r}"
@@ -169,7 +172,7 @@ async def test_analyze_images_passes_language_to_describe():
     with (
         patch("worker.handlers.get_session", return_value=_FakeSession()),
         patch("vision.client.VisionClient", return_value=fake_client),
-        patch("storage.get_storage", return_value=fake_storage),
+        patch("storage.get_storage", new=AsyncMock(return_value=fake_storage)),
     ):
         import worker.handlers as h
         await h.handle_analyze_images({
@@ -180,4 +183,55 @@ async def test_analyze_images_passes_language_to_describe():
 
     assert captured.get("language") == "zh-CN", (
         f"Expected language='zh-CN' to reach client.describe; got {captured!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_download_and_store_images_propagates_language():
+    """handle_download_and_store_images must forward payload['language'] to
+    the enqueued analyze_images task payload."""
+    from db.models import Document
+
+    fake_doc = MagicMock(spec=Document)
+    fake_doc.content = "some document body text"
+
+    # download_images_for_url returns a non-empty dict so we reach enqueue.
+    fake_images = {"https://x/a.png": b"\xff\xd8\xff"}
+
+    # refs_from_dict and stream_upload_and_store_refs are imported locally
+    # inside the handler, so patch at their source modules.
+    fake_refs = [MagicMock()]
+    fake_enriched = [MagicMock()]
+
+    captured_enqueue: dict = {}
+
+    async def _fake_enqueue(task_type, payload):
+        if task_type == "analyze_images":
+            captured_enqueue.update(payload)
+
+    # get_settings must return vision_base_url truthy so the enqueue branch runs.
+    fake_cfg = MagicMock()
+    fake_cfg.vision_base_url = "http://vision-service"
+
+    with (
+        patch("worker.handlers.load_doc", new=AsyncMock(return_value=fake_doc)),
+        patch("parsers.url.download_images_for_url", new=AsyncMock(return_value=fake_images)),
+        patch("api.image_stream.refs_from_dict", return_value=fake_refs),
+        patch("parsers.image_metadata.extract_metadata_into_refs", return_value=fake_enriched),
+        patch("api.image_stream.stream_upload_and_store_refs", new=AsyncMock()),
+        patch("worker.handlers.update_doc", new=AsyncMock()),
+        patch("worker.handlers.get_settings", return_value=fake_cfg),
+        patch("worker.queue.enqueue", new=AsyncMock(side_effect=_fake_enqueue)),
+    ):
+        import worker.handlers as h
+        await h.handle_download_and_store_images({
+            "kb_id": "k",
+            "doc_id": "d",
+            "source_url": "https://x/",
+            "image_urls": ["https://x/a.png"],
+            "language": "pt-BR",
+        })
+
+    assert captured_enqueue.get("language") == "pt-BR", (
+        f"Expected analyze_images payload to carry language='pt-BR'; got {captured_enqueue!r}"
     )
