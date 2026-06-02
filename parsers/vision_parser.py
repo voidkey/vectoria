@@ -69,6 +69,8 @@ class VisionNativeParser(BaseParser):
                 f"vision-native expects bytes, got {type(source).__name__}",
             )
 
+        language = kwargs.get("language")
+
         # Lazy build the client so importing this module doesn't trigger
         # a config load before settings are fully wired (matches the
         # pattern used by other parsers).
@@ -80,7 +82,7 @@ class VisionNativeParser(BaseParser):
             model=cfg.vision_model,
         )
 
-        markdown = await client.parse_image(source)
+        markdown = await client.parse_image(source, language=language)
 
         if not markdown.strip():
             # Vision returned empty — let the handler treat it as a

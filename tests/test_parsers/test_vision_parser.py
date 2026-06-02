@@ -191,3 +191,16 @@ def test_registry_auto_select_falls_back_to_ocr_when_vision_unconfigured():
         assert registry.auto_select(filename="poster.png") == "ocr-native"
     finally:
         get_settings().vision_base_url = saved
+
+
+@pytest.mark.asyncio
+async def test_vision_parser_forwards_language_kwarg():
+    from unittest.mock import AsyncMock, patch
+    from parsers.vision_parser import VisionNativeParser
+    fake_client = AsyncMock()
+    fake_client.parse_image = AsyncMock(return_value="## Description\nx\n\n## Verbatim\ny")
+    # Client is constructed inline via `vision.client.VisionClient(...)` — patch the class.
+    with patch("vision.client.VisionClient", return_value=fake_client):
+        await VisionNativeParser().parse(b"\x89PNG\r\n\x1a\n" + b"\x00" * 16, filename="x.png", language="pt-BR")
+    _, kwargs = fake_client.parse_image.call_args
+    assert kwargs.get("language") == "pt-BR"
