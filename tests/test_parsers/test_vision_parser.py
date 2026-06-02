@@ -124,14 +124,14 @@ async def test_parse_returns_markdown_with_title_header(monkeypatch):
 
     fake_client = AsyncMock()
     fake_client.parse_image = AsyncMock(
-        return_value="## 描述\n这是一张销售对比图。\n\n## 逐字内容\nQ1=2M Q2=3.5M",
+        return_value="## Description\nA sales comparison chart.\n\n## Verbatim\nQ1=2M Q2=3.5M",
     )
     with patch("vision.client.VisionClient", return_value=fake_client):
         result = await VisionNativeParser().parse(_PNG_HEAD, filename="chart.png")
 
     assert "# chart" in result.content       # title header from filename stem
-    assert "## 描述" in result.content
-    assert "## 逐字内容" in result.content
+    assert "## Description" in result.content
+    assert "## Verbatim" in result.content
     assert result.title == "chart"
     assert result.image_refs == []           # input is the image, nothing to extract
 

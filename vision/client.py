@@ -6,16 +6,22 @@ from openai import AsyncOpenAI
 from infra.circuit_breaker import CircuitOpenError, get_breaker
 from parsers.image_metadata import detect_mime_type
 from vision.budget import get_cost_tracker
+from vision.language import resolve_language
 
 logger = logging.getLogger(__name__)
 
-_SYSTEM_PROMPT = (
-    "你是一个视频配图助手。用户正在将一篇文章制作成视频，需要你帮助理解图片的用途。\n"
-    "请用中文回答，1-2句话：\n"
-    "1. 这张图片是什么（如：某本书的封面、某个产品的照片、数据图表等）\n"
-    "2. 它在文章中起什么作用（配图、说明、装饰等）\n"
-    "不要详细描述图片中的视觉细节（颜色、排版、字体等），只关注它的语义身份和用途。"
-)
+
+def _describe_system_prompt(language: str) -> str:
+    return (
+        "You are an assistant for understanding images embedded in an "
+        "article. "
+        f"Respond in {language}, in 1-2 sentences: "
+        "(1) what the image is (e.g. a book cover, a product photo, a data "
+        "chart); (2) its role in the article (illustration, explanation, "
+        "decoration). Do not describe visual details (color, layout, fonts) "
+        "— only the image's semantic identity and purpose."
+    )
+
 
 # Vision-native parser prompt. Dual output: semantic description for
 # downstream RAG / video-script use, plus verbatim text so callers
@@ -23,17 +29,22 @@ _SYSTEM_PROMPT = (
 # to VLM paraphrasing. Markdown structure is intentional — handler
 # stores it as-is and the splitter / chunker treat headings as
 # section breaks.
-_PARSE_SYSTEM_PROMPT = (
-    "你是一个文档图片解析器。给定一张图片，输出 markdown 格式："
-    "\n\n## 描述\n<用 1-3 句中文说明这张图片的核心内容、类型和用途，"
-    "如「这是一张销售数据柱状图，对比了 Q1 与 Q2 的营收」>"
-    "\n\n## 逐字内容\n<逐字转录图中可读的所有文字，按视觉顺序排列；"
-    "若是表格保留行列结构（用 markdown 表格）；图中无文字写「（无文字）」>"
-    "\n\n规则："
-    "\n- 不要复述图片不存在的内容；不确定就写「不确定」"
-    "\n- 不要解释你的推理过程"
-    "\n- 直接以「## 描述」开头，不要其它前言"
-)
+def _parse_system_prompt(language: str) -> str:
+    return (
+        "You are a document-image parser. Given an image, output markdown:"
+        "\n\n## Description\n"
+        f"<1-3 sentences in {language} describing the image's core content, "
+        "type and purpose, e.g. 'A bar chart comparing Q1 and Q2 revenue.'>"
+        "\n\n## Verbatim\n"
+        "<Transcribe ALL readable text in the image in its ORIGINAL language "
+        "(do NOT translate), in visual order; preserve tables as markdown "
+        "tables; if there is no text, write '(no text)'.>"
+        "\n\nRules:"
+        "\n- Do not invent content not present in the image; if unsure, write "
+        "'uncertain'."
+        "\n- Do not explain your reasoning."
+        "\n- Start directly with '## Description', with no preamble."
+    )
 
 
 def _build_user_text(
@@ -42,13 +53,13 @@ def _build_user_text(
     """Build contextual user prompt from available metadata."""
     parts: list[str] = []
     if section_title:
-        parts.append(f"图片来自文章章节「{section_title}」。")
+        parts.append(f"The image is from the article section \"{section_title}\".")
     if alt:
-        parts.append(f"图片原始标注：{alt}。")
+        parts.append(f"Original image caption: {alt}.")
     if context:
         trimmed = context[:500] if len(context) > 500 else context
-        parts.append(f"图片周围的文字：{trimmed}")
-    return "\n".join(parts) if parts else "请根据图片内容判断。"
+        parts.append(f"Surrounding text: {trimmed}")
+    return "\n".join(parts) if parts else "Judge based on the image content."
 
 
 class VisionClient:
@@ -66,6 +77,7 @@ class VisionClient:
         context: str = "",
         section_title: str = "",
         alt: str = "",
+        language: str | None = None,
     ) -> str:
         """Describe an image using the vision LLM.
 
@@ -77,10 +89,11 @@ class VisionClient:
         if not mime.startswith("image/"):
             logger.warning("Skipping non-image data (detected %s)", mime)
             return ""
+        lang = resolve_language(language)
         b64 = base64.b64encode(image_bytes).decode()
         user_text = _build_user_text(context, section_title, alt)
         messages = [
-            {"role": "system", "content": _SYSTEM_PROMPT},
+            {"role": "system", "content": _describe_system_prompt(lang)},
             {
                 "role": "user",
                 "content": [
@@ -113,10 +126,11 @@ class VisionClient:
         image_bytes: bytes,
         *,
         max_tokens: int = 1500,
+        language: str | None = None,
     ) -> str:
         """Whole-image markdown extraction for vision-native parser.
 
-        Returns markdown with ``## 描述`` + ``## 逐字内容`` sections,
+        Returns markdown with ``## Description`` + ``## Verbatim`` sections,
         empty string on failure. Caller is responsible for treating
         empty as "vision didn't help, registry should fall back".
 
@@ -130,13 +144,14 @@ class VisionClient:
         mime = detect_mime_type(image_bytes)
         if not mime.startswith("image/"):
             raise ValueError(f"not an image: detected mime {mime!r}")
+        lang = resolve_language(language)
         b64 = base64.b64encode(image_bytes).decode()
         messages = [
-            {"role": "system", "content": _PARSE_SYSTEM_PROMPT},
+            {"role": "system", "content": _parse_system_prompt(lang)},
             {
                 "role": "user",
                 "content": [
-                    {"type": "text", "text": "请按要求解析这张图片。"},
+                    {"type": "text", "text": "Parse this image as instructed."},
                     {
                         "type": "image_url",
                         "image_url": {"url": f"data:{mime};base64,{b64}"},
