@@ -13,9 +13,10 @@ import re
 
 from config import get_settings
 
-# ``\Z`` (not ``$``) so a trailing newline can't slip through: Python's
-# ``$`` matches just before a final ``\n``, which would let "en\n…" pass.
-# The guard must be airtight at the regex level, not rely on .strip().
+# ``\Z`` (not ``$``) anchors the end so a trailing newline can't slip
+# through even if the ``.strip()`` below is ever removed: Python's ``$``
+# matches just before a final ``\n`` (so "en\n" would pass), ``\Z`` does
+# not. Defense-in-depth — ``.strip()`` is the first layer, this is the second.
 _LOCALE_RE = re.compile(r"^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*\Z")
 
 _NAMES = {
