@@ -67,6 +67,15 @@ class Document(Base):
     image_status: Mapped[str] = mapped_column(
         String(20), default="none", server_default="none", nullable=False,
     )
+    # Retrieval-index lifecycle, orthogonal to `status` (which tracks the
+    # parse/document lifecycle) — same pattern as `image_status`.
+    #   skipped   — indexing disabled, or no indexable text (empty/image_only)
+    #   pending   — enqueued / in flight
+    #   completed — chunks embedded + upserted into pgvector
+    #   failed    — embedding/upsert gave up; document is still usable
+    index_status: Mapped[str] = mapped_column(
+        String(20), default="pending", server_default="pending", nullable=False,
+    )
     # PDF pages / PPTX slides. NULL for non-paginated sources (docx,
     # html, plain text) and for legacy binary .doc — Word's pagination
     # is a render-time concept, so there's no honest static answer.
