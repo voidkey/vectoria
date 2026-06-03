@@ -131,6 +131,7 @@
 | `source` | string | 来源（URL 或文件名） |
 | `chunk_count` | int | 分块数量（初始为 0，完成后更新） |
 | `status` | string | 状态：`indexing` / `completed` / `failed` |
+| `index_status` | string | 索引状态：`pending` / `completed` / `failed` / `skipped`（见下方说明） |
 | `error_msg` | string | 失败时的错误信息 |
 | `created_at` | string | 创建时间（ISO 8601 格式） |
 | `content` | string | 解析后的 Markdown 内容 |
@@ -147,6 +148,7 @@
 | `source` | string | 来源 |
 | `chunk_count` | int | 分块数量 |
 | `status` | string | `indexing` / `completed` / `failed` |
+| `index_status` | string | `pending` / `completed` / `failed` / `skipped`（见下方说明） |
 | `error_msg` | string | 错误信息 |
 | `created_at` | string | 创建时间（ISO 8601 格式） |
 
@@ -219,6 +221,8 @@
 | `answer` | string | LLM 生成的回答 |
 | `sources` | dict[] | 引用的来源片段列表 |
 
+> **ENABLE_INDEXING=false 时**: 返回 HTTP `503`，错误码 `1402`（`INDEXING_DISABLED`）。文档仍可通过 `GET /documents/{id}` 访问文本和图片，但无法进行向量检索。
+
 ---
 
 ## 异步处理流程
@@ -232,6 +236,8 @@
 
 文档状态流转：`indexing` → `completed` / `failed`
 
+文档索引状态流转（`index_status`）：`pending` → `completed` / `failed` / `skipped`
+
 图片 Vision 状态流转：`pending` → `completed` / `failed` / `skipped`
 
 ---
@@ -240,5 +246,6 @@
 
 | 字段 | 可选值 | 说明 |
 |------|--------|------|
-| `Document.status` | `indexing`, `completed`, `failed` | 文档处理状态 |
+| `Document.status` | `indexing`, `completed`, `failed` | 文档处理状态（解析 + 存储生命周期） |
+| `Document.index_status` | `pending`, `completed`, `failed`, `skipped` | 向量索引状态，与 `status` 独立。`completed`=已入 pgvector 可检索；`failed`=embedding 失败但文档仍可读；`skipped`=`ENABLE_INDEXING=false` 或无可索引内容；`pending`=处理中 |
 | `DocumentImage.vision_status` | `pending`, `completed`, `failed`, `skipped` | 图片 AI 分析状态 |
