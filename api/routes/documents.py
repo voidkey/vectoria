@@ -145,7 +145,6 @@ async def _enqueue_ingest(
     doc_id: str | None = None,
     wait: bool = False,
     page_count: int | None = None,
-    language: str | None = None,
 ) -> DocumentIngestResponse:
     """Create a Document row in ``queued`` state and enqueue parse work.
 
@@ -184,7 +183,6 @@ async def _enqueue_ingest(
             "doc_id": doc_id, "kb_id": kb_id,
             "storage_key": storage_key, "source": source,
             "filename": filename, "selected_engine": selected_engine,
-            "language": language,
         })
         await session.commit()
         await session.refresh(doc)
@@ -255,7 +253,6 @@ async def ingest_file(
             "immediate queued response; poll GET /documents/{id} for progress."
         ),
     ),
-    language: str | None = Query(None),
 ):
     await _validate_kb(kb_id)
 
@@ -390,7 +387,6 @@ async def ingest_file(
         file_hash=None, file_hash_sha256=file_hash_sha256,
         doc_id=doc_id, wait=wait,
         page_count=page_count,
-        language=language,
     )
 
 
@@ -473,7 +469,6 @@ async def ingest_url(
         source=body.url, storage_key=None,
         filename="", selected_engine=selected_engine,
         file_hash=None, file_hash_sha256=url_sha256, wait=wait,
-        language=body.language,
     )
 
 
@@ -559,7 +554,6 @@ async def ingest_text(
         filename=title, selected_engine=selected_engine,
         file_hash=None, file_hash_sha256=file_hash_sha256,
         doc_id=doc_id, wait=wait,
-        language=body.language,
     )
 
 

@@ -8,13 +8,11 @@ class AnalyzeURLRequest(BaseModel):
 
 class DocumentURLRequest(BaseModel):
     url: str
-    language: str | None = None
 
 
 class DocumentTextRequest(BaseModel):
     text: str = Field(..., min_length=1)
     title: str | None = None
-    language: str | None = None
 
 
 class OutlineItem(BaseModel):

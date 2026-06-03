@@ -77,7 +77,6 @@ class VisionClient:
         context: str = "",
         section_title: str = "",
         alt: str = "",
-        language: str | None = None,
     ) -> str:
         """Describe an image using the vision LLM.
 
@@ -89,7 +88,7 @@ class VisionClient:
         if not mime.startswith("image/"):
             logger.warning("Skipping non-image data (detected %s)", mime)
             return ""
-        lang = resolve_language(language)
+        lang = resolve_language()
         b64 = base64.b64encode(image_bytes).decode()
         user_text = _build_user_text(context, section_title, alt)
         messages = [
@@ -126,7 +125,6 @@ class VisionClient:
         image_bytes: bytes,
         *,
         max_tokens: int = 1500,
-        language: str | None = None,
     ) -> str:
         """Whole-image markdown extraction for vision-native parser.
 
@@ -146,7 +144,7 @@ class VisionClient:
         mime = detect_mime_type(image_bytes)
         if not mime.startswith("image/"):
             raise ValueError(f"not an image: detected mime {mime!r}")
-        lang = resolve_language(language)
+        lang = resolve_language()
         b64 = base64.b64encode(image_bytes).decode()
         messages = [
             {"role": "system", "content": _parse_system_prompt(lang)},

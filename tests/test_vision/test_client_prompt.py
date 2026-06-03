@@ -1,6 +1,7 @@
 import pytest
 from unittest.mock import MagicMock
 
+from config import get_settings
 from vision.client import _describe_system_prompt, _parse_system_prompt, VisionClient
 
 
@@ -36,15 +37,18 @@ def _client_capturing(captured):
 
 
 @pytest.mark.asyncio
-async def test_describe_plumbs_language_into_system_message():
+async def test_describe_uses_configured_default_language(monkeypatch):
+    # No per-request language anymore: the deployment default drives output.
+    monkeypatch.setattr(get_settings(), "vision_default_language", "pt")
     captured = {}
-    await _client_capturing(captured).describe(_PNG, language="pt")
+    await _client_capturing(captured).describe(_PNG)
     assert "Respond in Portuguese" in captured["messages"][0]["content"]
 
 
 @pytest.mark.asyncio
-async def test_parse_image_plumbs_language_into_system_message():
+async def test_parse_image_uses_configured_default_language(monkeypatch):
+    monkeypatch.setattr(get_settings(), "vision_default_language", "es")
     captured = {}
-    await _client_capturing(captured).parse_image(_PNG, language="es")
+    await _client_capturing(captured).parse_image(_PNG)
     sys_msg = captured["messages"][0]["content"]
     assert "in Spanish" in sys_msg and "## Description" in sys_msg

@@ -103,7 +103,6 @@ async def handle_parse_document(payload: dict) -> None:
     source = payload["source"]
     filename = payload.get("filename", "")
     selected_engine = payload["selected_engine"]
-    language = payload.get("language")
 
     # Guard: the doc may have been deleted, or a prior attempt may have
     # already completed this work. Don't re-parse or double-enqueue.
@@ -173,7 +172,7 @@ async def handle_parse_document(payload: dict) -> None:
         if parser is not None:
             try:
                 async with observe_parse(engine_name):
-                    candidate = await parser.parse(raw, filename=filename, language=language)
+                    candidate = await parser.parse(raw, filename=filename)
                 # "Useful" = either has enough text content, or is an
                 # opted-in image-only handler with images to download.
                 # Anything else is treated like a parser failure for
@@ -301,7 +300,6 @@ async def handle_parse_document(payload: dict) -> None:
         "kb_id": kb_id, "doc_id": doc_id,
         "source_url": source,
         "image_urls": parse_result.image_urls,
-        "language": language,
     } if parse_result.image_urls else None
 
     # Permanent failures: empty or oversized content won't become valid
@@ -420,7 +418,7 @@ async def handle_parse_document(payload: dict) -> None:
     if has_image_urls:
         await enqueue("download_and_store_images", download_payload)
     elif has_inline_images and vision_configured:
-        await enqueue("analyze_images", {"kb_id": kb_id, "doc_id": doc_id, "language": language})
+        await enqueue("analyze_images", {"kb_id": kb_id, "doc_id": doc_id})
 
 
 # ---------------------------------------------------------------------------
@@ -490,7 +488,6 @@ async def handle_index_document(payload: dict) -> None:
 async def handle_analyze_images(payload: dict) -> None:
     kb_id = payload["kb_id"]
     doc_id = payload["doc_id"]
-    language = payload.get("language")
 
     from vision.client import VisionClient
     from storage import get_storage
@@ -529,7 +526,6 @@ async def handle_analyze_images(payload: dict) -> None:
                     context=img.context,
                     section_title=img.section_title,
                     alt=img.alt,
-                    language=language,
                 )
                 status = "completed" if description else "failed"
             except Exception:
@@ -560,7 +556,6 @@ async def handle_download_and_store_images(payload: dict) -> None:
     doc_id = payload["doc_id"]
     source_url = payload["source_url"]
     image_urls = payload["image_urls"]
-    language = payload.get("language")
     try:
         doc = await load_doc(doc_id)
     except ValueError:
@@ -604,4 +599,4 @@ async def handle_download_and_store_images(payload: dict) -> None:
 
     if vision_configured:
         from worker.queue import enqueue
-        await enqueue("analyze_images", {"kb_id": kb_id, "doc_id": doc_id, "language": language})
+        await enqueue("analyze_images", {"kb_id": kb_id, "doc_id": doc_id})

@@ -1,11 +1,11 @@
-"""Resolve a per-request target language for vision output.
+"""Resolve the deployment's vision output language for prompts.
 
-The value originates from an end-user-influenced API field and is
-interpolated into an LLM prompt, so it MUST be constrained: only
-BCP-47-shaped locale tokens are accepted; anything else is treated as
-absent and falls back to the deployment default. This closes the
-prompt-injection vector while still letting the product pass real
-locales like ``pt-BR``.
+The language is fixed per deployment via ``vision_default_language``
+(env ``VISION_DEFAULT_LANGUAGE``): ``zh`` domestic, ``en`` overseas. It is
+operator-controlled, but since it gets interpolated into an LLM prompt it is
+still validated as a BCP-47-shaped locale token — a misconfigured (non-locale)
+value can't leak arbitrary text into the prompt and falls back to a safe
+constant.
 """
 from __future__ import annotations
 
@@ -26,14 +26,14 @@ _NAMES = {
 }
 
 
-def resolve_language(raw: str | None) -> str:
-    """Return a clean language string safe to inject into a vision prompt.
+def resolve_language() -> str:
+    """Return the configured vision output language as a prompt-ready name.
 
-    Absent/invalid input falls back to ``settings.vision_default_language``.
+    Reads ``settings.vision_default_language`` and maps it to an English
+    language name (e.g. ``en`` → ``English``). A misconfigured (non-locale)
+    value never reaches the prompt — it falls back to a safe constant.
     """
-    candidate = (raw or "").strip()
-    if not _LOCALE_RE.match(candidate):
-        candidate = get_settings().vision_default_language.strip()
+    candidate = get_settings().vision_default_language.strip()
     if not _LOCALE_RE.match(candidate):
         # Misconfigured default (not a locale code) — never let arbitrary
         # config text reach the prompt; settle on a safe constant.
