@@ -57,6 +57,7 @@ class DocumentResponse(BaseModel):
     source: str
     chunk_count: int
     status: str
+    index_status: str = "pending"
     error_msg: str = ""
     created_at: str
 
