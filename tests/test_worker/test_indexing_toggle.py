@@ -125,3 +125,12 @@ async def test_index_failure_keeps_doc_usable_and_reraises():
     assert failure_update["status"] == "completed"
     assert "error_trace" not in failure_update
     assert "error_type" not in failure_update
+
+
+from api.routes.documents import _PARSE_TERMINAL_STATUSES
+
+
+def test_completed_is_a_parse_terminal_status():
+    # Disabled-path docs reach 'completed' directly (no 'indexing' phase);
+    # ?wait=true must treat that as terminal.
+    assert "completed" in _PARSE_TERMINAL_STATUSES
