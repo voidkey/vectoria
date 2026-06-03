@@ -29,6 +29,7 @@ class ErrorCode:
 
     # Query (1401-1499)
     QUERY_ERROR = 1401
+    INDEXING_DISABLED = 1402
 
     # Generic (9001-9099)
     VALIDATION_ERROR = 9001

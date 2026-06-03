@@ -48,6 +48,12 @@ def _get_rerank_client() -> httpx.AsyncClient:
     ))],
 )
 async def query_kb(kb_id: str, body: QueryRequest):
+    if not get_settings().enable_indexing:
+        raise AppError(
+            503, ErrorCode.INDEXING_DISABLED,
+            "Retrieval is disabled on this deployment (ENABLE_INDEXING=false); "
+            "no search index is maintained.",
+        )
     if not body.query.strip():
         raise AppError(422, ErrorCode.QUERY_ERROR, "query must not be empty")
 
