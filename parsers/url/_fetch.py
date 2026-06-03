@@ -15,7 +15,7 @@ from urllib.parse import urlparse
 from config import get_settings
 from curl_cffi import requests as _cc
 from infra.ratelimit import acquire as _rl_acquire
-from parsers.url._handlers import detect_block_reason, extract_html_title
+from parsers.url._handlers import detect_block_reason, extract_html_title, raise_if_gone
 
 logger = logging.getLogger(__name__)
 
@@ -71,10 +71,17 @@ async def fetch_impersonated(
         try:
             kw = {"proxies": {"http": proxy, "https": proxy}} if proxy else {}
             resp = await asyncio.to_thread(_cc_get, url, **kw)
-            html = resp.text or ""
         except Exception:
             logger.warning("fetch_impersonated error on %s (attempt %d)", url, attempt + 1, exc_info=True)
             html = ""
+        else:
+            # 404/410 → permanent (propagates, no retry); the body would just be
+            # the site's error page. 5xx/429 are server-side/transient, so drop
+            # the body and let the loop retry with backoff.
+            raise_if_gone(resp.status_code, url)
+            html = resp.text or ""
+            if resp.status_code >= 500 or resp.status_code == 429:
+                html = ""
         if html:
             if detect_block_reason(html, extract_html_title(html, url)) is None:
                 return html

@@ -16,6 +16,7 @@ from parsers.url._handlers import (
     extract_image_urls,
     extract_with_trafilatura,
     needs_browser_fallback,
+    raise_if_gone,
 )
 
 logger = logging.getLogger(__name__)
@@ -233,6 +234,12 @@ class GenericHandler:
             await acquire_page_token((urlparse(url).hostname or "").lower())
             async with make_async_client() as client:
                 resp, body = await fetch_capped(client, url)
+        except httpx.HTTPStatusError as exc:
+            # fetch_capped does raise_for_status(); 404/410 → permanent (no
+            # point falling back to playwright for a gone resource). Other 4xx
+            # (403 anti-bot) / 5xx fall through to the browser tier as before.
+            raise_if_gone(exc.response.status_code, url)
+            return ParseResult(content="", title="")
         except (ResponseTooLargeError, httpx.TooManyRedirects):
             return ParseResult(content="", title="")
         except Exception:
@@ -292,7 +299,7 @@ class GenericHandler:
             ) as ctx:
                 page = await ctx.new_page()
                 try:
-                    await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                    response = await page.goto(url, wait_until="domcontentloaded", timeout=30000)
                 except PlaywrightError as exc:
                     cert_code = _chromium_cert_error_code(exc)
                     if cert_code is not None:
@@ -307,6 +314,11 @@ class GenericHandler:
                             "server has no cert for this host — not retryable"
                         ) from exc
                     raise
+
+                # A 404/410 that survived to the browser tier (e.g. browser-only
+                # domain, or a soft path that only 404s after JS) is still gone.
+                if response is not None:
+                    raise_if_gone(response.status, url)
 
                 # Poll until Cloudflare/JS challenge clears. ``page.title()``
                 # / ``page.content()`` race with in-flight client-side

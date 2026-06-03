@@ -51,6 +51,25 @@ async def test_baike_fetch_retries_through_block(monkeypatch):
     assert seen.get("retry_on_block") is True
 
 
+@pytest.mark.asyncio
+async def test_baike_404_propagates_not_found_no_openapi(monkeypatch):
+    """A dead lemma id (baike returns HTTP 404) must surface as PageNotFoundError,
+    not be laundered into a 162-char '页面不存在' doc or the openapi fallback."""
+    import parsers.url._baike as b
+    from parsers.base import PageNotFoundError
+    async def fake_fetch(url, **kw):
+        raise PageNotFoundError(f"page not found (HTTP 404) at {url}")
+    openapi_calls = {"n": 0}
+    async def fake_openapi(url):
+        openapi_calls["n"] += 1
+        return None
+    monkeypatch.setattr(b, "fetch_impersonated", fake_fetch)
+    monkeypatch.setattr(BaikeHandler, "_openapi_fallback", staticmethod(fake_openapi))
+    with pytest.raises(PageNotFoundError):
+        await BaikeHandler().parse("https://baike.baidu.com/item/x/999999999")
+    assert openapi_calls["n"] == 0  # gone resource => don't bother the weak fallback
+
+
 def test_extract_baike_body_from_fixture():
     import pathlib
     from parsers.url._baike import BaikeHandler

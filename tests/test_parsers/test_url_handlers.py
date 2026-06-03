@@ -211,3 +211,17 @@ def test_extract_image_urls_no_truncation_below_cap(monkeypatch):
 
     assert len(urls) == 2
     assert after == before
+
+
+def test_raise_if_gone_raises_on_404_and_410():
+    """404/410 → PageNotFoundError with the URL in the message; everything
+    else (incl. anti-bot 403, transient 5xx, success 200) is a no-op."""
+    from parsers.url._handlers import raise_if_gone
+    from parsers.base import PageNotFoundError
+
+    for status in (404, 410):
+        with __import__("pytest").raises(PageNotFoundError, match="example.com"):
+            raise_if_gone(status, "https://example.com/x")
+
+    for status in (200, 301, 403, 401, 429, 500, 503):
+        raise_if_gone(status, "https://example.com/x")  # must not raise

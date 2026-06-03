@@ -11,9 +11,28 @@ import trafilatura
 from config import get_settings
 from infra.metrics import URL_IMAGES_TRUNCATED_TOTAL
 from infra.ratelimit import acquire as rl_acquire
-from parsers.base import ParseResult
+from parsers.base import PageNotFoundError, ParseResult
 
 logger = logging.getLogger(__name__)
+
+# HTTP statuses meaning the resource is permanently gone — no retry or fallback
+# engine will ever recover content. Other 4xx are deliberately excluded: 401/403
+# are usually auth / anti-bot (handled by detect_block_reason on the body), and
+# 429 + every 5xx are transient (server-side, worth a retry).
+HTTP_GONE_STATUSES = frozenset({404, 410})
+
+
+def raise_if_gone(status: int, url: str) -> None:
+    """Raise :class:`PageNotFoundError` for a definitively-gone HTTP status.
+
+    Called by every fetch tier (curl_cffi, httpx, playwright) so a dead link is
+    classified once and consistently — marked failed with a clear reason rather
+    than having the site's error-page boilerplate scraped as document content.
+    No-op for any other status.
+    """
+    if status in HTTP_GONE_STATUSES:
+        raise PageNotFoundError(f"page not found (HTTP {status}) at {url}")
+
 
 _IMG_TAG = re.compile(r'<img[^>]+(?:data-src|src)=["\']([^"\']+)["\']', re.IGNORECASE)
 

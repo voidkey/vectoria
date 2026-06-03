@@ -7,7 +7,9 @@ async def test_fetch_returns_html_on_clean_page(monkeypatch):
     calls = {"n": 0}
     def fake_get(url, **kw):
         calls["n"] += 1
-        class R: text = "<html><body>" + ("正文。" * 100) + "</body></html>"
+        class R:
+            text = "<html><body>" + ("正文。" * 100) + "</body></html>"
+            status_code = 200
         return R()
     monkeypatch.setattr(_fetch, "_cc_get", fake_get)
     monkeypatch.setattr(_fetch, "_ratelimit", _noop_ratelimit)
@@ -22,7 +24,9 @@ async def test_confirmed_block_does_not_retry(monkeypatch):
     calls = {"n": 0}
     def fake_get(url, **kw):
         calls["n"] += 1
-        class R: text = "<html><head><title>百度安全验证</title></head><body>请完成下方验证</body></html>"
+        class R:
+            text = "<html><head><title>百度安全验证</title></head><body>请完成下方验证</body></html>"
+            status_code = 200
         return R()
     monkeypatch.setattr(_fetch, "_cc_get", fake_get)
     monkeypatch.setattr(_fetch, "_ratelimit", _noop_ratelimit)

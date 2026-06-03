@@ -38,6 +38,19 @@ class AntiBotBlockedError(PermanentParseError):
     """
 
 
+class PageNotFoundError(PermanentParseError):
+    """HTTP 404 / 410 — the resource is gone, not blocked.
+
+    Inherits PermanentParseError → same short-circuit (no fallback engine, no
+    queue retry, no dead-task alert; a dead link is the submitter's problem,
+    not an infra one). Kept distinct from AntiBotBlockedError so the failure
+    reason is honest ("page not found" vs "anti-bot") and so a 404 never trips
+    the per-domain anti-bot cooldown. Raised by ``parsers.url._handlers.
+    raise_if_gone`` from every fetch tier (curl_cffi / httpx / playwright) so a
+    site's error-page boilerplate is never scraped and stored as content.
+    """
+
+
 @dataclass
 class ParseResult:
     content: str          # Markdown text

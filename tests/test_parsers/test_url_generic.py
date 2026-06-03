@@ -116,6 +116,66 @@ async def test_handler_falls_back_to_playwright_on_js_challenge():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("status", [404, 410])
+async def test_httpx_gone_status_raises_page_not_found(status):
+    """A 404/410 from the httpx tier becomes a permanent PageNotFoundError —
+    no playwright fallback (a gone resource won't render), no retry."""
+    import httpx
+    from parsers.base import PageNotFoundError
+
+    req = httpx.Request("GET", "https://example.com/dead")
+    resp = httpx.Response(status, request=req)
+    err = httpx.HTTPStatusError(f"{status}", request=req, response=resp)
+
+    with _patch_async_httpx(side_effect=err), \
+         patch.object(GenericHandler, "_parse_with_playwright",
+                      new_callable=AsyncMock,
+                      side_effect=AssertionError("must not fall back on a 404")):
+        with pytest.raises(PageNotFoundError):
+            await GenericHandler().parse("https://example.com/dead")
+
+
+@pytest.mark.asyncio
+async def test_httpx_403_falls_back_not_permanent():
+    """403 is usually anti-bot, NOT 'gone' — it must fall through to the
+    browser tier (which may pass the challenge), not become permanent."""
+    import httpx
+
+    req = httpx.Request("GET", "https://example.com/blocked")
+    resp = httpx.Response(403, request=req)
+    err = httpx.HTTPStatusError("403", request=req, response=resp)
+    pw_result = ParseResult(content="recovered via browser " * 25, title="ok")
+
+    with _patch_async_httpx(side_effect=err), \
+         patch("parsers.url._generic.fetch_impersonated", new=AsyncMock(return_value=None)), \
+         patch.object(GenericHandler, "_parse_with_playwright",
+                      new_callable=AsyncMock, return_value=pw_result):
+        result = await GenericHandler().parse("https://example.com/blocked")
+    assert "recovered via browser" in result.content
+
+
+@pytest.mark.asyncio
+async def test_playwright_gone_status_raises_page_not_found():
+    """A 404 that only surfaces at the browser tier (browser-only domain /
+    soft path) is still classified as PageNotFoundError, not scraped."""
+    from parsers.base import PageNotFoundError
+
+    page = _make_playwright_page(
+        top_html="<html><body>404 not found</body></html>",
+        top_url="https://example.com/gone",
+    )
+    resp = MagicMock()
+    resp.status = 404
+    page.goto = AsyncMock(return_value=resp)
+
+    with _patch_async_httpx(side_effect=Exception("connection failed")), \
+         patch("parsers.url._generic.fetch_impersonated", new=AsyncMock(return_value=None)), \
+         _patch_session_with_page(page):
+        with pytest.raises(PageNotFoundError):
+            await GenericHandler().parse("https://example.com/gone")
+
+
+@pytest.mark.asyncio
 async def test_handler_returns_empty_on_total_failure():
     # httpx fails → empty result → needs_browser_fallback → playwright fallback
     # Playwright import raises → returns empty
