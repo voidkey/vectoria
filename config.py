@@ -214,6 +214,12 @@ class Settings(BaseSettings):
     enable_reranker: bool = False
     reranker_base_url: str = ""
 
+    # RAG write side. When False, parsed documents are NOT embedded/indexed
+    # into pgvector — text + image extraction still run, so documents stay
+    # fully usable via GET /documents/{id}. /query returns 503 because there
+    # is no maintained index to serve. Default True preserves existing behavior.
+    enable_indexing: bool = True
+
     # Observability
     # Port the worker process binds for prometheus_client stdlib HTTP server.
     # API exposes /metrics on the main uvicorn port via fastapi-instrumentator,
