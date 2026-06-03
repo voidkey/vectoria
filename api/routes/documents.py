@@ -66,6 +66,7 @@ def _dedup_response(doc: Document) -> DocumentIngestResponse:
         created_at=doc.created_at.isoformat(),
         content="",
         outline=[],
+        image_status=doc.image_status,
     )
 
 

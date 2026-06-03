@@ -61,6 +61,7 @@ async def test_duplicate_file_in_same_kb_returns_existing_doc(client):
     existing.chunk_count = 3
     existing.status = "completed"
     existing.index_status = "pending"
+    existing.image_status = "none"
     existing.error_msg = ""
     existing.content = "hello world"
     existing.created_at = datetime(2026, 4, 15, 21, 0, 0)

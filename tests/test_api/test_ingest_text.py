@@ -223,6 +223,7 @@ async def test_text_upload_dedup_returns_existing_doc(client):
     existing.chunk_count = 2
     existing.status = "completed"
     existing.index_status = "pending"
+    existing.image_status = "completed"
     existing.error_msg = ""
     existing.content = "duplicate body content"
     existing.created_at = datetime(2026, 5, 8)
@@ -253,6 +254,9 @@ async def test_text_upload_dedup_returns_existing_doc(client):
     storage.put.assert_not_called()
     mock_task.assert_not_called()
     assert body["content"] == "", "dedup response leaked existing content"
+    # Dedup response must reflect the existing doc's real image_status,
+    # not the schema default — clients poll this to know images are ready.
+    assert body["image_status"] == "completed"
 
 
 @pytest.mark.asyncio
