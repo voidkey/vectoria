@@ -464,17 +464,20 @@ async def handle_index_document(payload: dict) -> None:
     except Exception as e:
         logger.exception("index_document: indexing failed doc=%s", doc_id)
         DOCUMENT_OUTCOMES.labels(outcome="indexing_error").inc()
+        # Best-effort indexing: a parse-successful doc stays usable. Mark
+        # only the index dimension failed; leave status="completed" and do
+        # NOT touch error_* (those describe parse failures — the index
+        # error detail lives in the tasks table). Re-raise for queue retry;
+        # a later successful retry flips index_status back to completed.
         await update_doc(
-            doc_id, status="failed",
-            error_msg=f"Indexing failed: {e}"[:500],
-            error_type="indexing_error",
-            error_trace=traceback.format_exc(),
+            doc_id, status="completed", index_status="failed",
         )
         raise  # re-raise for queue retry/backoff
 
     DOCUMENT_OUTCOMES.labels(outcome="completed").inc()
     await update_doc(
-        doc_id, chunk_count=len(chunk_data), status="completed",
+        doc_id, chunk_count=len(chunk_data),
+        status="completed", index_status="completed",
         error_msg="", error_type=None, error_trace=None,
     )
 

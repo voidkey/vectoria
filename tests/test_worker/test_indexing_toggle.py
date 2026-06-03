@@ -71,3 +71,57 @@ async def test_indexing_disabled_completes_and_skips(monkeypatch):
     assert "index_document" not in enqueue_calls
     idx = [u["index_status"] for u in update_calls if "index_status" in u]
     assert idx[-1] == "skipped"
+
+
+async def _run_index(embed_side_effect=None, embed_return=None):
+    fake_doc = MagicMock()
+    fake_doc.content = "# Doc\n\nBody text long enough to split into a chunk."
+    update_calls: list[dict] = []
+
+    async def _update(doc_id, **fields):
+        update_calls.append(fields)
+
+    embedder = MagicMock()
+    if embed_side_effect is not None:
+        embedder.embed_batch = AsyncMock(side_effect=embed_side_effect)
+    else:
+        embedder.embed_batch = AsyncMock(return_value=embed_return or [[0.0] * 4])
+
+    store = AsyncMock()
+    store_cm = AsyncMock()
+    store_cm.__aenter__.return_value = store
+
+    with (
+        patch("worker.handlers.load_doc", new=AsyncMock(return_value=fake_doc)),
+        patch("worker.handlers.get_embedder", return_value=embedder),
+        patch("worker.handlers.update_doc", new=_update),
+        patch("worker.handlers.PgVectorStore") as mock_store_cls,
+    ):
+        mock_store_cls.create = AsyncMock(return_value=store_cm)
+        from worker.handlers import handle_index_document
+        exc = None
+        try:
+            await handle_index_document({"doc_id": "d1", "kb_id": "k1"})
+        except Exception as e:  # noqa: BLE001
+            exc = e
+    return update_calls, exc
+
+
+@pytest.mark.asyncio
+async def test_index_success_marks_completed():
+    update_calls, exc = await _run_index(embed_return=[[0.1] * 4] * 10)
+    assert exc is None
+    final = update_calls[-1]
+    assert final["status"] == "completed"
+    assert final["index_status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_index_failure_keeps_doc_usable_and_reraises():
+    update_calls, exc = await _run_index(embed_side_effect=RuntimeError("embed down"))
+    assert isinstance(exc, RuntimeError)
+    failure_update = update_calls[-1]
+    assert failure_update["index_status"] == "failed"
+    assert failure_update["status"] == "completed"
+    assert "error_trace" not in failure_update
+    assert "error_type" not in failure_update
