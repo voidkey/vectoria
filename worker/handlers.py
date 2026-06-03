@@ -330,6 +330,7 @@ async def handle_parse_document(payload: dict) -> None:
                 title=parse_result.title or source,
                 content=content,
                 status="completed",
+                index_status="skipped",
                 parse_engine=used_engine,
                 error_type="image_only",
                 error_msg="",
@@ -351,6 +352,7 @@ async def handle_parse_document(payload: dict) -> None:
         DOCUMENT_OUTCOMES.labels(outcome="empty_content").inc()
         await update_doc(
             doc_id, status="failed",
+            index_status="skipped",
             error_msg="Parsing returned empty or below-threshold content",
             error_type="empty_content",
         )
@@ -364,6 +366,7 @@ async def handle_parse_document(payload: dict) -> None:
         DOCUMENT_OUTCOMES.labels(outcome="too_large").inc()
         await update_doc(
             doc_id, status="failed",
+            index_status="skipped",
             error_msg=(
                 f"Parsed content exceeds {cfg.max_content_chars} characters"
             ),
@@ -376,12 +379,16 @@ async def handle_parse_document(payload: dict) -> None:
     image_status = "pending" if (has_image_urls or has_inline_images) else "none"
     vision_configured = bool(cfg.vision_base_url)
 
+    do_index = cfg.enable_indexing  # content already passed the min-length gate above
+
     # ``page_count`` set conditionally: don't clobber an upload-time
     # value (PDF/PPTX gates) with None when the parser didn't produce
     # one (PDF parsers don't currently emit it).
     update_fields: dict = dict(
         title=parse_result.title or filename or source,
-        content=content, status="indexing",
+        content=content,
+        status="indexing" if do_index else "completed",
+        index_status="pending" if do_index else "skipped",
         parse_engine=used_engine,
         image_status=image_status,
         error_msg="", error_type=None, error_trace=None,
@@ -402,7 +409,13 @@ async def handle_parse_document(payload: dict) -> None:
     # Follow-up tasks. Do this last so a crash mid-handler doesn't leave
     # the queue with duplicate index_document tasks competing.
     from worker.queue import enqueue
-    await enqueue("index_document", {"doc_id": doc_id, "kb_id": kb_id})
+    if do_index:
+        await enqueue("index_document", {"doc_id": doc_id, "kb_id": kb_id})
+    else:
+        # Disabled path: parse completion is the doc's terminal "usable"
+        # state, so count it here (index_document — which normally bumps
+        # this — never runs).
+        DOCUMENT_OUTCOMES.labels(outcome="completed").inc()
 
     if has_image_urls:
         await enqueue("download_and_store_images", download_payload)
