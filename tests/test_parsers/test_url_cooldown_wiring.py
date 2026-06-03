@@ -34,6 +34,26 @@ async def test_terminal_block_marks_cooldown():
 
 
 @pytest.mark.asyncio
+async def test_exempt_handler_does_not_mark_cooldown():
+    """A handler that opts out (trips_cooldown=False, e.g. baike whose anti-bot
+    is per-request not per-IP) must not poison the whole domain for 15 min when
+    a single fetch is blocked."""
+    handler = AsyncMock()
+    handler.parse = AsyncMock(side_effect=AntiBotBlockedError("blocked at url"))
+    handler.trips_cooldown = False
+    mark = AsyncMock()
+    with (
+        patch("parsers.url.reresolve_and_check_ssrf", new=AsyncMock()),
+        patch("parsers.url.is_blocked", new=AsyncMock(return_value=False)),
+        patch("parsers.url.mark_blocked", new=mark),
+        patch("parsers.url.find_handler", return_value=handler),
+    ):
+        with pytest.raises(AntiBotBlockedError):
+            await UrlParser().parse("https://baike.baidu.com/item/x/1")
+    mark.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_normal_parse_no_cooldown_interaction():
     handler = AsyncMock()
     handler.parse = AsyncMock(return_value=ParseResult(content="ok", title="t"))

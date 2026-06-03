@@ -51,11 +51,18 @@ async def acquire_page_token(host: str, *, max_wait: float = 6.0) -> None:
 
 async def fetch_impersonated(
     url: str, *, retries: int = 3, proxy: str | None = None,
+    retry_on_block: bool = False,
 ) -> str | None:
     """Fetch HTML via curl_cffi (Chrome JA3). Returns HTML, or None on a
     confirmed anti-bot block or after exhausting retries. Retries with backoff
-    on transient errors (exception / empty body) only; a *confirmed* block
-    stops immediately (re-hitting a challenge just escalates the ban).
+    on transient errors (exception / empty body).
+
+    A *confirmed* block is by default terminal — for sites that hard-ban by IP,
+    re-hitting a challenge just escalates the ban. Pass ``retry_on_block=True``
+    for sites whose anti-bot is *per-request and probabilistic* (e.g. baike,
+    which serves a verification page ~38% of the time): there a paced retry
+    usually lands a clean page and does not stick a ban. Retries stay rate-
+    limited per host, so retrying is still polite.
     ``proxy`` is reserved for future use (kuaidaili); unused in P1.
     """
     host = (urlparse(url).hostname or "").lower()
@@ -71,8 +78,10 @@ async def fetch_impersonated(
         if html:
             if detect_block_reason(html, extract_html_title(html, url)) is None:
                 return html
-            logger.info("fetch_impersonated: confirmed block on %s; not retrying", url)
-            return None
+            if not retry_on_block:
+                logger.info("fetch_impersonated: confirmed block on %s; not retrying", url)
+                return None
+            logger.info("fetch_impersonated: block on %s (attempt %d/%d); retrying", url, attempt + 1, retries)
         if attempt < retries - 1:
             await _sleep(_BACKOFFS[min(attempt, len(_BACKOFFS) - 1)])
     logger.info("fetch_impersonated gave up on %s after %d attempts", url, retries)

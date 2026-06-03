@@ -73,7 +73,9 @@ class UrlParser(BaseParser):
             return await handler.parse(url)
         except AntiBotBlockedError:
             # Terminal block — trip the cooldown so sibling URLs back off.
-            if host:
+            # Handlers whose anti-bot is per-request (not per-IP) opt out via
+            # trips_cooldown=False so one block doesn't poison the whole domain.
+            if host and getattr(handler, "trips_cooldown", True):
                 await mark_blocked(host)
             raise
 

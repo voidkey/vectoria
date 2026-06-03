@@ -51,6 +51,13 @@ logger = logging.getLogger(__name__)
 
 
 class BaikeHandler:
+    # baike's anti-bot is per-request and probabilistic (a verification page
+    # ~38% of fetches), NOT a per-IP hard ban. So (a) we retry through blocks
+    # rather than give up on the first challenge, and (b) we opt out of the
+    # fleet-wide cooldown — one unlucky fetch must not poison the whole domain
+    # for 15 min. See UrlParser.parse / fetch_impersonated(retry_on_block).
+    trips_cooldown = False
+
     def match(self, url: str) -> bool:
         return (urlparse(url).hostname or "").lower() == "baike.baidu.com"
 
@@ -58,7 +65,10 @@ class BaikeHandler:
         return None  # baike image CDN needs no Referer (verified)
 
     async def parse(self, url: str) -> ParseResult:
-        html = await fetch_impersonated(url)
+        # 4 paced attempts through per-request challenges: at ~62% single-fetch
+        # success, this lands a clean page ~98% of the time before the openapi
+        # fallback / permanent block.
+        html = await fetch_impersonated(url, retries=4, retry_on_block=True)
         if html is not None:
             result = self._extract(html, url)
             if result.content.strip() or result.image_urls:

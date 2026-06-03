@@ -28,6 +28,29 @@ async def test_fetch_all_fail_raises_antibot(monkeypatch):
         await BaikeHandler().parse("https://baike.baidu.com/item/x/123")
 
 
+def test_baike_exempt_from_domain_cooldown():
+    """baike anti-bot is per-request, not per-IP — one block must not trip the
+    fleet-wide 15-min cooldown for the whole domain."""
+    assert BaikeHandler().trips_cooldown is False
+
+
+@pytest.mark.asyncio
+async def test_baike_fetch_retries_through_block(monkeypatch):
+    """baike must retry through per-request challenges, not give up on the first
+    block — fetch_impersonated is called with retry_on_block=True."""
+    import parsers.url._baike as b
+    seen = {}
+    async def fake_fetch(url, **kw):
+        seen.update(kw)
+        return None
+    async def fake_openapi(url): return None
+    monkeypatch.setattr(b, "fetch_impersonated", fake_fetch)
+    monkeypatch.setattr(BaikeHandler, "_openapi_fallback", staticmethod(fake_openapi))
+    with pytest.raises(AntiBotBlockedError):
+        await BaikeHandler().parse("https://baike.baidu.com/item/x/123")
+    assert seen.get("retry_on_block") is True
+
+
 def test_extract_baike_body_from_fixture():
     import pathlib
     from parsers.url._baike import BaikeHandler
