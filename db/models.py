@@ -53,14 +53,15 @@ class Document(Base):
     # error_msg: short human summary (UI-facing, bounded so an error with a
     #   3MB pdfium traceback doesn't balloon the doc list response).
     # error_type: structured outcome label — one of {parse_error,
-    #   empty_content, too_large, indexing_error, url_fetch_error,
-    #   permanent, ...}.
+    #   empty_content, too_large, url_fetch_error, permanent, ...}.
     #   Matches the DOCUMENT_OUTCOMES prom label so digest SQL and
-    #   Grafana Prom panels agree on category.
+    #   Grafana Prom panels agree on category. Indexing failures do NOT
+    #   land here — they leave status="completed" and set index_status=
+    #   "failed"; the per-attempt index error detail lives in tasks.error.
     # error_trace: full Python traceback, uncapped. Populated only for
-    #   paths that raise (parse_error, indexing_error) — not for
-    #   deterministic terminal states (empty_content, too_large) where
-    #   there's no trace to capture.
+    #   parse-stage paths that raise (parse_error) — not for deterministic
+    #   terminal states (empty_content, too_large) and not for indexing
+    #   failures (best-effort; see index_status / tasks.error).
     error_msg: Mapped[str] = mapped_column(Text, default="", server_default="")
     error_type: Mapped[str | None] = mapped_column(String(32), nullable=True, default=None)
     error_trace: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
