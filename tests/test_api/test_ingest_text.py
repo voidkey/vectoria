@@ -222,6 +222,7 @@ async def test_text_upload_dedup_returns_existing_doc(client):
     existing.source = "duplicate body content.txt"
     existing.chunk_count = 2
     existing.status = "completed"
+    existing.index_status = "pending"
     existing.error_msg = ""
     existing.content = "duplicate body content"
     existing.created_at = datetime(2026, 5, 8)

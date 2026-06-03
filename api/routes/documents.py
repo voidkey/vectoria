@@ -44,7 +44,7 @@ def _doc_to_response(doc: Document) -> DocumentResponse:
     return DocumentResponse(
         id=doc.id, kb_id=doc.kb_id, title=doc.title, source=doc.source,
         chunk_count=doc.chunk_count,
-        status=doc.status, error_msg=doc.error_msg,
+        status=doc.status, index_status=doc.index_status, error_msg=doc.error_msg,
         created_at=doc.created_at.isoformat(),
     )
 
@@ -62,7 +62,7 @@ def _dedup_response(doc: Document) -> DocumentIngestResponse:
     return DocumentIngestResponse(
         id=doc.id, kb_id=doc.kb_id, title=doc.title,
         source=doc.source, chunk_count=doc.chunk_count,
-        status=doc.status, error_msg=doc.error_msg or "",
+        status=doc.status, index_status=doc.index_status, error_msg=doc.error_msg or "",
         created_at=doc.created_at.isoformat(),
         content="",
         outline=[],
@@ -103,7 +103,7 @@ def _queued_response(doc: Document) -> DocumentIngestResponse:
     return DocumentIngestResponse(
         id=doc.id, kb_id=doc.kb_id, title=doc.title, source=doc.source,
         chunk_count=doc.chunk_count, status=doc.status,
-        error_msg=doc.error_msg or "",
+        index_status=doc.index_status, error_msg=doc.error_msg or "",
         created_at=doc.created_at.isoformat(),
         content="", outline=[],
         image_status=doc.image_status,
@@ -127,7 +127,7 @@ async def _fresh_ingest_response(doc_id: str) -> DocumentIngestResponse:
     return DocumentIngestResponse(
         id=doc.id, kb_id=doc.kb_id, title=doc.title, source=doc.source,
         chunk_count=doc.chunk_count, status=doc.status,
-        error_msg=doc.error_msg or "",
+        index_status=doc.index_status, error_msg=doc.error_msg or "",
         created_at=doc.created_at.isoformat(),
         content=doc.content or "",
         outline=[OutlineItem(**item) for item in outline],
@@ -170,7 +170,7 @@ async def _enqueue_ingest(
             storage_key=storage_key,
             file_hash=file_hash,
             file_hash_sha256=file_hash_sha256,
-            content="", image_status="pending",
+            content="", image_status="pending", index_status="pending",
             chunk_count=0, error_msg="",
             page_count=page_count,
         )
@@ -596,7 +596,7 @@ async def get_document(kb_id: str, doc_id: str):
         return DocumentDetailResponse(
             id=doc.id, kb_id=doc.kb_id, title=doc.title, source=doc.source,
             chunk_count=doc.chunk_count,
-            status=doc.status, error_msg=doc.error_msg,
+            status=doc.status, index_status=doc.index_status, error_msg=doc.error_msg,
             created_at=doc.created_at.isoformat(),
             content=doc.content,
             outline=[OutlineItem(**item) for item in outline],

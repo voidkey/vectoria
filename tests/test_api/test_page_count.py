@@ -149,6 +149,7 @@ async def test_detail_endpoint_returns_page_count(client):
     fake_doc.source = "deck.pptx"
     fake_doc.chunk_count = 0
     fake_doc.status = "completed"
+    fake_doc.index_status = "pending"
     fake_doc.error_msg = ""
     fake_doc.created_at = datetime(2026, 5, 14, 12, 0, 0)
     fake_doc.content = "# deck\n"
@@ -179,6 +180,7 @@ async def test_detail_endpoint_returns_null_when_unset(client):
     fake_doc.source = "notes.docx"
     fake_doc.chunk_count = 0
     fake_doc.status = "completed"
+    fake_doc.index_status = "pending"
     fake_doc.error_msg = ""
     fake_doc.created_at = datetime(2026, 5, 14, 12, 0, 0)
     fake_doc.content = "body"
