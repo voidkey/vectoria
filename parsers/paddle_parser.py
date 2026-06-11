@@ -192,6 +192,12 @@ class PaddleParser(BaseParser):
             "fileType": 0,  # 0 = PDF; image files (fileType=1) are routed
                             # by the registry to vision-native/ocr-native
                             # parsers, not here.
+            # Suppress outputImages (layout-detection overlays) and
+            # inputImage (full-page renders) — we only read markdown.*,
+            # and on image-dense PDFs those debug fields are ~96% of the
+            # body (measured 53 MB → 1.8 MB on a 40-page deck). Skipping
+            # them also saves the gateway the render work.
+            "visualize": False,
         }
         headers = {"X-API-Key": self._api_key}
 

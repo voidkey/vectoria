@@ -126,6 +126,10 @@ async def test_parse_request_shape():
     assert captured["url"] == "http://paddle:8080/layout-parsing"
     assert captured["headers"]["X-API-Key"] == "my-key"
     assert captured["json"]["fileType"] == 0
+    # visualize=false suppresses outputImages/inputImage in the response
+    # — measured 53MB → 1.8MB on a 40-page slide deck; the parser never
+    # reads those fields, and over a cross-region link they're fatal.
+    assert captured["json"]["visualize"] is False
     # Round-trip the base64 to prove the wire payload decodes back to
     # the exact source bytes — guards against accidental utf-8 round-trips.
     assert base64.b64decode(captured["json"]["file"]) == pdf
