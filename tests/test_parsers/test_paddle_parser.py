@@ -34,15 +34,31 @@ def _make_payload(
 def _patch_settings(
     mock_settings, url: str = "http://paddle:8080", key: str = "test-key",
     concurrency: int = 3, timeout: float = 600.0,
+    relay_endpoint: str = "", relay_bucket: str = "",
 ) -> None:
     """Wire pydantic-style settings access into a MagicMock.
     ``paddle_api_key`` is a SecretStr in real code — emulate the
-    ``.get_secret_value()`` accessor with a nested mock.
+    ``.get_secret_value()`` accessor with a nested mock. Relay fields
+    default to empty (relay off) — a bare MagicMock attribute is truthy
+    and would silently flip every test onto the relay path.
     """
     mock_settings.return_value.paddle_api_url = url
     mock_settings.return_value.paddle_api_key.get_secret_value.return_value = key
     mock_settings.return_value.paddle_timeout = timeout
     mock_settings.return_value.paddle_concurrency = concurrency
+    mock_settings.return_value.paddle_relay_endpoint = relay_endpoint
+    mock_settings.return_value.paddle_relay_download_endpoint = ""
+    mock_settings.return_value.paddle_relay_region = ""
+    mock_settings.return_value.paddle_relay_access_key = (
+        "relay-ak" if relay_endpoint else ""
+    )
+    mock_settings.return_value.paddle_relay_secret_key.get_secret_value.return_value = (
+        "relay-sk" if relay_endpoint else ""
+    )
+    mock_settings.return_value.paddle_relay_bucket = relay_bucket
+    mock_settings.return_value.paddle_relay_addressing_style = "virtual"
+    mock_settings.return_value.paddle_relay_prefix = "paddle-relay/"
+    mock_settings.return_value.paddle_relay_url_expires = 3600
 
 
 # ---------------------------------------------------------------------------
@@ -239,6 +255,131 @@ async def test_empty_url_or_key_returns_empty():
         parser = PaddleParser(api_url="http://paddle:8080", api_key="")
         result = await parser.parse(b"data", filename="doc.pdf")
         assert result.content == ""
+
+
+# ---------------------------------------------------------------------------
+# Relay (cross-region file hand-off via S3-compatible bucket)
+# ---------------------------------------------------------------------------
+
+
+def _relay_setup(mock_settings, MockStorage, presigned="https://cos/signed-url"):
+    """Enable relay in settings and return the mocked storage instance
+    whose put/presign_url/delete the parser should drive."""
+    _patch_settings(
+        mock_settings,
+        relay_endpoint="https://cos.accelerate.myqcloud.com",
+        relay_bucket="vk-test",
+    )
+    store = MagicMock()
+    store.put = AsyncMock()
+    store.presign_url = AsyncMock(return_value=presigned)
+    store.delete = AsyncMock()
+    MockStorage.return_value = store
+    return store
+
+
+def _gateway_capture(MockClient, payload=None, post_error=None):
+    """Wire the mocked httpx client to capture the request body."""
+    captured = {}
+
+    async def fake_post(url, headers=None, json=None, **_):
+        captured["json"] = json
+        if post_error is not None:
+            raise post_error
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = payload or _make_payload([("hi", {})])
+        return mock_resp
+
+    MockClient.return_value.__aenter__.return_value.post = AsyncMock(
+        side_effect=fake_post,
+    )
+    return captured
+
+
+@pytest.mark.asyncio
+async def test_relay_sends_presigned_url_instead_of_base64():
+    """With relay configured, the PDF bytes go to the bucket and the
+    gateway receives the presigned URL in ``file`` — the whole point is
+    that the big payload never rides the app→gateway link."""
+    pdf = b"%PDF-1.4 relay me"
+    with patch("parsers.paddle_parser.httpx.AsyncClient") as MockClient, \
+         patch("parsers.paddle_parser.S3ObjectStorage") as MockStorage, \
+         patch("parsers.paddle_parser.get_settings") as mock_settings:
+        store = _relay_setup(mock_settings, MockStorage)
+        captured = _gateway_capture(MockClient)
+
+        parser = PaddleParser(api_url="http://paddle:8080", api_key="k")
+        result = await parser.parse(pdf, filename="doc.pdf")
+
+    assert captured["json"]["file"] == "https://cos/signed-url"
+    assert captured["json"]["fileType"] == 0
+    # Uploaded the raw bytes under the relay prefix, as a .pdf, with mime.
+    store.put.assert_awaited_once()
+    key, data = store.put.await_args.args[0], store.put.await_args.args[1]
+    assert key.startswith("paddle-relay/")
+    assert key.endswith(".pdf")
+    assert data == pdf
+    # Object is transient: deleted after the gateway call completes.
+    store.delete.assert_awaited_once_with(key)
+    assert "hi" in result.content
+
+
+@pytest.mark.asyncio
+async def test_relay_object_deleted_even_when_gateway_fails():
+    """Gateway 5xx/network failure must still clean up the relay object —
+    the bucket lifecycle rule is a backstop, not the primary GC."""
+    with patch("parsers.paddle_parser.httpx.AsyncClient") as MockClient, \
+         patch("parsers.paddle_parser.S3ObjectStorage") as MockStorage, \
+         patch("parsers.paddle_parser.get_settings") as mock_settings:
+        store = _relay_setup(mock_settings, MockStorage)
+        _gateway_capture(
+            MockClient, post_error=httpx.ConnectError("boom"),
+        )
+        parser = PaddleParser(api_url="http://paddle:8080", api_key="k")
+        with pytest.raises(httpx.ConnectError):
+            await parser.parse(b"%PDF", filename="doc.pdf")
+
+    store.delete.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_relay_upload_failure_falls_back_to_inline_base64():
+    """Bucket down ≠ parse down. Upload failure logs a warning and the
+    request goes out the old way (inline base64) so the document still
+    parses — relay is an optimization, never a new failure mode."""
+    pdf = b"%PDF-1.4 fallback"
+    with patch("parsers.paddle_parser.httpx.AsyncClient") as MockClient, \
+         patch("parsers.paddle_parser.S3ObjectStorage") as MockStorage, \
+         patch("parsers.paddle_parser.get_settings") as mock_settings:
+        store = _relay_setup(mock_settings, MockStorage)
+        store.put.side_effect = RuntimeError("cos unreachable")
+        captured = _gateway_capture(MockClient)
+
+        parser = PaddleParser(api_url="http://paddle:8080", api_key="k")
+        result = await parser.parse(pdf, filename="doc.pdf")
+
+    assert base64.b64decode(captured["json"]["file"]) == pdf
+    assert "hi" in result.content
+
+
+@pytest.mark.asyncio
+async def test_no_relay_when_not_configured():
+    """Relay settings empty → no storage client is even constructed and
+    the wire payload is inline base64, byte-identical to today."""
+    pdf = b"%PDF-1.4 plain"
+    with patch("parsers.paddle_parser.httpx.AsyncClient") as MockClient, \
+         patch("parsers.paddle_parser.S3ObjectStorage") as MockStorage, \
+         patch("parsers.paddle_parser.get_settings") as mock_settings:
+        _patch_settings(mock_settings)
+        captured = _gateway_capture(MockClient)
+
+        parser = PaddleParser(api_url="http://paddle:8080", api_key="k")
+        await parser.parse(pdf, filename="doc.pdf")
+
+    MockStorage.assert_not_called()
+    assert base64.b64decode(captured["json"]["file"]) == pdf
 
 
 # ---------------------------------------------------------------------------

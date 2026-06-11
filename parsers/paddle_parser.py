@@ -1,7 +1,10 @@
 """PaddleOCR-VL gateway parser.
 
-Hits the VL layout-parsing endpoint with a base64-encoded PDF and turns
-the per-page ``layoutParsingResults`` into a single ``ParseResult``:
+Hits the VL layout-parsing endpoint with the PDF — inline base64 by
+default, or a presigned bucket URL when the file relay is configured
+(``PADDLE_RELAY_*``; for deployments far from the gateway where inline
+upload over the long link is the bottleneck) — and turns the per-page
+``layoutParsingResults`` into a single ``ParseResult``:
 markdown text concatenated by page, with lazy ``ImageRef`` factories for
 every image the gateway returns. Page numbers are derived from the
 array position (VL returns one element per page in order), which is
@@ -25,6 +28,7 @@ import asyncio
 import base64
 import logging
 import re
+import uuid
 from pathlib import Path, PurePosixPath
 
 import httpx
@@ -33,6 +37,7 @@ from config import get_settings
 from infra.circuit_breaker import CircuitOpenError, get_breaker
 from parsers.base import BaseParser, ParseResult
 from parsers.image_ref import Base64Factory, ImageRef
+from storage.s3 import S3ObjectStorage
 
 logger = logging.getLogger(__name__)
 
@@ -95,6 +100,61 @@ class PaddleParser(BaseParser):
         self._timeout = httpx.Timeout(cfg.paddle_timeout, connect=10.0)
         self._concurrency = cfg.paddle_concurrency
 
+        # File relay (see config): upload near the app, presign for the
+        # gateway. Upload and presign endpoints may differ — e.g. COS
+        # accelerated domain for the cross-region PUT, regional domain
+        # for the gateway's same-region GET — hence two client objects
+        # over the same bucket when a download endpoint is configured.
+        self._relay_up: S3ObjectStorage | None = None
+        self._relay_sign: S3ObjectStorage | None = None
+        self._relay_prefix = cfg.paddle_relay_prefix
+        self._relay_expires = cfg.paddle_relay_url_expires
+        if (
+            cfg.paddle_relay_endpoint
+            and cfg.paddle_relay_bucket
+            and cfg.paddle_relay_access_key
+        ):
+            relay_kwargs = dict(
+                region=cfg.paddle_relay_region,
+                access_key=cfg.paddle_relay_access_key,
+                secret_key=cfg.paddle_relay_secret_key.get_secret_value(),
+                bucket=cfg.paddle_relay_bucket,
+                addressing_style=cfg.paddle_relay_addressing_style,
+            )
+            self._relay_up = S3ObjectStorage(
+                endpoint=cfg.paddle_relay_endpoint, **relay_kwargs,
+            )
+            dl_endpoint = cfg.paddle_relay_download_endpoint
+            self._relay_sign = (
+                S3ObjectStorage(endpoint=dl_endpoint, **relay_kwargs)
+                if dl_endpoint and dl_endpoint != cfg.paddle_relay_endpoint
+                else self._relay_up
+            )
+
+    async def _relay_file(self, content: bytes, filename: str) -> tuple[str, str] | None:
+        """Upload ``content`` to the relay bucket and presign a download
+        URL for the gateway. Returns ``(url, key)``, or None on any
+        failure — relay is an optimization, never a new failure mode;
+        the caller falls back to inline base64.
+        """
+        key = f"{self._relay_prefix}{uuid.uuid4().hex}.pdf"
+        try:
+            await self._relay_up.put(key, content, "application/pdf")
+            url = await self._relay_sign.presign_url(key, self._relay_expires)
+            return url, key
+        except Exception:
+            logger.warning(
+                "Paddle relay upload failed for %s; falling back to inline base64",
+                filename, exc_info=True,
+            )
+            # The put may have landed before the presign failed — try to
+            # clean up; the bucket lifecycle rule catches what this misses.
+            try:
+                await self._relay_up.delete(key)
+            except Exception:
+                pass
+            return None
+
     @classmethod
     def is_available(cls) -> bool:
         # Both URL and key required: missing either yields 401/connect-
@@ -114,8 +174,21 @@ class PaddleParser(BaseParser):
             return ParseResult(content="", title=Path(filename).stem)
 
         content = source if isinstance(source, bytes) else source.encode()
+
+        # The gateway's ``file`` field accepts either inline base64 or a
+        # URL it can fetch. With a relay configured, hand it a presigned
+        # URL so the PDF bytes ride the bucket's network, not this link.
+        relay_key: str | None = None
+        file_field: str | None = None
+        if self._relay_up is not None:
+            relayed = await self._relay_file(content, filename)
+            if relayed is not None:
+                file_field, relay_key = relayed
+        if file_field is None:
+            file_field = base64.b64encode(content).decode("ascii")
+
         body = {
-            "file": base64.b64encode(content).decode("ascii"),
+            "file": file_field,
             "fileType": 0,  # 0 = PDF; image files (fileType=1) are routed
                             # by the registry to vision-native/ocr-native
                             # parsers, not here.
@@ -140,6 +213,18 @@ class PaddleParser(BaseParser):
                 "Paddle circuit open; returning empty result for %s", filename,
             )
             return ParseResult(content="", title=Path(filename).stem)
+        finally:
+            # Relay objects are transient: the gateway has either
+            # downloaded the file by the time the call returns, or the
+            # call failed and the object is garbage either way.
+            if relay_key is not None:
+                try:
+                    await self._relay_up.delete(relay_key)
+                except Exception:
+                    logger.warning(
+                        "Failed to delete relay object %s", relay_key,
+                        exc_info=True,
+                    )
 
         # HTTP 200 with errorCode != 0 = business-level failure (most
         # commonly "format unsupported"). Raise so the handler falls

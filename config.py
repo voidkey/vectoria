@@ -151,6 +151,26 @@ class Settings(BaseSettings):
     paddle_concurrency: int = 3
     paddle_breaker_threshold: int = 5
     paddle_breaker_reset_timeout: float = 300.0
+    # Optional file relay for deployments far from the Paddle gateway.
+    # POSTing inline base64 over a long (e.g. cross-continent) link is
+    # slow and timeout-prone; with a relay configured, the parser
+    # uploads the PDF to this S3-compatible bucket and sends the
+    # gateway a presigned download URL instead. Point the endpoint at
+    # an accelerated domain near the app, and the (optional) download
+    # endpoint at the regional domain near the gateway. Relay objects
+    # are deleted after each call; add a 1-day bucket lifecycle rule as
+    # backstop. All empty = relay off, wire format unchanged.
+    paddle_relay_endpoint: str = ""
+    paddle_relay_download_endpoint: str = ""  # defaults to endpoint
+    paddle_relay_region: str = ""
+    paddle_relay_access_key: str = ""
+    paddle_relay_secret_key: SecretStr = SecretStr("")
+    paddle_relay_bucket: str = ""
+    paddle_relay_addressing_style: str = "virtual"
+    paddle_relay_prefix: str = "paddle-relay/"
+    # Presign TTL must cover semaphore + gateway queue wait, not just
+    # the download itself — the gateway fetches when the job starts.
+    paddle_relay_url_expires: int = 3600
 
     # Vision LLM (for image description + vision-native parser)
     vision_base_url: str = ""
