@@ -41,7 +41,19 @@ _BLACKLIST: tuple[tuple[str, "re.Pattern[str] | None", str], ...] = (
     # Douyin / TikTok video player pages — same story.
     ("douyin.com",   re.compile(r"/video/"), "douyin video page (anti-bot)"),
     ("v.douyin.com", None,                   "douyin short link (anti-bot)"),
+    ("iesdouyin.com", None,                  "douyin share link (anti-bot)"),
     ("tiktok.com",   re.compile(r"/@[^/]+/video/"), "tiktok video page (anti-bot)"),
+    # YouTube — JS-rendered player, no scrapable text body (transcripts
+    # live behind an API we don't call). Every path form: /watch, /shorts,
+    # /playlist, channel pages, and the youtu.be shortener.
+    ("youtube.com",  None,                   "youtube video page (player only, no scrapable body)"),
+    ("youtu.be",     None,                   "youtube short link (player only)"),
+    # WeChat Channels (视频号) — short-video player, no article body. Two
+    # link forms: the share link ``weixin.qq.com/sph/...`` (302s to the
+    # player) and the resolved ``channels.weixin.qq.com/...``. Both are
+    # released from WechatHandler so these entries claim them.
+    ("weixin.qq.com",          re.compile(r"^/sph/"), "wechat channels / 视频号 share link (player only)"),
+    ("channels.weixin.qq.com", None,         "wechat channels / 视频号 video (player only)"),
     # iQiyi / Youku / Xigua video — JS-rendered player, no scrapable body.
     ("iqiyi.com",    re.compile(r"/v_"),     "iqiyi video page (player only)"),
     ("youku.com",    re.compile(r"/v_show"), "youku video page (player only)"),

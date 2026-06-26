@@ -20,7 +20,10 @@ from parsers.url._handlers import detect_block_reason, extract_html_title, extra
 
 log = logging.getLogger(__name__)
 
-_WECHAT_HOSTS = {"mp.weixin.qq.com", "weixin.qq.com", "channels.weixin.qq.com"}
+# channels.weixin.qq.com (视频号) is intentionally NOT here: it's a
+# short-video player with no article body, so it's claimed by the URL
+# blacklist (fail-fast, no dead-task alert) rather than parsed as an article.
+_WECHAT_HOSTS = {"mp.weixin.qq.com", "weixin.qq.com"}
 # WeChat's article image CDN. Not identical to the article host —
 # article comes from mp.weixin.qq.com, its images from mmbiz.qpic.cn.
 _WECHAT_IMG_HOST = "mmbiz.qpic.cn"
@@ -32,7 +35,16 @@ WECHAT_UA = (
 
 
 def is_wechat_url(url: str) -> bool:
-    return urlparse(url).hostname in _WECHAT_HOSTS
+    parsed = urlparse(url)
+    if parsed.hostname not in _WECHAT_HOSTS:
+        return False
+    # 视频号 (Channels) share links are ``weixin.qq.com/sph/...`` that 302
+    # to channels.weixin.qq.com — a short-video player, not an article.
+    # Disown them here so the blacklist claims them (fail-fast, no fetch,
+    # no dead-task alert) instead of WechatHandler following the redirect.
+    if (parsed.path or "").startswith("/sph/"):
+        return False
+    return True
 
 
 def get_wechat_headers(url: str) -> dict[str, str] | None:

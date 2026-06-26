@@ -32,10 +32,34 @@ def test_match_other_video_platforms():
     h = BlacklistHandler()
     assert h.match("https://www.douyin.com/video/7123456789")
     assert h.match("https://v.douyin.com/abc")
+    assert h.match("https://www.iesdouyin.com/share/video/7123")
     assert h.match("https://www.tiktok.com/@user/video/7123")
     assert h.match("https://www.iqiyi.com/v_xyz123.html")
     assert h.match("https://v.youku.com/v_show/id_abc.html")
     assert h.match("https://www.ixigua.com/7123456")
+
+
+def test_match_youtube():
+    """YouTube is a JS-only player with no scrapable text body — every
+    path form (watch / shorts / playlist / channel) and the youtu.be
+    shortener fail fast instead of burning a playwright run."""
+    h = BlacklistHandler()
+    assert h.match("https://www.youtube.com/watch?v=iJ9J8Q_Vi_U")
+    assert h.match("https://youtube.com/shorts/abc123")
+    assert h.match("https://m.youtube.com/watch?v=xyz")
+    assert h.match("https://music.youtube.com/watch?v=xyz")
+    assert h.match("https://youtu.be/iJ9J8Q_Vi_U")
+
+
+def test_match_wechat_channels():
+    """视频号 — both the share-link form (weixin.qq.com/sph/... which 302s
+    to the player) and the resolved channels.weixin.qq.com form are
+    claimed by the blacklist, NOT the WeChat article handler."""
+    h = BlacklistHandler()
+    assert h.match("https://weixin.qq.com/sph/AxIfIM2YY4")
+    assert h.match("https://channels.weixin.qq.com/anything")
+    # mp articles must NOT be caught by the /sph/ entry.
+    assert not h.match("https://mp.weixin.qq.com/s/abcdef")
 
 
 def test_match_larksuite_overseas():
@@ -117,6 +141,34 @@ def test_handler_registration_order_blacklist_before_generic():
     h_other = find_handler("https://example.com/article")
     assert not isinstance(h_other, _BH)
     assert isinstance(h_other, _GH)
+
+
+def test_wechat_channels_routes_to_blacklist_not_wechat():
+    """视频号 must reach the blacklist (released from WechatHandler's host
+    set). A regression that re-adds channels.weixin.qq.com to
+    _WECHAT_HOSTS would route it back through article extraction →
+    empty → playwright → dead-task alert."""
+    from parsers.url import find_handler
+    from parsers.url._blacklist import BlacklistHandler as _BH
+    from parsers.url._wechat import WechatHandler as _WH
+
+    h = find_handler("https://channels.weixin.qq.com/abc")
+    assert isinstance(h, _BH)
+    # The share-link form (weixin.qq.com/sph/...) too — it's disowned by
+    # is_wechat_url's path check so it reaches the blacklist.
+    h_share = find_handler("https://weixin.qq.com/sph/AxIfIM2YY4")
+    assert isinstance(h_share, _BH)
+    # Articles still belong to WechatHandler.
+    h_article = find_handler("https://mp.weixin.qq.com/s/abcdef")
+    assert isinstance(h_article, _WH)
+
+
+def test_youtube_routes_to_blacklist():
+    from parsers.url import find_handler
+    from parsers.url._blacklist import BlacklistHandler as _BH
+
+    assert isinstance(find_handler("https://www.youtube.com/watch?v=abc"), _BH)
+    assert isinstance(find_handler("https://youtu.be/abc"), _BH)
 
 
 @pytest.mark.asyncio
