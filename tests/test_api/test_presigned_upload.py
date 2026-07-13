@@ -4,6 +4,17 @@ import pytest
 from unittest.mock import patch, AsyncMock
 
 
+def _doc_resp(id="doc-1", status="queued", index_status="pending",
+              title="note.txt", source="note.txt"):
+    """A DocumentIngestResponse with sensible defaults; override per test."""
+    from api.schemas import DocumentIngestResponse
+    return DocumentIngestResponse(
+        id=id, kb_id="kb-x", title=title, source=source, chunk_count=0,
+        status=status, index_status=index_status, error_msg="",
+        created_at="2026-07-13T00:00:00",
+    )
+
+
 def test_upload_not_found_error_code_exists():
     from api.errors import ErrorCode
     assert ErrorCode.UPLOAD_NOT_FOUND == 1211
@@ -61,11 +72,9 @@ async def test_uploads_prededup_hit_skips_url(client):
         patch("api.routes.documents._find_existing_by_hash", new=AsyncMock(return_value=existing)),
         patch("api.routes.documents._dedup_response") as mock_dedup,
     ):
-        from api.schemas import DocumentIngestResponse
-        mock_dedup.return_value = DocumentIngestResponse(
-            id="d1", kb_id="kb-x", title="t", source="s", chunk_count=0,
-            status="completed", index_status="completed", error_msg="",
-            created_at="2026-07-13T00:00:00",
+        mock_dedup.return_value = _doc_resp(
+            id="d1", title="t", source="s",
+            status="completed", index_status="completed",
         )
         mock_storage.return_value = AsyncMock()
 
@@ -123,16 +132,11 @@ def _uid(key):
 
 @pytest.mark.asyncio
 async def test_complete_success_promotes_and_enqueues(client):
-    from api.schemas import DocumentIngestResponse
     staging = "upload_staging/kb-x/doc-1/note.txt"
     storage = AsyncMock()
     storage.head = AsyncMock(return_value=(11, "text/plain"))
     storage.get = AsyncMock(return_value=b"hello world")
-    enq_resp = DocumentIngestResponse(
-        id="doc-1", kb_id="kb-x", title="note.txt", source="note.txt",
-        chunk_count=0, status="queued", index_status="pending", error_msg="",
-        created_at="2026-07-13T00:00:00",
-    )
+    enq_resp = _doc_resp(id="doc-1")
     with (
         patch("api.routes.documents._validate_kb", new=AsyncMock()),
         patch("api.routes.documents.get_storage", return_value=storage),
@@ -208,18 +212,13 @@ async def test_complete_tenant_isolation_rejects_foreign_prefix(client):
 @pytest.mark.asyncio
 async def test_complete_idempotent_on_pk_conflict(client):
     from sqlalchemy.exc import IntegrityError
-    from api.schemas import DocumentIngestResponse
     staging = "upload_staging/kb-x/doc-1/note.txt"
     storage = AsyncMock()
     storage.head = AsyncMock(return_value=(11, "text/plain"))
     storage.get = AsyncMock(return_value=b"hello world")
 
     existing_doc = object()
-    dedup_resp = DocumentIngestResponse(
-        id="doc-1", kb_id="kb-x", title="note.txt", source="note.txt",
-        chunk_count=0, status="queued", index_status="pending", error_msg="",
-        created_at="2026-07-13T00:00:00",
-    )
+    dedup_resp = _doc_resp(id="doc-1")
 
     class _Sess:
         async def __aenter__(self): return self
@@ -247,15 +246,12 @@ async def test_complete_idempotent_on_pk_conflict(client):
 
 @pytest.mark.asyncio
 async def test_complete_dedup_hit_deletes_staging(client):
-    from api.schemas import DocumentIngestResponse
     staging = "upload_staging/kb-x/doc-1/note.txt"
     storage = AsyncMock()
     storage.head = AsyncMock(return_value=(11, "text/plain"))
     storage.get = AsyncMock(return_value=b"hello world")
-    dedup_resp = DocumentIngestResponse(
-        id="existing", kb_id="kb-x", title="note.txt", source="note.txt",
-        chunk_count=0, status="completed", index_status="completed", error_msg="",
-        created_at="2026-07-13T00:00:00",
+    dedup_resp = _doc_resp(
+        id="existing", status="completed", index_status="completed",
     )
     with (
         patch("api.routes.documents._validate_kb", new=AsyncMock()),

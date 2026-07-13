@@ -237,6 +237,21 @@ def _decode_upload_id(upload_id: str) -> str:
     return base64.urlsafe_b64decode(upload_id + pad).decode()
 
 
+# Canonical storage-key builders. Kept in one place so the format the
+# presigned path *writes* (create_upload) and the format complete_upload
+# *parses* for tenant isolation cannot silently drift apart.
+def _staging_prefix(kb_id: str) -> str:
+    return f"upload_staging/{kb_id}/"
+
+
+def _staging_key(kb_id: str, doc_id: str, filename: str) -> str:
+    return f"{_staging_prefix(kb_id)}{doc_id}/{filename}"
+
+
+def _final_key(kb_id: str, doc_id: str, filename: str) -> str:
+    return f"upload_files/{kb_id}/{doc_id}/{filename}"
+
+
 def _record_upload_reject(
     *, kb_id: str, filename: str, size: int, reason: str, **extra: object,
 ) -> None:
@@ -435,7 +450,7 @@ async def ingest_file(
 
     doc_id = str(uuid.uuid4())
     obj_storage = await get_storage()
-    storage_key = f"upload_files/{kb_id}/{doc_id}/{filename}"
+    storage_key = _final_key(kb_id, doc_id, filename)
     await obj_storage.put(storage_key, raw, content_type=file.content_type or "")
 
     # Drop the upload buffer before enqueue so concurrent requests don't
@@ -494,7 +509,7 @@ async def create_upload(kb_id: str, body: CreateUploadRequest):
             )
 
     doc_id = str(uuid.uuid4())
-    staging_key = f"upload_staging/{kb_id}/{doc_id}/{filename}"
+    staging_key = _staging_key(kb_id, doc_id, filename)
     obj_storage = await get_storage()
     try:
         upload_url = await obj_storage.presign_put_url(staging_key)
@@ -550,11 +565,10 @@ async def complete_upload(
         staging_key = _decode_upload_id(upload_id)
     except Exception:
         raise _upload_not_found()
-    expected_prefix = f"upload_staging/{kb_id}/"
+    expected_prefix = _staging_prefix(kb_id)
     if not staging_key.startswith(expected_prefix):
         raise _upload_not_found()
-    rest = staging_key[len(expected_prefix):]
-    doc_id, _, filename = rest.partition("/")
+    doc_id, _, filename = staging_key[len(expected_prefix):].partition("/")
     if not doc_id or not filename:
         raise _upload_not_found()
 
@@ -599,7 +613,7 @@ async def complete_upload(
         return _dedup_response(existing)
 
     # 4. Promote staging -> final, drop staging, enqueue.
-    final_key = f"upload_files/{kb_id}/{doc_id}/{filename}"
+    final_key = _final_key(kb_id, doc_id, filename)
     await obj_storage.put(final_key, raw, content_type=content_type)
     await obj_storage.delete(staging_key)
 
@@ -787,7 +801,7 @@ async def ingest_text(
 
     doc_id = str(uuid.uuid4())
     obj_storage = await get_storage()
-    storage_key = f"upload_files/{kb_id}/{doc_id}/{storage_filename}"
+    storage_key = _final_key(kb_id, doc_id, storage_filename)
     await obj_storage.put(storage_key, raw, content_type="text/plain; charset=utf-8")
 
     raw = None  # noqa: F841
