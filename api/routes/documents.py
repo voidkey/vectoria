@@ -8,6 +8,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, UploadFile, File, Query
 from sqlalchemy import select, func
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
 
 from api.schemas import (
@@ -504,6 +505,104 @@ async def create_upload(kb_id: str, body: CreateUploadRequest):
         method="PUT",
         expires_at=expires_at,
     )
+
+
+@router.post(
+    "/{kb_id}/documents/uploads/{upload_id}/complete",
+    response_model=DocumentIngestResponse,
+    status_code=201,
+    responses=RATE_LIMITED_RESPONSE,
+    dependencies=[_ingest_limiter],
+)
+async def complete_upload(
+    kb_id: str, upload_id: str, wait: bool = Query(False),
+):
+    """Finalize a presigned upload: validate the staged object and ingest it.
+
+    Order is security-critical: decode + tenant-prefix assert, then HEAD
+    size-gate BEFORE any download (presigned PUT can't cap size at S3), then
+    the full download + shared gates.
+    """
+    await _validate_kb(kb_id)
+    cfg = get_settings()
+
+    # 1. Decode + tenant isolation. Any malformed / foreign key is
+    # indistinguishable from "no such upload".
+    not_found = AppError(
+        404, ErrorCode.UPLOAD_NOT_FOUND,
+        "Upload not found — never uploaded, failed, or expired",
+    )
+    try:
+        staging_key = _decode_upload_id(upload_id)
+    except Exception:
+        raise not_found
+    expected_prefix = f"upload_staging/{kb_id}/"
+    if not staging_key.startswith(expected_prefix):
+        raise not_found
+    rest = staging_key[len(expected_prefix):]
+    doc_id, _, filename = rest.partition("/")
+    if not doc_id or not filename:
+        raise not_found
+
+    obj_storage = await get_storage()
+
+    # 2. HEAD size gate — reject oversize before pulling the body into memory.
+    try:
+        size, content_type = await obj_storage.head(staging_key)
+    except NotImplementedError:
+        raise AppError(
+            501, ErrorCode.UPLOAD_NOT_SUPPORTED,
+            "Direct upload is not supported by this storage backend",
+        )
+    except FileNotFoundError:
+        raise not_found
+    if size > cfg.max_upload_bytes:
+        _record_upload_reject(
+            kb_id=kb_id, filename=filename, size=size,
+            reason="too_large", limit=cfg.max_upload_bytes,
+        )
+        raise AppError(
+            413, ErrorCode.UPLOAD_TOO_LARGE,
+            f"File exceeds {cfg.max_upload_bytes} bytes",
+        )
+
+    # 3. Download once + run the shared gates (identical to /file).
+    raw = await obj_storage.get(staging_key)
+    page_count = _run_upload_gates(kb_id, filename, raw)
+
+    # Per-KB dedup on the real bytes (same semantics as /file).
+    file_hash_sha256 = hashlib.sha256(raw).hexdigest()
+    legacy_md5 = hashlib.md5(raw).hexdigest()
+    existing = await _find_existing_by_hash(
+        kb_id, sha256=file_hash_sha256, md5=legacy_md5,
+    )
+    if existing is not None:
+        await obj_storage.delete(staging_key)
+        return _dedup_response(existing)
+
+    # 4. Promote staging -> final, drop staging, enqueue.
+    final_key = f"upload_files/{kb_id}/{doc_id}/{filename}"
+    await obj_storage.put(final_key, raw, content_type=content_type)
+    await obj_storage.delete(staging_key)
+    raw = None  # noqa: F841
+
+    selected_engine = registry.auto_select(filename=filename)
+    try:
+        return await _enqueue_ingest(
+            kb_id,
+            source=filename, storage_key=final_key,
+            filename=filename, selected_engine=selected_engine,
+            file_hash=None, file_hash_sha256=file_hash_sha256,
+            doc_id=doc_id, wait=wait, page_count=page_count,
+        )
+    except IntegrityError:
+        # Concurrent/retried complete already created this doc_id (the PK).
+        # doc_id is the idempotency key — return the existing doc, not a 500.
+        async with get_session() as session:
+            doc = await session.get(Document, doc_id)
+        if doc is not None:
+            return _dedup_response(doc)
+        raise
 
 
 async def _find_existing_by_hash(
