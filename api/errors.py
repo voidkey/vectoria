@@ -23,6 +23,7 @@ class ErrorCode:
     MIME_MISMATCH = 1207
     PDF_TOO_MANY_PAGES = 1208
     PPTX_TOO_MANY_SLIDES = 1209
+    EMPTY_UPLOAD = 1210
 
     # Resource not found (1301-1399)
     NOT_FOUND = 1301

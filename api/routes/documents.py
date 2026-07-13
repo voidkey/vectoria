@@ -274,6 +274,27 @@ async def ingest_file(
     selected_engine = registry.auto_select(filename=filename)
     raw = await file.read()
 
+    # Size gate #0: a 0-byte body means the file never reached us intact.
+    # Diagnosed in prod (2026-07): the vast majority of ``empty_content``
+    # failures were files whose stored sha256 == sha256(b"") — i.e. the
+    # body was already empty at this ``read()``, before any storage write
+    # or parse. So the content isn't lost in our pipeline; it arrives
+    # empty (user picked an empty file, or — more often — the body was
+    # truncated upstream, e.g. reverse-proxy body buffering onto a full
+    # disk). Reject here with a distinct code + reason so these stop
+    # flowing into storage → parse → the bad-case digest, and so the
+    # reject counter gives ops a clean signal to correlate against the
+    # ingress/proxy logs instead of drowning in empty_content noise.
+    if len(raw) == 0:
+        _record_upload_reject(
+            kb_id=kb_id, filename=filename, size=0, reason="empty_upload",
+        )
+        raise AppError(
+            400, ErrorCode.EMPTY_UPLOAD,
+            "Uploaded file is empty (0 bytes) — the body may have been "
+            "truncated in transit; please re-upload the file",
+        )
+
     # Size gate #2: some clients / transports don't set Content-Length reliably,
     # so re-check after the read in case file.size was None.
     if len(raw) > cfg.max_upload_bytes:

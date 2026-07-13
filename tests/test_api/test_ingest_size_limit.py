@@ -45,6 +45,33 @@ async def test_ingest_file_rejects_oversized_raw_upload(client):
 
 
 @pytest.mark.asyncio
+async def test_ingest_file_rejects_empty_upload(client):
+    """A 0-byte body is rejected with 400 EMPTY_UPLOAD before storage write.
+
+    Prod diagnosis showed most ``empty_content`` failures were files
+    already empty at ``file.read()`` (stored sha256 == sha256(b"")).
+    Rejecting here keeps them out of storage + parse + the digest and
+    gives a distinct signal for correlating with the ingress/proxy logs.
+    """
+    with (
+        patch("api.routes.documents._validate_kb", new=AsyncMock()),
+        patch("api.routes.documents.get_storage") as mock_storage,
+        patch("api.routes.documents.registry") as mock_reg,
+    ):
+        mock_storage.return_value = AsyncMock()
+        mock_reg.auto_select.return_value = "markitdown"
+
+        resp = await client.post(
+            "/v1/knowledgebases/kb-x/documents/file",
+            files={"file": ("empty.txt", b"", "text/plain")},
+        )
+
+    assert resp.status_code == 400, resp.text
+    assert resp.json()["code"] == 1210  # EMPTY_UPLOAD
+    mock_storage.return_value.put.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_parse_document_marks_oversized_content_as_failed():
     """Worker handler path: after parse, if content exceeds
     ``max_content_chars`` we don't proceed to embedding — that would
