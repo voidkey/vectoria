@@ -112,13 +112,23 @@ async def dequeue(
     """
     now = datetime.now(timezone.utc).replace(tzinfo=None)
 
-    # Eligibility: pending-and-ready OR running-and-stale
+    # Eligibility: pending-and-ready OR running-and-stale-with-retries-left.
+    #
+    # The ``attempts < max_attempts`` guard on the stale-running branch is
+    # load-bearing: a task killed *externally* (SIGKILL from autoheal/OOM,
+    # never reaching ``fail()``) leaves a ``running`` row with an expired
+    # lock. Without the guard, dequeue re-claims it and bumps ``attempts``
+    # forever — the retry cap is never enforced because only ``fail()``
+    # checks it, and ``fail()`` never runs for an externally-killed task.
+    # With the guard, an exhausted killed task falls through to
+    # ``reap_dead_tasks()``, which marks it ``dead`` instead of looping.
     eligibility_expr = (
         (Task.status == "pending")
         & ((Task.locked_until.is_(None)) | (Task.locked_until < now))
     ) | (
         (Task.status == "running")
         & (Task.locked_until < now)
+        & (Task.attempts < Task.max_attempts)
     )
     if task_types:
         eligibility_expr = eligibility_expr & Task.task_type.in_(task_types)

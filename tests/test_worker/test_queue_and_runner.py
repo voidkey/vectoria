@@ -4,6 +4,7 @@ These tests mock the DB layer (get_session / SessionLocal) rather than hitting
 a real PG instance, so they run in CI without any infra. The contract being
 tested: enqueue → dequeue → dispatch → complete/fail lifecycle.
 """
+import asyncio
 import pytest
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch, AsyncMock, MagicMock
@@ -51,6 +52,39 @@ async def test_dequeue_returns_none_on_empty_queue():
 
     assert task is None
     session.commit.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_dequeue_stale_running_branch_requires_retries_left():
+    """Regression: the stale-running reclaim branch must be gated on
+    ``attempts < max_attempts``.
+
+    A task SIGKILLed mid-run (autoheal/OOM) never reaches ``fail()``, so it
+    stays ``running`` with an expired lock. Without this guard, ``dequeue``
+    re-claims it forever, bumping ``attempts`` past the cap — an infinite
+    loop that starves newly-created tasks in production. The retry cap is
+    only ever enforced here and in ``reap_dead_tasks``; ``fail()`` can't
+    help a task that never fails cleanly.
+    """
+    captured = {}
+    session = AsyncMock()
+    result = MagicMock()
+    result.scalar_one_or_none.return_value = None
+
+    async def capture(stmt):
+        captured["stmt"] = stmt
+        return result
+
+    session.execute = AsyncMock(side_effect=capture)
+
+    from worker.queue import dequeue
+    await dequeue(session)
+
+    sql = " ".join(
+        str(captured["stmt"].compile(compile_kwargs={"literal_binds": False})).split()
+    )
+    # The running-branch guard must be present in the compiled WHERE clause.
+    assert "tasks.attempts < tasks.max_attempts" in sql
 
 
 @pytest.mark.asyncio
@@ -189,6 +223,46 @@ async def test_runner_processes_tasks_and_stops():
     assert processed == 1
     mock_dispatch.assert_called_once_with("index_document", task.payload)
     mock_complete.assert_called_once_with("t4")
+
+
+@pytest.mark.asyncio
+async def test_runner_heartbeat_refreshes_during_long_task(monkeypatch):
+    """Regression: a background loop must refresh the liveness heartbeat
+    while a task is in flight.
+
+    Before the fix the heartbeat was only touched between tasks, so a task
+    running longer than the 120s healthcheck window got the worker
+    autoheal-killed mid-run. Here a 'long' dispatch (0.1s, with the refresh
+    interval shrunk) must produce several heartbeat touches while it runs.
+    """
+    monkeypatch.setattr("worker.runner._HEARTBEAT_REFRESH_INTERVAL", 0.005)
+    touches: list[int] = []
+    monkeypatch.setattr("worker.runner._touch_heartbeat", lambda: touches.append(1))
+
+    task = Task(
+        id="t6", task_type="index_document", payload={},
+        status="running", attempts=1, max_attempts=3,
+    )
+
+    async def slow_dispatch(task_type, payload):
+        await asyncio.sleep(0.1)
+
+    with (
+        patch("worker.runner.SessionLocal") as mock_sl,
+        patch("worker.runner.dequeue") as mock_deq,
+        patch("worker.runner.dispatch", new=slow_dispatch),
+        patch("worker.runner.complete", new=AsyncMock()),
+    ):
+        session = AsyncMock()
+        mock_sl.return_value.__aenter__.return_value = session
+        mock_deq.return_value = task
+
+        from worker.runner import run_worker
+        processed = await run_worker(max_iterations=1)
+
+    assert processed == 1
+    # Background loop ticked repeatedly during the 0.1s in-flight task.
+    assert len(touches) >= 3
 
 
 @pytest.mark.asyncio

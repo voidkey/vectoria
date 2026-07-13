@@ -13,6 +13,7 @@ alone — no code path for "browser worker" vs "general worker".
 """
 
 import asyncio
+import contextlib
 import logging
 import signal
 import time
@@ -37,6 +38,11 @@ logger = logging.getLogger(__name__)
 
 _POLL_INTERVAL = 1.0  # seconds between empty-queue polls
 _HEARTBEAT_PATH = Path("/tmp/worker-heartbeat")
+# Heartbeat is refreshed on this cadence by a background coroutine, decoupled
+# from task execution. Must stay well under the container healthcheck's
+# staleness window (120 s) so a long-but-healthy task (e.g. serially fetching
+# many slow images) doesn't get the pod autoheal-killed mid-run.
+_HEARTBEAT_REFRESH_INTERVAL = 15.0
 _DEAD_TASK_REAP_INTERVAL = 300  # seconds between dead-task reap cycles
 # Queue-depth gauges updated every N seconds — cheaper than per-poll, and
 # Prometheus scrape cadence is 15 s+ anyway so finer resolution is wasted.
@@ -56,6 +62,22 @@ def _touch_heartbeat() -> None:
         _HEARTBEAT_PATH.write_text(str(int(time.time())))
     except OSError:
         pass
+
+
+async def _heartbeat_loop() -> None:
+    """Refresh the liveness heartbeat on a fixed cadence, independent of task
+    execution.
+
+    A long task that stays on the event loop between awaits (serial async
+    image downloads, LLM calls) keeps this coroutine schedulable, so the
+    healthcheck stays green while real work is in flight. A genuinely wedged
+    loop — a sync CPU block or deadlock — starves this coroutine too, so the
+    heartbeat still goes stale and the pod is correctly restarted. That's the
+    property we want: liveness reflects the event loop, not task duration.
+    """
+    while not _shutdown:
+        _touch_heartbeat()
+        await asyncio.sleep(_HEARTBEAT_REFRESH_INTERVAL)
 
 
 def _parse_queues(raw: str) -> list[str] | None:
@@ -101,67 +123,71 @@ async def run_worker(*, max_iterations: int | None = None) -> int:
         task_types or "*", rss_limit,
     )
     _touch_heartbeat()
+    heartbeat = asyncio.create_task(_heartbeat_loop())
 
-    while not _shutdown:
-        if max_iterations is not None and processed >= max_iterations:
-            break
+    try:
+        while not _shutdown:
+            if max_iterations is not None and processed >= max_iterations:
+                break
 
-        # Periodically reap dead tasks (mark exhausted-retry tasks as 'dead')
-        now = time.monotonic()
-        if now - last_reap > _DEAD_TASK_REAP_INTERVAL:
-            reaped = await reap_dead_tasks()
-            if reaped:
-                logger.info("Reaped %d stale tasks", reaped)
-            last_reap = now
+            # Periodically reap dead tasks (mark exhausted-retry tasks 'dead')
+            now = time.monotonic()
+            if now - last_reap > _DEAD_TASK_REAP_INTERVAL:
+                reaped = await reap_dead_tasks()
+                if reaped:
+                    logger.info("Reaped %d stale tasks", reaped)
+                last_reap = now
 
-        # Queue-depth metrics: sampled on a coarser clock than the poll
-        # loop so we don't hammer PG with one aggregate SELECT per second.
-        if now - last_queue_sample > _QUEUE_METRICS_INTERVAL:
+            # Queue-depth metrics: sampled on a coarser clock than the poll
+            # loop so we don't hammer PG with one aggregate SELECT per second.
+            if now - last_queue_sample > _QUEUE_METRICS_INTERVAL:
+                try:
+                    await sample_queue_metrics()
+                except Exception:  # noqa: BLE001 — telemetry must never crash the loop
+                    logger.exception("queue metric sampling failed")
+                last_queue_sample = now
+
+            async with SessionLocal() as session:
+                task = await dequeue(session, task_types=task_types)
+
+            if task is None:
+                # Gauge update on idle loops too, so RSS graphs don't flatline
+                # when the queue is empty but the pod is still drifting.
+                _sample_rss_and_maybe_exit(rss_limit=0)
+                await asyncio.sleep(_POLL_INTERVAL)
+                continue
+
+            logger.info("Processing task %s type=%s", task.id, task.task_type)
+            t_start = time.monotonic()
+            status = "completed"
+            WORKER_TASKS_INFLIGHT.inc()
             try:
-                await sample_queue_metrics()
-            except Exception:  # noqa: BLE001 — telemetry must never crash the loop
-                logger.exception("queue metric sampling failed")
-            last_queue_sample = now
+                await dispatch(task.task_type, task.payload)
+                await complete(task.id)
+            except Exception as e:
+                status = "failed"
+                logger.exception("Task %s failed: %s", task.id, e)
+                await fail(task.id, str(e))
+            finally:
+                WORKER_TASKS_INFLIGHT.dec()
+                elapsed = time.monotonic() - t_start
+                TASK_DURATION_SECONDS.labels(
+                    task_type=task.task_type, status=status,
+                ).observe(elapsed)
+                TASK_TOTAL.labels(task_type=task.task_type, status=status).inc()
 
-        async with SessionLocal() as session:
-            task = await dequeue(session, task_types=task_types)
+            processed += 1
 
-        if task is None:
-            _touch_heartbeat()
-            # Gauge update on idle loops too, so RSS graphs don't flatline
-            # when the queue is empty but the pod is still drifting.
-            _sample_rss_and_maybe_exit(rss_limit=0)
-            await asyncio.sleep(_POLL_INTERVAL)
-            continue
-
-        logger.info("Processing task %s type=%s", task.id, task.task_type)
-        t_start = time.monotonic()
-        status = "completed"
-        WORKER_TASKS_INFLIGHT.inc()
-        try:
-            await dispatch(task.task_type, task.payload)
-            await complete(task.id)
-        except Exception as e:
-            status = "failed"
-            logger.exception("Task %s failed: %s", task.id, e)
-            await fail(task.id, str(e))
-        finally:
-            WORKER_TASKS_INFLIGHT.dec()
-            elapsed = time.monotonic() - t_start
-            TASK_DURATION_SECONDS.labels(
-                task_type=task.task_type, status=status,
-            ).observe(elapsed)
-            TASK_TOTAL.labels(task_type=task.task_type, status=status).inc()
-
-        _touch_heartbeat()
-        processed += 1
-
-        # Self-kill check AFTER task completion so we never abort mid-task.
-        # If RSS breached during the task and we exit here, K8s restarts us
-        # and the next task gets a fresh heap. Much cleaner than waiting
-        # for the OOM-killer to end the pod unpredictably.
-        if _sample_rss_and_maybe_exit(rss_limit):
-            break
+            # Self-kill check AFTER task completion so we never abort mid-task.
+            # If RSS breached during the task and we exit here, K8s restarts us
+            # and the next task gets a fresh heap. Much cleaner than waiting
+            # for the OOM-killer to end the pod unpredictably.
+            if _sample_rss_and_maybe_exit(rss_limit):
+                break
+    finally:
+        heartbeat.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await heartbeat
 
     logger.info("Worker stopped after processing %d tasks", processed)
     return processed
