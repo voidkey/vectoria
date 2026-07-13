@@ -46,6 +46,12 @@ services:
       db:
         condition: service_healthy
     restart: unless-stopped
+    # autoheal restarts this container when its HEALTHCHECK reports unhealthy.
+    # `restart: unless-stopped` only fires on process EXIT, so a wedged-but-alive
+    # process (CPU-pinned event loop, deadlock, stuck keepalive) would stay broken
+    # without this — the autoheal sidecar closes that gap.
+    labels:
+      - "autoheal=true"
     mem_limit: 1500m
     memswap_limit: 2g
     logging:
@@ -69,6 +75,11 @@ services:
       db:
         condition: service_healthy
     restart: unless-stopped
+    # See app service: autoheal restarts this worker when its heartbeat
+    # healthcheck goes stale (hung handler) — a hang doesn't exit, so the
+    # restart policy alone would leave the queue silently undrained.
+    labels:
+      - "autoheal=true"
     mem_limit: 4g
     memswap_limit: 6g
     logging:
@@ -76,3 +87,18 @@ services:
       options:
         max-size: "20m"
         max-file: "5"
+
+  # Watches all containers labelled `autoheal=true` and `docker restart`s any
+  # that report unhealthy. This is the recovery mechanism for HANGS (unhealthy
+  # but still running); process EXITS are already handled by restart:unless-stopped.
+  # Needs the docker socket (host-root-equivalent) — acceptable on this dedicated,
+  # single-tenant box. AUTOHEAL_START_PERIOD avoids killing a container mid-boot.
+  autoheal:
+    image: willfarrell/autoheal:latest
+    restart: unless-stopped
+    environment:
+      AUTOHEAL_CONTAINER_LABEL: autoheal
+      AUTOHEAL_START_PERIOD: "60"
+      AUTOHEAL_INTERVAL: "15"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
