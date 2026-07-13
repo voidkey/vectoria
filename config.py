@@ -42,6 +42,10 @@ class Settings(BaseSettings):
     s3_bucket: str = "vectoria"
     s3_addressing_style: str = "auto"  # auto|virtual|path
     s3_presign_expires: int = 3600
+    # TTL (seconds) for presigned PUT upload URLs (direct-upload path).
+    # Deliberately short and separate from the download-oriented
+    # s3_presign_expires: an upload URL is a short-lived write credential.
+    s3_presign_upload_expires: int = 600
 
     # Parse engine
     default_parse_engine: str = "auto"
