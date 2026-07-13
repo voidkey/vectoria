@@ -235,6 +235,98 @@ def _record_upload_reject(
     ).inc()
 
 
+def _run_upload_gates(kb_id: str, filename: str, raw: bytes) -> int | None:
+    """Shared upload validation for both the multipart `/file` path and the
+    presigned `complete` path. Raises the same AppError on rejection and
+    returns page_count (or None). Does NOT do dedup — callers own that.
+
+    content_type is intentionally not a parameter: none of these gates read
+    it; it is only a storage-put argument, which each caller supplies.
+    """
+    cfg = get_settings()
+
+    # Size gate #0: a 0-byte body means the file never reached us intact.
+    if len(raw) == 0:
+        _record_upload_reject(
+            kb_id=kb_id, filename=filename, size=0, reason="empty_upload",
+        )
+        raise AppError(
+            400, ErrorCode.EMPTY_UPLOAD,
+            "Uploaded file is empty (0 bytes) — the body may have been "
+            "truncated in transit; please re-upload the file",
+        )
+
+    # Size gate #2: re-check after read in case the transport didn't set
+    # Content-Length reliably.
+    if len(raw) > cfg.max_upload_bytes:
+        _record_upload_reject(
+            kb_id=kb_id, filename=filename, size=len(raw),
+            reason="too_large", limit=cfg.max_upload_bytes,
+        )
+        raise AppError(
+            413, ErrorCode.UPLOAD_TOO_LARGE,
+            f"File exceeds {cfg.max_upload_bytes} bytes",
+        )
+
+    # MIME sniff gate.
+    from api.mime_sniff import check_mime
+    from infra.metrics import UPLOAD_MIME_MISMATCH_TOTAL
+    ok, detected = check_mime(filename, raw[:2048])
+    if not ok:
+        UPLOAD_MIME_MISMATCH_TOTAL.labels(
+            claimed_ext=_claimed_ext_label(filename),
+            detected=detected or "(none)",
+        ).inc()
+        if cfg.strict_mime_check:
+            _record_upload_reject(
+                kb_id=kb_id, filename=filename, size=len(raw),
+                reason="mime_mismatch", detected=detected or "(none)",
+            )
+            _, claimed_ext = os.path.splitext(filename.lower())
+            raise AppError(
+                400, ErrorCode.MIME_MISMATCH,
+                f"File content doesn't match extension {claimed_ext!r} "
+                f"(detected family: {detected})",
+            )
+        logger.warning(
+            "mime_mismatch (non-strict, allowed): filename=%s detected=%s",
+            filename, detected,
+        )
+
+    # Page-count gate.
+    page_count: int | None = None
+    _, ext = os.path.splitext(filename.lower())
+    if ext == ".pdf":
+        from api.pdf_inspect import count_pdf_pages
+        pages = count_pdf_pages(raw)
+        if pages is not None and pages > cfg.max_pdf_pages:
+            _record_upload_reject(
+                kb_id=kb_id, filename=filename, size=len(raw),
+                reason="too_many_pages", pages=pages, limit=cfg.max_pdf_pages,
+            )
+            raise AppError(
+                413, ErrorCode.PDF_TOO_MANY_PAGES,
+                f"PDF has {pages} pages; max allowed is {cfg.max_pdf_pages}",
+            )
+        page_count = pages
+    elif ext == ".pptx":
+        from api.pptx_inspect import count_pptx_slides
+        slides = count_pptx_slides(raw)
+        if slides is not None and slides > cfg.max_pptx_slides:
+            _record_upload_reject(
+                kb_id=kb_id, filename=filename, size=len(raw),
+                reason="too_many_slides", slides=slides,
+                limit=cfg.max_pptx_slides,
+            )
+            raise AppError(
+                413, ErrorCode.PPTX_TOO_MANY_SLIDES,
+                f"PPTX has {slides} slides; max allowed is {cfg.max_pptx_slides}",
+            )
+        page_count = slides
+
+    return page_count
+
+
 @router.post(
     "/{kb_id}/documents/file",
     response_model=DocumentIngestResponse,
@@ -274,105 +366,7 @@ async def ingest_file(
     selected_engine = registry.auto_select(filename=filename)
     raw = await file.read()
 
-    # Size gate #0: a 0-byte body means the file never reached us intact.
-    # Diagnosed in prod (2026-07): the vast majority of ``empty_content``
-    # failures were files whose stored sha256 == sha256(b"") — i.e. the
-    # body was already empty at this ``read()``, before any storage write
-    # or parse. So the content isn't lost in our pipeline; it arrives
-    # empty (user picked an empty file, or — more often — the body was
-    # truncated upstream, e.g. reverse-proxy body buffering onto a full
-    # disk). Reject here with a distinct code + reason so these stop
-    # flowing into storage → parse → the bad-case digest, and so the
-    # reject counter gives ops a clean signal to correlate against the
-    # ingress/proxy logs instead of drowning in empty_content noise.
-    if len(raw) == 0:
-        _record_upload_reject(
-            kb_id=kb_id, filename=filename, size=0, reason="empty_upload",
-        )
-        raise AppError(
-            400, ErrorCode.EMPTY_UPLOAD,
-            "Uploaded file is empty (0 bytes) — the body may have been "
-            "truncated in transit; please re-upload the file",
-        )
-
-    # Size gate #2: some clients / transports don't set Content-Length reliably,
-    # so re-check after the read in case file.size was None.
-    if len(raw) > cfg.max_upload_bytes:
-        _record_upload_reject(
-            kb_id=kb_id, filename=filename, size=len(raw),
-            reason="too_large", limit=cfg.max_upload_bytes,
-        )
-        raise AppError(
-            413, ErrorCode.UPLOAD_TOO_LARGE,
-            f"File exceeds {cfg.max_upload_bytes} bytes",
-        )
-
-    # MIME sniff gate: reject cross-family magic/extension mismatch when
-    # STRICT_MIME_CHECK=True. In non-strict mode we still bump the counter
-    # so operators can observe mismatches before flipping the flag on.
-    from api.mime_sniff import check_mime
-    from infra.metrics import UPLOAD_MIME_MISMATCH_TOTAL
-    ok, detected = check_mime(filename, raw[:2048])
-    if not ok:
-        UPLOAD_MIME_MISMATCH_TOTAL.labels(
-            claimed_ext=_claimed_ext_label(filename),
-            detected=detected or "(none)",
-        ).inc()
-        if cfg.strict_mime_check:
-            _record_upload_reject(
-                kb_id=kb_id, filename=filename, size=len(raw),
-                reason="mime_mismatch", detected=detected or "(none)",
-            )
-            _, claimed_ext = os.path.splitext(filename.lower())
-            raise AppError(
-                400, ErrorCode.MIME_MISMATCH,
-                f"File content doesn't match extension {claimed_ext!r} "
-                f"(detected family: {detected})",
-            )
-        logger.warning(
-            "mime_mismatch (non-strict, allowed): filename=%s detected=%s",
-            filename, detected,
-        )
-
-    # Page-count gate. The byte cap above does not catch the
-    # "small file, many pages" shape — a 19 MB scanned PDF can hide
-    # 1000+ pages mineru cannot OCR within its 120 s timeout, and a
-    # text-only PPTX with 1000 slides multiplies parse + vision cost
-    # across each slide while staying tiny on disk. Counting is cheap
-    # for both formats (xref-table read for PDF, zip dir listing for
-    # PPTX) so we pay ~ms to save the S3 write, worker slot, and
-    # downstream parser call we'd otherwise burn.
-    # ``page_count`` falls out of the gate for free — persist it so the
-    # detail API can surface it without re-inspecting the bytes.
-    page_count: int | None = None
-    _, ext = os.path.splitext(filename.lower())
-    if ext == ".pdf":
-        from api.pdf_inspect import count_pdf_pages
-        pages = count_pdf_pages(raw)
-        if pages is not None and pages > cfg.max_pdf_pages:
-            _record_upload_reject(
-                kb_id=kb_id, filename=filename, size=len(raw),
-                reason="too_many_pages", pages=pages, limit=cfg.max_pdf_pages,
-            )
-            raise AppError(
-                413, ErrorCode.PDF_TOO_MANY_PAGES,
-                f"PDF has {pages} pages; max allowed is {cfg.max_pdf_pages}",
-            )
-        page_count = pages
-    elif ext == ".pptx":
-        from api.pptx_inspect import count_pptx_slides
-        slides = count_pptx_slides(raw)
-        if slides is not None and slides > cfg.max_pptx_slides:
-            _record_upload_reject(
-                kb_id=kb_id, filename=filename, size=len(raw),
-                reason="too_many_slides", slides=slides,
-                limit=cfg.max_pptx_slides,
-            )
-            raise AppError(
-                413, ErrorCode.PPTX_TOO_MANY_SLIDES,
-                f"PPTX has {slides} slides; max allowed is {cfg.max_pptx_slides}",
-            )
-        page_count = slides
+    page_count = _run_upload_gates(kb_id, filename, raw)
 
     # Per-KB file-hash dedup. Idempotency for accidental retries and
     # double-uploads that previously re-ran parse + embed and OOM'd the host.
