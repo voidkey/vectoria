@@ -150,3 +150,40 @@ async def test_head_missing_raises_filenotfound(storage):
     with patch.object(storage, "_client", return_value=_async_ctx(mock_client)):
         with pytest.raises(FileNotFoundError):
             await storage.head("nope/key")
+
+
+@pytest.mark.asyncio
+async def test_head_non_404_error_reraises(storage):
+    """A non-missing error (e.g. 403) must propagate, NOT become
+    FileNotFoundError — otherwise a credential/throttle problem is
+    silently mis-classified as a missing upload."""
+    from botocore.exceptions import ClientError
+    mock_client = AsyncMock()
+    mock_client.head_object = AsyncMock(
+        side_effect=ClientError({"Error": {"Code": "403"}}, "HeadObject")
+    )
+    with patch.object(storage, "_client", return_value=_async_ctx(mock_client)):
+        with pytest.raises(ClientError):
+            await storage.head("forbidden/key")
+
+
+@pytest.mark.asyncio
+async def test_presign_put_url_uses_configured_upload_ttl():
+    """The upload TTL plumbs through from the constructor, not just the
+    default — construct with an explicit value and assert it reaches boto."""
+    from storage.s3 import S3ObjectStorage
+    s = S3ObjectStorage(
+        endpoint="http://localhost:9000", region="",
+        access_key="a", secret_key="b", bucket="test-bucket",
+        addressing_style="path", presign_expires=3600,
+        presign_upload_expires=900,
+    )
+    mock_client = AsyncMock()
+    mock_client.generate_presigned_url = AsyncMock(return_value="https://u")
+    with patch.object(s, "_client", return_value=_async_ctx(mock_client)):
+        await s.presign_put_url("k")
+    mock_client.generate_presigned_url.assert_called_once_with(
+        "put_object",
+        Params={"Bucket": "test-bucket", "Key": "k"},
+        ExpiresIn=900,
+    )

@@ -99,5 +99,7 @@ class S3ObjectStorage(ObjectStorage):
             try:
                 resp = await client.head_object(Bucket=self._bucket, Key=key)
             except ClientError as e:
-                raise FileNotFoundError(key) from e
+                if e.response.get("Error", {}).get("Code") in ("404", "NoSuchKey"):
+                    raise FileNotFoundError(key) from e
+                raise
             return int(resp.get("ContentLength", 0)), resp.get("ContentType", "") or ""
