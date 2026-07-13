@@ -15,6 +15,14 @@ class DocumentTextRequest(BaseModel):
     title: str | None = None
 
 
+class CreateUploadRequest(BaseModel):
+    filename: str = Field(..., min_length=1)
+    # Advisory hints only (early-reject / skip-upload). Never trusted for
+    # correctness — the real gates run on the actual bytes at `complete`.
+    sha256: str | None = None
+    size: int | None = None
+
+
 class OutlineItem(BaseModel):
     level: int
     title: str
@@ -72,6 +80,18 @@ class DocumentIngestResponse(DocumentResponse):
     content: str = ""
     outline: list[OutlineItem] = []
     image_status: str = "none"
+
+
+class CreateUploadResponse(BaseModel):
+    # When a duplicate is detected up front, no URL is minted and `document`
+    # carries the existing doc. Otherwise the upload_url/upload_id/expires_at
+    # fields are populated for a direct PUT.
+    dedup_hit: bool = False
+    document: DocumentIngestResponse | None = None
+    upload_id: str | None = None
+    upload_url: str | None = None
+    method: str | None = None
+    expires_at: str | None = None
 
 
 class DocumentDetailResponse(DocumentIngestResponse):

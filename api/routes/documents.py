@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import hashlib
 import os
 import time
@@ -209,6 +210,18 @@ def _claimed_ext_label(filename: str) -> str:
     from api.mime_sniff import EXT_FAMILIES
     _, ext = os.path.splitext(filename.lower())
     return ext if ext in EXT_FAMILIES else "other"
+
+
+def _encode_upload_id(storage_key: str) -> str:
+    """base64url the staging key so it survives as one URL path segment
+    in /uploads/{upload_id}/complete. Not a seal or secret — see spec."""
+    return base64.urlsafe_b64encode(storage_key.encode()).decode().rstrip("=")
+
+
+def _decode_upload_id(upload_id: str) -> str:
+    """Inverse of _encode_upload_id. Raises on malformed input."""
+    pad = "=" * (-len(upload_id) % 4)
+    return base64.urlsafe_b64decode(upload_id + pad).decode()
 
 
 def _record_upload_reject(
