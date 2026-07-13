@@ -100,6 +100,8 @@
 | POST | `/knowledgebases/{kb_id}/documents/file` | 上传文件入库（multipart/form-data） | 201 |
 | POST | `/knowledgebases/{kb_id}/documents/url` | URL 入库 | 201 |
 | POST | `/knowledgebases/{kb_id}/documents/text` | 文本入库（JSON body） | 201 |
+| POST | `/knowledgebases/{kb_id}/documents/uploads` | 直传：签发预签名上传 URL | 201 |
+| POST | `/knowledgebases/{kb_id}/documents/uploads/{upload_id}/complete` | 直传：校验暂存文件并入库 | 201 |
 | GET | `/knowledgebases/{kb_id}/documents` | 列出知识库下所有文档 | 200 |
 | GET | `/knowledgebases/{kb_id}/documents/{doc_id}` | 查询单个文档状态 | 200 |
 | DELETE | `/knowledgebases/{kb_id}/documents/{doc_id}` | 删除文档及其向量数据 | 204 |
@@ -120,6 +122,33 @@
 | `title` | string | 否 | 文档标题；不传则取文本首行（截断 80 字符），首行为空则用 `text-{8位hash}` |
 
 服务内部会把文本以 `.txt` 文件形式写入对象存储并按普通文档流程解析。`GET /knowledgebases/{kb_id}/documents/{doc_id}` 返回的 `content` 字段即为用户原始输入的全部文本。
+
+#### 直传（预签名上传）
+
+大文件可绕过 API 直传对象存储，避免字节流经服务端。分两步：
+
+**第一步** `POST .../documents/uploads` — 请求 CreateUploadRequest：
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `filename` | string | 是 | 文件名（决定解析引擎与标题） |
+| `sha256` | string | 否 | 客户端预算的内容 sha256；命中已有文档则直接去重、不签发 URL（仅用于跳过上传，不作正确性依据，complete 时用真实字节重算） |
+| `size` | int | 否 | 声明大小；超过 `max_upload_bytes` 立即拒绝（建议性早拒，真正的大小闸在 complete 用 HEAD 校验） |
+
+响应 CreateUploadResponse：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `dedup_hit` | bool | 命中前置去重时为 `true`，此时 `document` 为已有文档、其余字段为空 |
+| `document` | DocumentIngestResponse \| null | 去重命中时返回的已有文档 |
+| `upload_id` | string \| null | 不透明句柄，原样回传给 complete |
+| `upload_url` | string \| null | 预签名 PUT 直传地址 |
+| `method` | string \| null | 固定 `PUT` |
+| `expires_at` | string \| null | URL 过期时间（ISO 8601） |
+
+**第二步** 客户端用 `PUT` 把文件字节直传到 `upload_url`，再调 `POST .../documents/uploads/{upload_id}/complete`（可选 query 参数 `?wait=true`，语义同 `/file`）。服务端先 HEAD 校验大小（超限不下载），再拉取字节跑与 `/file` 完全相同的校验闸并去重，最后入库，返回 `DocumentIngestResponse`（与 `/file` 同构）。
+
+> **错误码**: 不支持预签名的存储后端返回 `501`（`1212` `UPLOAD_NOT_SUPPORTED`）；`upload_id` 对应对象不存在 / 上传失败 / 已过期返回 `404`（`1211` `UPLOAD_NOT_FOUND`）。浏览器直传需给桶配置 CORS，并给 `upload_staging/` 前缀配置生命周期过期规则回收未完成的上传——两项桶配置见 [README](../README.md#object-storage-bucket-configuration)。
 
 #### 响应 - DocumentIngestResponse（入库时返回）
 
