@@ -5,6 +5,7 @@ import os
 import time
 import uuid
 import logging
+from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, UploadFile, File, Query
 from sqlalchemy import select, func
 from sqlalchemy.orm import selectinload
@@ -13,6 +14,7 @@ from api.schemas import (
     DocumentResponse, DocumentIngestResponse, DocumentDetailResponse,
     DocumentURLRequest, DocumentTextRequest, DocumentSourceURLResponse,
     DocumentListResponse, OutlineItem,
+    CreateUploadRequest, CreateUploadResponse,
 )
 from api.errors import AppError, ErrorCode
 from api.rate_limit import RATE_LIMITED_RESPONSE, rate_limit
@@ -436,6 +438,67 @@ async def ingest_file(
         file_hash=None, file_hash_sha256=file_hash_sha256,
         doc_id=doc_id, wait=wait,
         page_count=page_count,
+    )
+
+
+@router.post(
+    "/{kb_id}/documents/uploads",
+    response_model=CreateUploadResponse,
+    status_code=201,
+    responses=RATE_LIMITED_RESPONSE,
+    dependencies=[_ingest_limiter],
+)
+async def create_upload(kb_id: str, body: CreateUploadRequest):
+    """Mint a presigned PUT URL for a direct client->storage upload.
+
+    POST (not GET): minting a short-lived write credential is neither safe
+    nor idempotent, carries a body, and must not be cached.
+    """
+    await _validate_kb(kb_id)
+    cfg = get_settings()
+    filename = body.filename
+
+    # Advisory early-reject: declared size over the cap. The binding size
+    # gate is HEAD at `complete` — a client can still lie here.
+    if body.size is not None and body.size > cfg.max_upload_bytes:
+        _record_upload_reject(
+            kb_id=kb_id, filename=filename, size=body.size,
+            reason="too_large", limit=cfg.max_upload_bytes,
+        )
+        raise AppError(
+            413, ErrorCode.UPLOAD_TOO_LARGE,
+            f"File exceeds {cfg.max_upload_bytes} bytes",
+        )
+
+    # Pre-upload dedup: client-supplied sha256 trusted only to skip an upload.
+    if body.sha256:
+        existing = await _find_existing_by_hash(kb_id, sha256=body.sha256)
+        if existing is not None:
+            return CreateUploadResponse(
+                dedup_hit=True, document=_dedup_response(existing),
+            )
+
+    doc_id = str(uuid.uuid4())
+    staging_key = f"upload_staging/{kb_id}/{doc_id}/{filename}"
+    obj_storage = await get_storage()
+    try:
+        upload_url = await obj_storage.presign_put_url(staging_key)
+    except NotImplementedError:
+        raise AppError(
+            501, ErrorCode.INTERNAL_ERROR,
+            "Direct upload is not supported by this storage backend; "
+            "use POST /documents/file",
+        )
+
+    expires_at = (
+        datetime.now(timezone.utc)
+        + timedelta(seconds=cfg.s3_presign_upload_expires)
+    ).isoformat()
+    return CreateUploadResponse(
+        upload_id=_encode_upload_id(staging_key),
+        upload_url=upload_url,
+        method="PUT",
+        expires_at=expires_at,
     )
 
 
