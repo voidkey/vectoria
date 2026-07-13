@@ -17,11 +17,13 @@ class S3ObjectStorage(ObjectStorage):
         bucket: str,
         addressing_style: str = "auto",
         presign_expires: int = 3600,
+        presign_upload_expires: int = 600,
     ):
         self._endpoint = endpoint
         self._region = region or None
         self._bucket = bucket
         self._presign_expires = presign_expires
+        self._presign_upload_expires = presign_upload_expires
 
         self._session = aioboto3.Session(
             aws_access_key_id=access_key,
@@ -82,3 +84,20 @@ class S3ObjectStorage(ObjectStorage):
                 return True
             except ClientError:
                 return False
+
+    async def presign_put_url(self, key: str, expires: int = 0) -> str:
+        ttl = expires if expires > 0 else self._presign_upload_expires
+        async with self._client() as client:
+            return await client.generate_presigned_url(
+                "put_object",
+                Params={"Bucket": self._bucket, "Key": key},
+                ExpiresIn=ttl,
+            )
+
+    async def head(self, key: str) -> tuple[int, str]:
+        async with self._client() as client:
+            try:
+                resp = await client.head_object(Bucket=self._bucket, Key=key)
+            except ClientError as e:
+                raise FileNotFoundError(key) from e
+            return int(resp.get("ContentLength", 0)), resp.get("ContentType", "") or ""

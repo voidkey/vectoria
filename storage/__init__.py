@@ -20,6 +20,7 @@ async def get_storage() -> ObjectStorage:
             bucket=cfg.s3_bucket,
             addressing_style=cfg.s3_addressing_style,
             presign_expires=cfg.s3_presign_expires,
+            presign_upload_expires=cfg.s3_presign_upload_expires,
         )
         return _instance
     raise ValueError(f"Unknown storage type: {cfg.storage_type}")

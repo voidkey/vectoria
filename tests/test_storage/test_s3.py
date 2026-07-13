@@ -112,3 +112,41 @@ async def test_exists_false(storage):
     with patch.object(storage, "_client", return_value=_async_ctx(mock_client)):
         result = await storage.exists("nonexistent/key.txt")
     assert result is False
+
+
+@pytest.mark.asyncio
+async def test_presign_put_url_default_expires(storage):
+    mock_client = AsyncMock()
+    mock_client.generate_presigned_url = AsyncMock(return_value="https://put-url")
+    with patch.object(storage, "_client", return_value=_async_ctx(mock_client)):
+        url = await storage.presign_put_url("upload_staging/kb/doc/f.pdf")
+    assert url == "https://put-url"
+    mock_client.generate_presigned_url.assert_called_once_with(
+        "put_object",
+        Params={"Bucket": "test-bucket", "Key": "upload_staging/kb/doc/f.pdf"},
+        ExpiresIn=600,
+    )
+
+
+@pytest.mark.asyncio
+async def test_head_returns_size_and_content_type(storage):
+    mock_client = AsyncMock()
+    mock_client.head_object = AsyncMock(
+        return_value={"ContentLength": 12345, "ContentType": "application/pdf"}
+    )
+    with patch.object(storage, "_client", return_value=_async_ctx(mock_client)):
+        size, ctype = await storage.head("upload_staging/kb/doc/f.pdf")
+    assert size == 12345
+    assert ctype == "application/pdf"
+
+
+@pytest.mark.asyncio
+async def test_head_missing_raises_filenotfound(storage):
+    from botocore.exceptions import ClientError
+    mock_client = AsyncMock()
+    mock_client.head_object = AsyncMock(
+        side_effect=ClientError({"Error": {"Code": "404"}}, "HeadObject")
+    )
+    with patch.object(storage, "_client", return_value=_async_ctx(mock_client)):
+        with pytest.raises(FileNotFoundError):
+            await storage.head("nope/key")

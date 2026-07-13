@@ -27,3 +27,16 @@ class ObjectStorage(ABC):
     @abstractmethod
     async def exists(self, key: str) -> bool:
         """Check whether an object exists."""
+
+    async def presign_put_url(self, key: str, expires: int = 0) -> str:
+        """Generate a presigned upload (PUT) URL. Backends that cannot
+        presign (e.g. a local-filesystem backend) leave this unimplemented;
+        callers translate NotImplementedError into HTTP 501.
+        """
+        raise NotImplementedError
+
+    async def head(self, key: str) -> tuple[int, str]:
+        """Return (size_bytes, content_type) without downloading the body.
+        Raise FileNotFoundError if the object is absent.
+        """
+        raise NotImplementedError
