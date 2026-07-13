@@ -233,6 +233,40 @@ async def test_http_exception_does_not_break_batch():
 
 
 @pytest.mark.asyncio
+async def test_unexpected_ssrf_error_skips_only_that_image():
+    """A non-AppError raised in the pre-fetch stage (SSRF re-check / rate
+    gate) must skip just that image, not abort the whole concurrent batch.
+
+    Regression for the best-effort guard: under gather(), an unguarded raise
+    here would propagate and sink sibling fetches.
+    """
+    async def _allow_all(*a, **kw):
+        return True
+
+    ok_resp = MagicMock(status_code=200, content=b"img")
+    client_ctx = _fake_client_ctx(ok_resp)
+
+    async def _ssrf_blows_up_on_broken(url, *a, **kw):
+        if "broken" in url:
+            raise RuntimeError("resolver exploded")  # NOT an AppError
+        return None
+
+    with (
+        patch("parsers.url._handlers.rl_acquire", new=_allow_all),
+        patch("parsers.url._http.make_async_client", return_value=client_ctx),
+        patch("parsers.url._http.fetch_capped", new=_make_fetch_capped_stub(ok_resp)),
+        patch("api.url_validation.reresolve_and_check_ssrf",
+              new=_ssrf_blows_up_on_broken),
+    ):
+        result = await download_images([
+            "https://broken.example.com/a.jpg",
+            "https://working.example.com/b.jpg",
+        ])
+
+    assert list(result.keys()) == ["https://working.example.com/b.jpg"]
+
+
+@pytest.mark.asyncio
 async def test_downloads_run_concurrently_and_bounded():
     """Regression for the perf fix: images fetch in parallel (bounded by the
     semaphore), not one at a time.

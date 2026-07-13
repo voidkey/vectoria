@@ -379,18 +379,18 @@ async def download_images(
     sem = asyncio.Semaphore(_IMAGE_DOWNLOAD_CONCURRENCY)
 
     async def _fetch_one(client, original: str) -> None:
+        # Best-effort per image: any single failure below skips just this
+        # image, never the whole document's batch. gather() runs these
+        # concurrently, so an unguarded raise here would abort sibling
+        # fetches too. ``except Exception`` intentionally excludes
+        # ``CancelledError`` (a BaseException), so shutdown/cancel still
+        # propagates.
         async with sem:
             fetch_url = canonicalize(original) if canonicalize else original
             try:
                 await reresolve_and_check_ssrf(fetch_url)
-            except AppError as exc:
-                logger.warning(
-                    "image SSRF check rejected %s: %s", fetch_url, exc.detail,
-                )
-                return
-            if not await _gate(fetch_url):
-                return
-            try:
+                if not await _gate(fetch_url):
+                    return
                 resp, body = await fetch_capped(client, fetch_url)
                 if resp.status_code == 200 and body:
                     # Key by the URL as it appeared in markdown so
@@ -398,6 +398,11 @@ async def download_images(
                     # dict writes are safe: single-threaded loop, no await
                     # between the status check and the assignment.
                     images[original] = body
+            except AppError as exc:
+                # SSRF re-check rejected the URL (private address, etc.).
+                logger.warning(
+                    "image SSRF check rejected %s: %s", fetch_url, exc.detail,
+                )
             except ResponseTooLargeError:
                 logger.warning("image too large, skipped: %s", fetch_url)
             except Exception:
