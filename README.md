@@ -92,13 +92,32 @@ DELETE /v1/knowledgebases/{kb_id}   # delete
 ### Documents
 
 ```
-POST   /v1/knowledgebases/{kb_id}/documents            # ingest file or URL
+POST   /v1/knowledgebases/{kb_id}/documents/file       # ingest an uploaded file (multipart)
+POST   /v1/knowledgebases/{kb_id}/documents/url        # ingest a web URL
+POST   /v1/knowledgebases/{kb_id}/documents/text       # ingest raw text
 GET    /v1/knowledgebases/{kb_id}/documents            # list
 GET    /v1/knowledgebases/{kb_id}/documents/{doc_id}   # get status
 DELETE /v1/knowledgebases/{kb_id}/documents/{doc_id}   # delete
 ```
 
-Document ingestion is asynchronous — the API returns immediately with `status: "processing"`. Poll the single-document endpoint to check progress (`completed` or `failed`).
+Document ingestion is asynchronous — the API returns immediately with `status: "queued"`. Poll the single-document endpoint to check progress (`completed` or `failed`).
+
+#### Direct upload (presigned)
+
+For large files, upload straight to object storage instead of streaming the bytes through the API. Two steps:
+
+```
+POST /v1/knowledgebases/{kb_id}/documents/uploads                      # mint a presigned PUT URL
+POST /v1/knowledgebases/{kb_id}/documents/uploads/{upload_id}/complete  # validate the staged file and ingest it
+```
+
+1. `POST .../uploads` with `{"filename": "...", "sha256": "...", "size": ...}` (`sha256`/`size` optional). Returns `{ upload_id, upload_url, method: "PUT", expires_at }`. If `sha256` matches an existing document, it returns `{ dedup_hit: true, document }` and mints no URL.
+2. `PUT` the file bytes directly to `upload_url`.
+3. `POST .../uploads/{upload_id}/complete` (optionally `?wait=true`). The server HEAD-checks the size, runs the same validation gates as `/file`, promotes the object, and enqueues ingestion — returning the same response shape as `/file`.
+
+`upload_id` is the returned opaque handle; pass it back verbatim. The multipart `/documents/file` endpoint remains the universal fallback and is what you get a `501` pointer to on storage backends that can't presign.
+
+> **Operator setup (required).** The bucket needs two one-time configurations or the flow silently fails — see [Object storage bucket configuration](#object-storage-bucket-configuration).
 
 ### Images
 
@@ -143,7 +162,8 @@ All settings are configured via environment variables (see [`.env.example`](.env
 | `S3_SECRET_KEY` | `minioadmin` | Secret key |
 | `S3_BUCKET` | `vectoria` | Bucket name |
 | `S3_ADDRESSING_STYLE` | `auto` | `auto`, `virtual`, or `path` |
-| `S3_PRESIGN_EXPIRES` | `3600` | Presigned URL expiry (seconds) |
+| `S3_PRESIGN_EXPIRES` | `3600` | Presigned download URL expiry (seconds) |
+| `S3_PRESIGN_UPLOAD_EXPIRES` | `600` | Presigned **upload** (PUT) URL expiry (seconds) — direct-upload path |
 | `DEFAULT_PARSE_ENGINE` | `auto` | Parser engine (`auto`, `docx-native`, `pptx-native`, `xlsx-native`, `pdfium`, `ocr-native`, `paddle`, `mineru`, `markitdown`, `url`) |
 | `ENABLE_QUERY_REWRITE` | `true` | Rewrite queries with LLM before retrieval |
 | `ENABLE_RERANKER` | `false` | Enable cross-encoder reranking |
@@ -158,6 +178,33 @@ All settings are configured via environment variables (see [`.env.example`](.env
 | `MINERU_LANGUAGE` | `ch` | MinerU OCR language |
 | `API_KEY` | *(blank = public)* | API key for client authentication (`X-API-Key` header) |
 | `CORS_ORIGINS` | `["*"]` | Allowed CORS origins |
+
+### Object storage bucket configuration
+
+The [presigned direct-upload](#direct-upload-presigned) path needs two one-time bucket configurations. Without them the feature fails in ways that are hard to diagnose (a browser `PUT` dies on CORS; abandoned uploads accumulate forever), so set both up front. Both are object-storage configuration, not application settings — apply them with your provider's console or CLI (AWS S3, Volcengine TOS, MinIO `mc`, etc. all accept these shapes).
+
+**1. CORS** — required only when a **browser** uploads directly to the bucket (server-to-server clients can skip it). Set `AllowedOrigins` to your real client origins:
+
+```json
+[{
+  "AllowedOrigins": ["https://app.example.com"],
+  "AllowedMethods": ["PUT"],
+  "AllowedHeaders": ["*"],
+  "ExposeHeaders": ["ETag"],
+  "MaxAgeSeconds": 3600
+}]
+```
+
+**2. Lifecycle expiry on the staging prefix** — reclaims uploads that were minted but never completed. Scope it to `upload_staging/` **only** — the final `upload_files/` prefix holds live documents and must not be covered:
+
+```json
+{ "Rules": [{
+  "ID": "expire-upload-staging",
+  "Filter": { "Prefix": "upload_staging/" },
+  "Status": "Enabled",
+  "Expiration": { "Days": 1 }
+}] }
+```
 
 ## A note on "PaddleOCR"
 
