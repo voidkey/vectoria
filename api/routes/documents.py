@@ -246,6 +246,16 @@ def _run_upload_gates(kb_id: str, filename: str, raw: bytes) -> int | None:
     cfg = get_settings()
 
     # Size gate #0: a 0-byte body means the file never reached us intact.
+    # Diagnosed in prod (2026-07): the vast majority of ``empty_content``
+    # failures were files whose stored sha256 == sha256(b"") — i.e. the
+    # body was already empty at this ``read()``, before any storage write
+    # or parse. So the content isn't lost in our pipeline; it arrives
+    # empty (user picked an empty file, or — more often — the body was
+    # truncated upstream, e.g. reverse-proxy body buffering onto a full
+    # disk). Reject here with a distinct code + reason so these stop
+    # flowing into storage → parse → the bad-case digest, and so the
+    # reject counter gives ops a clean signal to correlate against the
+    # ingress/proxy logs instead of drowning in empty_content noise.
     if len(raw) == 0:
         _record_upload_reject(
             kb_id=kb_id, filename=filename, size=0, reason="empty_upload",
@@ -256,8 +266,8 @@ def _run_upload_gates(kb_id: str, filename: str, raw: bytes) -> int | None:
             "truncated in transit; please re-upload the file",
         )
 
-    # Size gate #2: re-check after read in case the transport didn't set
-    # Content-Length reliably.
+    # Size gate #2: some clients / transports don't set Content-Length reliably,
+    # so re-check after the read in case file.size was None.
     if len(raw) > cfg.max_upload_bytes:
         _record_upload_reject(
             kb_id=kb_id, filename=filename, size=len(raw),
@@ -268,7 +278,9 @@ def _run_upload_gates(kb_id: str, filename: str, raw: bytes) -> int | None:
             f"File exceeds {cfg.max_upload_bytes} bytes",
         )
 
-    # MIME sniff gate.
+    # MIME sniff gate: reject cross-family magic/extension mismatch when
+    # STRICT_MIME_CHECK=True. In non-strict mode we still bump the counter
+    # so operators can observe mismatches before flipping the flag on.
     from api.mime_sniff import check_mime
     from infra.metrics import UPLOAD_MIME_MISMATCH_TOTAL
     ok, detected = check_mime(filename, raw[:2048])
@@ -293,7 +305,16 @@ def _run_upload_gates(kb_id: str, filename: str, raw: bytes) -> int | None:
             filename, detected,
         )
 
-    # Page-count gate.
+    # Page-count gate. The byte cap above does not catch the
+    # "small file, many pages" shape — a 19 MB scanned PDF can hide
+    # 1000+ pages mineru cannot OCR within its 120 s timeout, and a
+    # text-only PPTX with 1000 slides multiplies parse + vision cost
+    # across each slide while staying tiny on disk. Counting is cheap
+    # for both formats (xref-table read for PDF, zip dir listing for
+    # PPTX) so we pay ~ms to save the S3 write, worker slot, and
+    # downstream parser call we'd otherwise burn.
+    # ``page_count`` falls out of the gate for free — persist it so the
+    # detail API can surface it without re-inspecting the bytes.
     page_count: int | None = None
     _, ext = os.path.splitext(filename.lower())
     if ext == ".pdf":
