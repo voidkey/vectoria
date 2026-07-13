@@ -64,6 +64,11 @@ _DOMAIN_RATES: tuple[tuple[str, int, int], ...] = (
 # that a buggy batch of 1000 URLs can't fire 1000 requests in a burst.
 _DEFAULT_IMAGE_RATE = (10, 1)
 
+# Max images fetched concurrently within a single document's download task.
+# Caps in-flight sockets; per-domain burst rate is still bounded separately by
+# the distributed rate gate (`_gate`), so raising this won't hammer one CDN.
+_IMAGE_DOWNLOAD_CONCURRENCY = 5
+
 
 def _rate_for_host(host: str) -> tuple[int, int]:
     """Return (rate, per_seconds) for an image CDN host."""
@@ -365,8 +370,16 @@ async def download_images(
 
     images: dict[str, bytes] = {}
     cap = get_settings().url_image_cap
-    async with make_async_client(timeout=10, headers=headers or {}) as client:
-        for original in urls[:cap]:
+    # Bounded-concurrency fetch. This was serial, which meant a 20+ image doc
+    # against a slow CDN (seconds per image) ran for minutes as a single task
+    # — long enough to starve the worker heartbeat and get the pod killed.
+    # The per-domain rate gate (`_gate`) still throttles same-CDN bursts; the
+    # semaphore just caps total in-flight sockets. Mirrors the Semaphore+gather
+    # pattern in the analyze_images handler.
+    sem = asyncio.Semaphore(_IMAGE_DOWNLOAD_CONCURRENCY)
+
+    async def _fetch_one(client, original: str) -> None:
+        async with sem:
             fetch_url = canonicalize(original) if canonicalize else original
             try:
                 await reresolve_and_check_ssrf(fetch_url)
@@ -374,19 +387,22 @@ async def download_images(
                 logger.warning(
                     "image SSRF check rejected %s: %s", fetch_url, exc.detail,
                 )
-                continue
+                return
             if not await _gate(fetch_url):
-                continue
+                return
             try:
                 resp, body = await fetch_capped(client, fetch_url)
                 if resp.status_code == 200 and body:
                     # Key by the URL as it appeared in markdown so
-                    # ``extract_metadata_into_refs`` can still match.
+                    # ``extract_metadata_into_refs`` can still match. Concurrent
+                    # dict writes are safe: single-threaded loop, no await
+                    # between the status check and the assignment.
                     images[original] = body
             except ResponseTooLargeError:
                 logger.warning("image too large, skipped: %s", fetch_url)
-                continue
             except Exception:
                 logger.debug("image fetch failed for %s", fetch_url, exc_info=True)
-                continue
+
+    async with make_async_client(timeout=10, headers=headers or {}) as client:
+        await asyncio.gather(*(_fetch_one(client, u) for u in urls[:cap]))
     return images

@@ -9,6 +9,8 @@ Guards the contract that W3 platform extractors will rely on:
 
 All tests use ``limits`` MemoryStorage so they run without Redis.
 """
+import asyncio
+from collections import Counter
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -131,7 +133,11 @@ async def test_skips_image_when_rate_bucket_exhausted():
 
 @pytest.mark.asyncio
 async def test_limiter_called_per_image_with_host_key():
-    """Verify the limiter sees one key per unique hostname."""
+    """Verify the limiter sees one key per unique hostname.
+
+    Fetches run concurrently, so assert the *multiset* of keys, not their
+    order — call order is no longer part of the contract.
+    """
     recorded: list[str] = []
 
     async def _record(key, **kw):
@@ -152,7 +158,9 @@ async def test_limiter_called_per_image_with_host_key():
             "https://mmbiz.qpic.cn/c.jpg",   # same host as #1
         ])
 
-    assert recorded == ["mmbiz.qpic.cn", "xhscdn.com", "mmbiz.qpic.cn"]
+    assert Counter(recorded) == Counter(
+        ["mmbiz.qpic.cn", "xhscdn.com", "mmbiz.qpic.cn"]
+    )
 
 
 @pytest.mark.asyncio
@@ -180,7 +188,8 @@ async def test_rate_table_used_when_gating():
             "https://pbs.twimg.com/c.jpg",   # twitter → (2, 1)
         ])
 
-    assert recorded == [(10, 1), (3, 1), (2, 1)]
+    # Concurrent fetch ⇒ order-independent; assert the multiset of rate pairs.
+    assert Counter(recorded) == Counter([(10, 1), (3, 1), (2, 1)])
 
 
 @pytest.mark.asyncio
@@ -202,18 +211,17 @@ async def test_http_exception_does_not_break_batch():
     client.__aenter__ = AsyncMock(return_value=client)
     client.__aexit__ = AsyncMock(return_value=False)
 
-    call_count = {"n": 0}
-
-    async def _fetch_first_fails(c, url, **kw):
-        call_count["n"] += 1
-        if call_count["n"] == 1:
+    # Key the failure to the URL, not call order: fetches run concurrently so
+    # "which call is first" is nondeterministic.
+    async def _fetch_broken_fails(c, url, **kw):
+        if "broken" in url:
             raise ConnectionError("dns dead")
         return ok_resp, ok_resp.content
 
     with (
         patch("parsers.url._handlers.rl_acquire", new=_allow_all),
         patch("parsers.url._http.make_async_client", return_value=client),
-        patch("parsers.url._http.fetch_capped", side_effect=_fetch_first_fails),
+        patch("parsers.url._http.fetch_capped", side_effect=_fetch_broken_fails),
         patch("api.url_validation.reresolve_and_check_ssrf", new=_noop_ssrf),
     ):
         result = await download_images([
@@ -222,6 +230,54 @@ async def test_http_exception_does_not_break_batch():
         ])
 
     assert list(result.keys()) == ["https://working.example.com/b.jpg"]
+
+
+@pytest.mark.asyncio
+async def test_downloads_run_concurrently_and_bounded():
+    """Regression for the perf fix: images fetch in parallel (bounded by the
+    semaphore), not one at a time.
+
+    Serial download of many slow-CDN images ran a single task for minutes,
+    starving the worker heartbeat. Track peak simultaneous in-flight fetches:
+    serial peaks at 1; concurrent must overlap yet stay within the cap.
+    """
+    from parsers.url._handlers import _IMAGE_DOWNLOAD_CONCURRENCY
+
+    async def _allow_all(*a, **kw):
+        return True
+
+    async def _noop_ssrf(*a, **kw):
+        return None
+
+    ok_resp = MagicMock(status_code=200, content=b"img")
+    client = MagicMock()
+    client.__aenter__ = AsyncMock(return_value=client)
+    client.__aexit__ = AsyncMock(return_value=False)
+
+    inflight = 0
+    peak = 0
+
+    async def _slow_fetch(c, url, **kw):
+        nonlocal inflight, peak
+        inflight += 1
+        peak = max(peak, inflight)
+        await asyncio.sleep(0.02)
+        inflight -= 1
+        return ok_resp, ok_resp.content
+
+    with (
+        patch("parsers.url._handlers.rl_acquire", new=_allow_all),
+        patch("parsers.url._http.make_async_client", return_value=client),
+        patch("parsers.url._http.fetch_capped", side_effect=_slow_fetch),
+        patch("api.url_validation.reresolve_and_check_ssrf", new=_noop_ssrf),
+    ):
+        result = await download_images(
+            [f"https://example.com/{i}.jpg" for i in range(10)]
+        )
+
+    assert len(result) == 10
+    assert peak > 1, "fetches must overlap — serial execution regressed"
+    assert peak <= _IMAGE_DOWNLOAD_CONCURRENCY, "semaphore bound exceeded"
 
 
 @pytest.mark.asyncio
