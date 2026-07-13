@@ -25,6 +25,7 @@ class ErrorCode:
     PPTX_TOO_MANY_SLIDES = 1209
     EMPTY_UPLOAD = 1210
     UPLOAD_NOT_FOUND = 1211
+    UPLOAD_NOT_SUPPORTED = 1212
 
     # Resource not found (1301-1399)
     NOT_FOUND = 1301

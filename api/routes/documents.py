@@ -474,6 +474,10 @@ async def create_upload(kb_id: str, body: CreateUploadRequest):
     if body.sha256:
         existing = await _find_existing_by_hash(kb_id, sha256=body.sha256)
         if existing is not None:
+            logger.info(
+                "Dedup hit (pre-upload): kb=%s sha256=%s existing_doc=%s status=%s",
+                kb_id, body.sha256, existing.id, existing.status,
+            )
             return CreateUploadResponse(
                 dedup_hit=True, document=_dedup_response(existing),
             )
@@ -485,7 +489,7 @@ async def create_upload(kb_id: str, body: CreateUploadRequest):
         upload_url = await obj_storage.presign_put_url(staging_key)
     except NotImplementedError:
         raise AppError(
-            501, ErrorCode.INTERNAL_ERROR,
+            501, ErrorCode.UPLOAD_NOT_SUPPORTED,
             "Direct upload is not supported by this storage backend; "
             "use POST /documents/file",
         )

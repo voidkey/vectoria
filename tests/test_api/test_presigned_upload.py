@@ -113,3 +113,4 @@ async def test_uploads_501_when_backend_cannot_presign(client):
             json={"filename": "report.pdf"},
         )
     assert resp.status_code == 501, resp.text
+    assert resp.json()["code"] == 1212  # UPLOAD_NOT_SUPPORTED
