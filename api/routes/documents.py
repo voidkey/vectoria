@@ -525,7 +525,15 @@ async def create_upload(kb_id: str, body: CreateUploadRequest):
     dependencies=[_ingest_limiter],
 )
 async def complete_upload(
-    kb_id: str, upload_id: str, wait: bool = Query(False),
+    kb_id: str, upload_id: str,
+    wait: bool = Query(
+        False,
+        description=(
+            "When true, block until the parse stage is done (or timeout) "
+            "and return the content in the response. Default false → "
+            "immediate queued response; poll GET /documents/{id} for progress."
+        ),
+    ),
 ):
     """Finalize a presigned upload: validate the staged object and ingest it.
 
