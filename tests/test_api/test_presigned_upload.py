@@ -243,3 +243,54 @@ async def test_complete_idempotent_on_pk_conflict(client):
 
     assert resp.status_code == 201, resp.text
     assert resp.json()["id"] == "doc-1"
+
+
+@pytest.mark.asyncio
+async def test_complete_dedup_hit_deletes_staging(client):
+    from api.schemas import DocumentIngestResponse
+    staging = "upload_staging/kb-x/doc-1/note.txt"
+    storage = AsyncMock()
+    storage.head = AsyncMock(return_value=(11, "text/plain"))
+    storage.get = AsyncMock(return_value=b"hello world")
+    dedup_resp = DocumentIngestResponse(
+        id="existing", kb_id="kb-x", title="note.txt", source="note.txt",
+        chunk_count=0, status="completed", index_status="completed", error_msg="",
+        created_at="2026-07-13T00:00:00",
+    )
+    with (
+        patch("api.routes.documents._validate_kb", new=AsyncMock()),
+        patch("api.routes.documents.get_storage", return_value=storage),
+        patch("api.routes.documents._find_existing_by_hash", new=AsyncMock(return_value=AsyncMock())),
+        patch("api.routes.documents._dedup_response", return_value=dedup_resp),
+    ):
+        resp = await client.post(
+            f"/v1/knowledgebases/kb-x/documents/uploads/{_uid(staging)}/complete",
+        )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["id"] == "existing"
+    storage.delete.assert_awaited_once_with(staging)
+    storage.put.assert_not_called()  # dedup: content never promoted
+
+
+@pytest.mark.asyncio
+async def test_complete_gate_rejection_propagates(client):
+    from api.errors import AppError, ErrorCode
+    staging = "upload_staging/kb-x/doc-1/note.txt"
+    storage = AsyncMock()
+    storage.head = AsyncMock(return_value=(11, "text/plain"))
+    storage.get = AsyncMock(return_value=b"hello world")
+
+    def _raise(*a, **k):
+        raise AppError(400, ErrorCode.MIME_MISMATCH, "bad")
+
+    with (
+        patch("api.routes.documents._validate_kb", new=AsyncMock()),
+        patch("api.routes.documents.get_storage", return_value=storage),
+        patch("api.routes.documents._run_upload_gates", side_effect=_raise),
+    ):
+        resp = await client.post(
+            f"/v1/knowledgebases/kb-x/documents/uploads/{_uid(staging)}/complete",
+        )
+    assert resp.status_code == 400, resp.text
+    assert resp.json()["code"] == 1207  # MIME_MISMATCH
+    storage.put.assert_not_called()  # rejected before promotion

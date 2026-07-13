@@ -215,6 +215,16 @@ def _claimed_ext_label(filename: str) -> str:
     return ext if ext in EXT_FAMILIES else "other"
 
 
+def _upload_not_found() -> AppError:
+    """Fresh 404 per raise-site: re-raising one shared AppError instance
+    would accumulate stale traceback frames across the different reject
+    paths and mislead error aggregation."""
+    return AppError(
+        404, ErrorCode.UPLOAD_NOT_FOUND,
+        "Upload not found — never uploaded, failed, or expired",
+    )
+
+
 def _encode_upload_id(storage_key: str) -> str:
     """base64url the staging key so it survives as one URL path segment
     in /uploads/{upload_id}/complete. Not a seal or secret — see spec."""
@@ -528,21 +538,17 @@ async def complete_upload(
 
     # 1. Decode + tenant isolation. Any malformed / foreign key is
     # indistinguishable from "no such upload".
-    not_found = AppError(
-        404, ErrorCode.UPLOAD_NOT_FOUND,
-        "Upload not found — never uploaded, failed, or expired",
-    )
     try:
         staging_key = _decode_upload_id(upload_id)
     except Exception:
-        raise not_found
+        raise _upload_not_found()
     expected_prefix = f"upload_staging/{kb_id}/"
     if not staging_key.startswith(expected_prefix):
-        raise not_found
+        raise _upload_not_found()
     rest = staging_key[len(expected_prefix):]
     doc_id, _, filename = rest.partition("/")
     if not doc_id or not filename:
-        raise not_found
+        raise _upload_not_found()
 
     obj_storage = await get_storage()
 
@@ -555,7 +561,7 @@ async def complete_upload(
             "Direct upload is not supported by this storage backend",
         )
     except FileNotFoundError:
-        raise not_found
+        raise _upload_not_found()
     if size > cfg.max_upload_bytes:
         _record_upload_reject(
             kb_id=kb_id, filename=filename, size=size,
@@ -577,6 +583,10 @@ async def complete_upload(
         kb_id, sha256=file_hash_sha256, md5=legacy_md5,
     )
     if existing is not None:
+        logger.info(
+            "Dedup hit (complete): kb=%s sha256=%s existing_doc=%s status=%s",
+            kb_id, file_hash_sha256, existing.id, existing.status,
+        )
         await obj_storage.delete(staging_key)
         return _dedup_response(existing)
 
@@ -584,8 +594,20 @@ async def complete_upload(
     final_key = f"upload_files/{kb_id}/{doc_id}/{filename}"
     await obj_storage.put(final_key, raw, content_type=content_type)
     await obj_storage.delete(staging_key)
+
+    # Drop the upload buffer before enqueue so concurrent requests don't
+    # stack large bodies each while waiting on the DB round-trip.
     raw = None  # noqa: F841
 
+    # If _enqueue_ingest raises a non-IntegrityError here (e.g. DB/queue
+    # outage) after the object was promoted to final_key and staging was
+    # deleted, final_key is orphaned: no doc row, and staging is gone so a
+    # same-upload_id retry gets 404. This window also exists in ingest_file
+    # and is accepted; recovery is a fresh create_upload. A lifecycle rule on
+    # upload_files/ would reclaim such orphans but is not currently configured.
+
+    # Engine selection deferred until after the gates — no wasted call on
+    # files that get rejected above (differs intentionally from ingest_file).
     selected_engine = registry.auto_select(filename=filename)
     try:
         return await _enqueue_ingest(
