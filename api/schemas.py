@@ -23,6 +23,21 @@ class CreateUploadRequest(BaseModel):
     size: int | None = None
 
 
+class CreateCaptureRequest(BaseModel):
+    url: str
+    max_screenshots: int | None = None
+
+
+class CaptureResponse(BaseModel):
+    id: str
+    kb_id: str
+    status: str
+    image_status: str = "none"
+    error_msg: str = ""
+    profile: dict | None = None
+    created_at: str
+
+
 class OutlineItem(BaseModel):
     level: int
     title: str
