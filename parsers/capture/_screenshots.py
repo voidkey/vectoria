@@ -14,8 +14,17 @@ async def capture_screenshots(page, sections: list[dict], *, max_screenshots: in
         full = await page.screenshot(full_page=True)
     except Exception:
         full = await page.screenshot()
-    shots.append({"kind": "full_page", "bytes": full,
-                  "width": vp["width"], "height": min(max_height, vp["height"]),
+        full_h = vp["height"]
+    else:
+        # Record the *real* rendered height so the stored dimension isn't
+        # misleadingly clamped to the viewport. Best-effort — fall back to
+        # the viewport height if the measure fails.
+        try:
+            full_h = int(await page.evaluate("document.documentElement.scrollHeight"))
+        except Exception:
+            full_h = vp["height"]
+    shots.append({"kind": "full_page", "bytes": full, "width": vp["width"],
+                  "height": min(max_height, full_h) if full_h > 0 else vp["height"],
                   "section_index": None})
     # per-section, until the cap
     for sec in sections:

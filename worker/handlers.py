@@ -634,6 +634,31 @@ _BIN_EXT = {"video/mp4": ".mp4", "video/webm": ".webm", "application/json": ".js
 
 @_register("capture_site")
 async def handle_capture(payload: dict) -> None:
+    """Guard wrapper: the capture Document must never stay stuck in
+    ``capturing``. Any failure marks it ``failed`` — permanent errors
+    (blacklist/404/anti-bot) and SSRF/URL rejections are terminal (no retry,
+    no dead-task alert); anything else is re-raised so the queue retries."""
+    from api.errors import AppError
+
+    doc_id = payload["doc_id"]
+    await update_doc(doc_id, status="capturing")
+    try:
+        await _capture_core(payload)
+    except PermanentParseError as e:
+        await update_doc(doc_id, status="failed", error_type="permanent",
+                         error_msg=str(e)[:500])
+    except AppError as e:
+        # SSRF / malformed URL — the submitter's problem, not infra. Terminal
+        # so we don't burn 3 retries + a dead-task alert on a private-IP URL.
+        await update_doc(doc_id, status="failed", error_type="url_fetch_error",
+                         error_msg=str(e)[:500])
+    except Exception as e:
+        await update_doc(doc_id, status="failed", error_type="parse_error",
+                         error_msg=str(e)[:500], error_trace=traceback.format_exc())
+        raise
+
+
+async def _capture_core(payload: dict) -> None:
     """Render a URL, extract a SiteProfile, store assets + screenshots, and
     persist the profile on the site_capture Document. Vision descriptions for
     image assets backfill via the existing analyze_images task."""
@@ -651,7 +676,6 @@ async def handle_capture(payload: dict) -> None:
 
     doc_id, kb_id, url = payload["doc_id"], payload["kb_id"], payload["url"]
     cfg = get_settings()
-    await update_doc(doc_id, status="capturing")
     await reresolve_and_check_ssrf(url)
 
     async with parse_session(
@@ -706,6 +730,12 @@ async def handle_capture(payload: dict) -> None:
         shot_refs.append(image_ref_from_bytes(s["bytes"], filename=fname, mime="image/png",
                                               width=s["width"], height=s["height"]))
 
+    # Two upload calls (assets get vision, screenshots don't). The post-upload
+    # re-query joins on filename, which is safe because filenames are unique by
+    # construction: asset names are ``{kind}.{ext}`` for distinct kinds (and
+    # duplicate URLs are dropped above), screenshot names are ``screenshot-
+    # {label}.png`` for distinct labels — so name_picker never renames on
+    # collision and the pre-upload keys still match the stored rows.
     if image_refs:
         await stream_upload_and_store_refs(image_refs, kb_id=kb_id, doc_id=doc_id,
                                            vision_configured=vision_configured)

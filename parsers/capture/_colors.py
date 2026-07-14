@@ -170,7 +170,9 @@ def process_colors(raw: dict, *, delta_e_threshold: float = 10.0,
     background = max(clusters, key=lambda c: c.area)
     text_c = max(clusters, key=lambda c: c.text_area)
     assigned: dict[int, str] = {id(background): "background"}
-    if id(text_c) not in assigned:
+    # Only assign a "text" role when text was actually observed — otherwise
+    # max() picks an arbitrary cluster and mislabels it (image-only pages).
+    if text_c.text_area > 0 and id(text_c) not in assigned:
         assigned[id(text_c)] = "text"
 
     remaining = [c for c in clusters if id(c) not in assigned]

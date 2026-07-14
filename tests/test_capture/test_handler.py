@@ -115,3 +115,48 @@ async def test_handle_capture_no_screenshots_no_assets_image_status_none():
         from worker.handlers import handle_capture
         await handle_capture({"doc_id": "d1", "kb_id": "kb", "url": "https://x"})
     assert updates["image_status"] == "none"
+
+
+@pytest.mark.asyncio
+async def test_handle_capture_ssrf_reject_marks_failed_no_retry():
+    """SSRF/URL rejection is terminal: doc marked failed, exception swallowed
+    (no queue-retry storm on a private-IP URL)."""
+    from api.errors import AppError, ErrorCode
+    updates = {}
+
+    async def fake_update(doc_id, **kw):
+        updates.update(kw)
+
+    with (
+        patch("worker.handlers.update_doc", new=fake_update),
+        patch("worker.handlers.reresolve_and_check_ssrf",
+              new=AsyncMock(side_effect=AppError(400, ErrorCode.INVALID_URL, "private"))),
+        patch("worker.handlers.get_settings", return_value=MagicMock(vision_base_url="")),
+    ):
+        from worker.handlers import handle_capture
+        await handle_capture({"doc_id": "d1", "kb_id": "kb", "url": "http://127.0.0.1"})
+
+    assert updates["status"] == "failed"
+    assert updates["error_type"] == "url_fetch_error"
+
+
+@pytest.mark.asyncio
+async def test_handle_capture_unexpected_error_marks_failed_and_reraises():
+    """Unexpected errors mark failed AND re-raise so the queue retries."""
+    updates = {}
+
+    async def fake_update(doc_id, **kw):
+        updates.update(kw)
+
+    with (
+        patch("worker.handlers.update_doc", new=fake_update),
+        patch("worker.handlers.reresolve_and_check_ssrf",
+              new=AsyncMock(side_effect=RuntimeError("boom"))),
+        patch("worker.handlers.get_settings", return_value=MagicMock(vision_base_url="")),
+    ):
+        from worker.handlers import handle_capture
+        with pytest.raises(RuntimeError):
+            await handle_capture({"doc_id": "d1", "kb_id": "kb", "url": "https://x"})
+
+    assert updates["status"] == "failed"
+    assert updates["error_type"] == "parse_error"
