@@ -27,6 +27,12 @@ from infra.metrics import (
 from parsers.base import PermanentParseError
 from parsers.image_metadata import extract_metadata_into_refs
 from parsers.registry import registry
+# Imported at module scope (not lazily) so the capture handler's collaborators
+# are patchable at ``worker.handlers.<name>`` in tests.
+from api.image_stream import stream_upload_and_store_refs
+from api.url_validation import reresolve_and_check_ssrf
+from parsers.url._browser import parse_session
+from worker.queue import enqueue
 from rag.embedder import get_embedder
 from splitter.splitter import Splitter
 from storage import get_storage
@@ -599,4 +605,211 @@ async def handle_download_and_store_images(payload: dict) -> None:
 
     if vision_configured:
         from worker.queue import enqueue
+        await enqueue("analyze_images", {"kb_id": kb_id, "doc_id": doc_id})
+
+
+# ---------------------------------------------------------------------------
+# capture_site (website capture -> SiteProfile)
+# ---------------------------------------------------------------------------
+
+def _safe_hex(css: str) -> str:
+    from parsers.capture._colors import parse_css_color
+    rgb = parse_css_color(css or "")
+    return "#{:02x}{:02x}{:02x}".format(*rgb) if rgb else ""
+
+
+async def _capture_hydrate_image_ids(doc_id: str) -> dict[str, tuple[str, str]]:
+    """filename -> (image_id, storage_key) for a doc's DocumentImage rows."""
+    async with get_session() as session:
+        rows = (await session.execute(
+            select(DocumentImage.filename, DocumentImage.id, DocumentImage.storage_key)
+            .where(DocumentImage.doc_id == doc_id))).all()
+    return {fn: (iid, skey) for fn, iid, skey in rows}
+
+
+_IMG_EXT = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp",
+            "image/svg+xml": ".svg", "image/gif": ".gif"}
+_BIN_EXT = {"video/mp4": ".mp4", "video/webm": ".webm", "application/json": ".json"}
+
+
+@_register("capture_site")
+async def handle_capture(payload: dict) -> None:
+    """Render a URL, extract a SiteProfile, store assets + screenshots, and
+    persist the profile on the site_capture Document. Vision descriptions for
+    image assets backfill via the existing analyze_images task."""
+    from datetime import datetime, timezone
+
+    from parsers.capture._assets import fetch_asset_bytes, image_ref_from_bytes
+    from parsers.capture._colors import process_colors
+    from parsers.capture._extract import run_extract
+    from parsers.capture._fonts import build_font_role, cluster_spacing, section_type
+    from parsers.capture._screenshots import capture_screenshots
+    from parsers.capture.profile import (
+        AssetRef, FontFile, Fonts, MotionHints, ScreenshotRef, SectionInfo,
+        SiteProfile, Spacing, TextInfo,
+    )
+
+    doc_id, kb_id, url = payload["doc_id"], payload["kb_id"], payload["url"]
+    cfg = get_settings()
+    await update_doc(doc_id, status="capturing")
+    await reresolve_and_check_ssrf(url)
+
+    async with parse_session(
+        block_heavy=False,
+        viewport={"width": cfg.capture_viewport_width, "height": cfg.capture_viewport_height},
+    ) as ctx:
+        page = await ctx.new_page()
+        try:
+            await page.goto(url, wait_until="load",
+                            timeout=int(cfg.capture_render_timeout * 1000))
+        except Exception:
+            logger.info("capture goto timed out/failed, using rendered DOM: %s", url)
+        await page.wait_for_timeout(cfg.capture_settle_ms)
+        raw = await run_extract(page)
+        shots = await capture_screenshots(
+            page, raw.get("sections", []),
+            max_screenshots=cfg.capture_max_screenshots,
+            max_height=cfg.capture_max_screenshot_height,
+        )
+
+    final_url = raw.get("final_url", url)
+    vision_configured = bool(cfg.vision_base_url)
+    obj_storage = await get_storage()
+    raw_assets = raw.get("assets", {})
+
+    # ---- image assets (logo/hero/og/favicon) -> fetch -> ImageRef ----
+    image_refs: list = []
+    filename_kind: dict[str, str] = {}
+    seen_urls: set[str] = set()
+    for kind in ("logo", "hero", "og_image", "favicon"):
+        a_url = raw_assets.get(kind)
+        if not a_url or a_url in seen_urls:
+            continue
+        seen_urls.add(a_url)
+        got = await fetch_asset_bytes(a_url, max_bytes=cfg.capture_max_asset_bytes)
+        if got is None:
+            continue
+        data, ctype = got
+        ext = _IMG_EXT.get(ctype, ".png")
+        fname = f"{kind}{ext}"
+        filename_kind[fname] = kind
+        image_refs.append(image_ref_from_bytes(data, filename=fname, mime=ctype or "image/png",
+                                               alt=kind))
+
+    # ---- screenshots -> ImageRef ----
+    shot_refs: list = []
+    shot_meta: list[tuple[str, dict]] = []
+    for s in shots:
+        label = s["kind"] if s["section_index"] is None else f"section-{s['section_index']:02d}"
+        fname = f"screenshot-{label}.png"
+        shot_meta.append((fname, s))
+        shot_refs.append(image_ref_from_bytes(s["bytes"], filename=fname, mime="image/png",
+                                              width=s["width"], height=s["height"]))
+
+    if image_refs:
+        await stream_upload_and_store_refs(image_refs, kb_id=kb_id, doc_id=doc_id,
+                                           vision_configured=vision_configured)
+    if shot_refs:
+        await stream_upload_and_store_refs(shot_refs, kb_id=kb_id, doc_id=doc_id,
+                                           vision_configured=False)
+
+    fn_to_row = await _capture_hydrate_image_ids(doc_id)
+
+    # ---- image assets -> profile ----
+    profile_assets: list = []
+    for fname, kind in filename_kind.items():
+        row = fn_to_row.get(fname)
+        if not row:
+            continue
+        img_id, skey = row
+        profile_assets.append(AssetRef(
+            kind=kind, image_id=img_id, storage_key=skey, format=fname.rsplit(".", 1)[-1],
+            vision_status=("pending" if vision_configured and kind in ("logo", "hero") else "skipped"),
+        ))
+
+    # ---- non-image binaries: background video / lottie ----
+    for kind, a_url in (("background_video", raw_assets.get("video")),
+                        ("lottie", raw_assets.get("lottie"))):
+        if not a_url:
+            continue
+        got = await fetch_asset_bytes(a_url, max_bytes=cfg.capture_max_asset_bytes)
+        if got is None:
+            continue
+        data, ctype = got
+        ext = _BIN_EXT.get(ctype, ".bin")
+        key = f"captures/{kb_id}/{doc_id}/assets/{kind}{ext}"
+        await obj_storage.put(key, data, content_type=ctype or "application/octet-stream")
+        profile_assets.append(AssetRef(kind=kind, storage_key=key, format=ext.lstrip(".")))
+
+    # ---- fonts (catalog match; download woff2 on miss) ----
+    face_srcs = raw.get("fonts", {}).get("face_srcs", {})
+
+    async def _font_role(info: dict):
+        role = build_font_role(info, weights=[info.get("weight", 400)])
+        if not role.renderable:
+            srcs = face_srcs.get(role.family.lower(), [])
+            if srcs:
+                got = await fetch_asset_bytes(srcs[0], max_bytes=cfg.capture_max_asset_bytes)
+                if got:
+                    data, _ = got
+                    key = (f"captures/{kb_id}/{doc_id}/fonts/"
+                           f"{role.family.replace(' ', '-').lower()}.woff2")
+                    await obj_storage.put(key, data, content_type="font/woff2")
+                    role.files = [FontFile(url=key, weight=info.get("weight"), source="captured")]
+        return role
+
+    raw_fonts = raw.get("fonts", {})
+    fonts = Fonts(display=await _font_role(raw_fonts.get("display", {})),
+                  body=await _font_role(raw_fonts.get("body", {})))
+
+    # ---- screenshots -> profile ----
+    profile_shots: list = []
+    for fname, s in shot_meta:
+        row = fn_to_row.get(fname)
+        if not row:
+            continue
+        img_id, _skey = row
+        profile_shots.append(ScreenshotRef(kind=s["kind"], image_id=img_id,
+                                           width=s["width"], height=s["height"],
+                                           section_index=s["section_index"]))
+
+    # ---- colors / spacing / sections ----
+    colors = process_colors(raw.get("colors", {}), delta_e_threshold=cfg.capture_color_delta_e)
+    sp = raw.get("spacing", {})
+    spacing = Spacing(
+        scale=cluster_spacing(sp.get("margins", []) + sp.get("paddings", [])),
+        radii=cluster_spacing(sp.get("radii", [])),
+        container_max_width=sp.get("container_max_width"),
+        section_gap=(min(sp["section_gaps"]) if sp.get("section_gaps") else None),
+    )
+    raw_sections = raw.get("sections", [])
+    shot_by_section = {s.section_index: s.image_id
+                       for s in profile_shots if s.section_index is not None}
+    sections = [SectionInfo(
+        index=s["index"], heading=s.get("heading", ""),
+        type=section_type(s.get("heading", ""), s.get("classNames", []),
+                          s["index"], len(raw_sections)),
+        bg_color=_safe_hex(s.get("bg", "")),
+        screenshot_image_id=shot_by_section.get(s["index"]),
+    ) for s in raw_sections]
+
+    t = raw.get("text", {})
+    profile = SiteProfile(
+        url=final_url, captured_at=datetime.now(timezone.utc).isoformat(),
+        fetch_tier="playwright", colors=colors,
+        theme_color=raw.get("colors", {}).get("theme_color"),
+        fonts=fonts, spacing=spacing, sections=sections,
+        text=TextInfo(headline=t.get("headline", ""), tagline=t.get("tagline", ""),
+                      ctas=t.get("ctas", [])),
+        assets=profile_assets, screenshots=profile_shots,
+        motion_hints=MotionHints(**raw.get("motion", {})),
+    )
+
+    await update_doc(doc_id, status="completed", index_status="skipped",
+                     image_status=("completed" if (image_refs or shot_refs) else "none"),
+                     title=(t.get("headline") or final_url)[:500],
+                     profile=profile.model_dump(),
+                     error_msg="", error_type=None, error_trace=None)
+
+    if vision_configured and image_refs:
         await enqueue("analyze_images", {"kb_id": kb_id, "doc_id": doc_id})
