@@ -821,10 +821,11 @@ async def list_documents(kb_id: str, offset: int = Query(0, ge=0), limit: int = 
     await _validate_kb(kb_id)
     async with get_session() as session:
         total = await session.scalar(
-            select(func.count()).select_from(Document).where(Document.kb_id == kb_id)
+            select(func.count()).select_from(Document)
+            .where(Document.kb_id == kb_id, Document.kind == "document")
         )
         result = await session.execute(
-            select(Document).where(Document.kb_id == kb_id)
+            select(Document).where(Document.kb_id == kb_id, Document.kind == "document")
             .order_by(Document.created_at.desc())
             .offset(offset).limit(limit)
         )

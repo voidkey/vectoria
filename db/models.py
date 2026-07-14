@@ -81,6 +81,15 @@ class Document(Base):
     # html, plain text) and for legacy binary .doc — Word's pagination
     # is a render-time concept, so there's no honest static answer.
     page_count: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
+    # Document kind. "document" (default, RAG-ingested) or "site_capture"
+    # (website capture: SiteProfile JSON below, not indexed). Lets the normal
+    # document list filter captures out without a separate table.
+    kind: Mapped[str] = mapped_column(
+        String(20), default="document", server_default="document", nullable=False,
+    )
+    # SiteProfile JSON for site_capture kind; NULL otherwise. Stores storage
+    # keys (not presigned URLs) — the API hydrates fresh URLs at read time.
+    profile: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     knowledge_base: Mapped["KnowledgeBase"] = relationship(back_populates="documents")

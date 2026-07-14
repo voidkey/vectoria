@@ -265,6 +265,21 @@ class Settings(BaseSettings):
     url_max_redirects: int = 5
     max_url_response_bytes: int = 50 * 1024 * 1024  # 50 MiB — aligned with max_upload_bytes so URL-fetched PDFs aren't capped tighter than uploads
 
+    # --- Website capture (site_capture kind) ----------------------------
+    capture_render_timeout: float = 30.0          # page.goto wall-clock (s)
+    capture_settle_ms: int = 1500                 # post-load settle for late hydration
+    capture_max_screenshots: int = 10             # above-fold + full-page + sections, hard cap
+    capture_viewport_width: int = 1280
+    capture_viewport_height: int = 800
+    capture_max_asset_bytes: int = 25 * 1024 * 1024   # per non-image binary (video/lottie/woff2)
+    capture_max_screenshot_height: int = 20000    # clamp full-page height (DoS guard)
+    capture_color_delta_e: float = 10.0           # ΔE (CIE76) color-cluster merge threshold
+    # Path to a deployment-provided JSON font catalog [{family,slug,css_url,weights}]
+    # used to reuse a downstream CDN font instead of re-storing. Empty = matching
+    # off (every font downloaded to our S3). Private/deployment data — never
+    # committed; keep the OSS default empty.
+    font_catalog_path: str = ""
+
     # Inbound rate limits (per principal, per minute). Principal = JWT
     # sub/uid, else hashed X-API-Key, else client IP (XFF-aware). Set to
     # 0 to disable a limiter without redeploying — kill-switch during
