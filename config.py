@@ -268,6 +268,12 @@ class Settings(BaseSettings):
     # --- Website capture (site_capture kind) ----------------------------
     capture_render_timeout: float = 30.0          # page.goto wall-clock (s)
     capture_settle_ms: int = 1500                 # post-load settle for late hydration
+    # Auto-scroll before capture: marketing sites reveal below-fold content on
+    # scroll (IntersectionObserver / lazy images), so a static full-page shot is
+    # blank without walking the page first. 0 steps disables scrolling.
+    capture_scroll_step_frac: float = 0.8         # viewport fraction per scroll step
+    capture_scroll_step_ms: int = 350             # settle per step (reveal + lazy load)
+    capture_scroll_max_steps: int = 60            # guard against infinitely-growing pages
     capture_max_screenshots: int = 10             # above-fold + full-page + sections, hard cap
     capture_viewport_width: int = 1280
     capture_viewport_height: int = 800

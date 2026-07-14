@@ -681,7 +681,7 @@ async def _capture_core(payload: dict) -> None:
     from parsers.capture._colors import dominant_screenshot_hex, process_colors
     from parsers.capture._extract import run_extract
     from parsers.capture._fonts import build_font_role, cluster_spacing, section_type
-    from parsers.capture._screenshots import capture_screenshots
+    from parsers.capture._screenshots import autoscroll_page, capture_screenshots
     from parsers.capture.profile import (
         AssetRef, FontFile, Fonts, MotionHints, ScreenshotRef, SectionInfo,
         SiteProfile, Spacing, TextInfo,
@@ -702,6 +702,11 @@ async def _capture_core(payload: dict) -> None:
         except Exception:
             logger.info("capture goto timed out/failed, using rendered DOM: %s", url)
         await page.wait_for_timeout(cfg.capture_settle_ms)
+        # Walk the page so scroll-reveal sections/lazy images render before we
+        # extract layout and screenshot — otherwise below-fold shots are blank.
+        await autoscroll_page(
+            page, step_frac=cfg.capture_scroll_step_frac,
+            step_ms=cfg.capture_scroll_step_ms, max_steps=cfg.capture_scroll_max_steps)
         raw = await run_extract(page)
         shots = await capture_screenshots(
             page, raw.get("sections", []),

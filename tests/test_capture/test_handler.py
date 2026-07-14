@@ -43,6 +43,8 @@ async def test_handle_capture_happy_path():
     settings = MagicMock(vision_base_url="", capture_render_timeout=30.0,
                          capture_settle_ms=1500, capture_max_screenshots=10,
                          capture_viewport_width=1280, capture_viewport_height=800,
+                         capture_scroll_step_frac=0.8, capture_scroll_step_ms=0,
+                         capture_scroll_max_steps=0,
                          capture_max_asset_bytes=1000, capture_max_screenshot_height=20000,
                          capture_color_delta_e=10.0)
 
@@ -102,6 +104,8 @@ async def test_handle_capture_no_screenshots_no_assets_image_status_none():
     settings = MagicMock(vision_base_url="", capture_render_timeout=30.0,
                          capture_settle_ms=0, capture_max_screenshots=0,
                          capture_viewport_width=1280, capture_viewport_height=800,
+                         capture_scroll_step_frac=0.8, capture_scroll_step_ms=0,
+                         capture_scroll_max_steps=0,
                          capture_max_asset_bytes=1000, capture_max_screenshot_height=20000,
                          capture_color_delta_e=10.0)
     with (
@@ -156,6 +160,8 @@ async def test_handle_capture_nonraster_assets_skip_vision():
     settings = MagicMock(vision_base_url="http://vision", capture_render_timeout=30.0,
                          capture_settle_ms=0, capture_max_screenshots=0,
                          capture_viewport_width=1280, capture_viewport_height=800,
+                         capture_scroll_step_frac=0.8, capture_scroll_step_ms=0,
+                         capture_scroll_max_steps=0,
                          capture_max_asset_bytes=1000, capture_max_screenshot_height=20000,
                          capture_color_delta_e=10.0)
     with (
