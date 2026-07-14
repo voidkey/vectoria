@@ -627,6 +627,10 @@ async def _capture_hydrate_image_ids(doc_id: str) -> dict[str, tuple[str, str]]:
     return {fn: (iid, skey) for fn, iid, skey in rows}
 
 
+# Only these image-asset kinds are worth a vision description. favicon is a
+# tiny icon (often .ico the vision model can't read), so it's stored but never
+# described — avoids a guaranteed-failing, billed vision call per capture.
+_VISION_ASSET_KINDS = ("logo", "hero", "og_image")
 _IMG_EXT = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp",
             "image/svg+xml": ".svg", "image/gif": ".gif"}
 _BIN_EXT = {"video/mp4": ".mp4", "video/webm": ".webm", "application/json": ".json"}
@@ -702,7 +706,8 @@ async def _capture_core(payload: dict) -> None:
     raw_assets = raw.get("assets", {})
 
     # ---- image assets (logo/hero/og/favicon) -> fetch -> ImageRef ----
-    image_refs: list = []
+    image_refs: list = []            # vision-worthy assets (logo/hero/og_image)
+    novision_asset_refs: list = []   # favicon etc. — stored, never described
     filename_kind: dict[str, str] = {}
     seen_urls: set[str] = set()
     for kind in ("logo", "hero", "og_image", "favicon"):
@@ -717,8 +722,8 @@ async def _capture_core(payload: dict) -> None:
         ext = _IMG_EXT.get(ctype, ".png")
         fname = f"{kind}{ext}"
         filename_kind[fname] = kind
-        image_refs.append(image_ref_from_bytes(data, filename=fname, mime=ctype or "image/png",
-                                               alt=kind))
+        ref = image_ref_from_bytes(data, filename=fname, mime=ctype or "image/png", alt=kind)
+        (image_refs if kind in _VISION_ASSET_KINDS else novision_asset_refs).append(ref)
 
     # ---- screenshots -> ImageRef ----
     shot_refs: list = []
@@ -730,17 +735,18 @@ async def _capture_core(payload: dict) -> None:
         shot_refs.append(image_ref_from_bytes(s["bytes"], filename=fname, mime="image/png",
                                               width=s["width"], height=s["height"]))
 
-    # Two upload calls (assets get vision, screenshots don't). The post-upload
-    # re-query joins on filename, which is safe because filenames are unique by
-    # construction: asset names are ``{kind}.{ext}`` for distinct kinds (and
-    # duplicate URLs are dropped above), screenshot names are ``screenshot-
-    # {label}.png`` for distinct labels — so name_picker never renames on
-    # collision and the pre-upload keys still match the stored rows.
+    # Two upload calls split by whether the image should get a vision
+    # description: logo/hero/og_image do; favicon + screenshots don't. The
+    # post-upload re-query joins on filename, which is safe because filenames
+    # are unique by construction: asset names are ``{kind}.{ext}`` for distinct
+    # kinds (duplicate URLs dropped above), screenshot names are ``screenshot-
+    # {label}.png`` for distinct labels — so name_picker never renames.
+    novision_refs = novision_asset_refs + shot_refs
     if image_refs:
         await stream_upload_and_store_refs(image_refs, kb_id=kb_id, doc_id=doc_id,
                                            vision_configured=vision_configured)
-    if shot_refs:
-        await stream_upload_and_store_refs(shot_refs, kb_id=kb_id, doc_id=doc_id,
+    if novision_refs:
+        await stream_upload_and_store_refs(novision_refs, kb_id=kb_id, doc_id=doc_id,
                                            vision_configured=False)
 
     fn_to_row = await _capture_hydrate_image_ids(doc_id)
@@ -754,7 +760,7 @@ async def _capture_core(payload: dict) -> None:
         img_id, skey = row
         profile_assets.append(AssetRef(
             kind=kind, image_id=img_id, storage_key=skey, format=fname.rsplit(".", 1)[-1],
-            vision_status=("pending" if vision_configured and kind in ("logo", "hero") else "skipped"),
+            vision_status=("pending" if vision_configured and kind in _VISION_ASSET_KINDS else "skipped"),
         ))
 
     # ---- non-image binaries: background video / lottie ----
@@ -842,7 +848,7 @@ async def _capture_core(payload: dict) -> None:
     )
 
     await update_doc(doc_id, status="completed", index_status="skipped",
-                     image_status=("completed" if (image_refs or shot_refs) else "none"),
+                     image_status=("completed" if (image_refs or novision_refs) else "none"),
                      title=(t.get("headline") or final_url)[:500],
                      profile=profile.model_dump(),
                      error_msg="", error_type=None, error_trace=None)
