@@ -167,25 +167,27 @@ def process_colors(raw: dict, *, delta_e_threshold: float = 10.0,
             if delta_e(bg_like.lab, labb) < delta_e_threshold * 1.5:
                 bg_like.sources.add("screenshot")
 
+    # _Cluster has no __eq__/__hash__, so it hashes by identity — safe to use
+    # the cluster objects directly as dict keys (clearer than id()-keying).
     background = max(clusters, key=lambda c: c.area)
     text_c = max(clusters, key=lambda c: c.text_area)
-    assigned: dict[int, str] = {id(background): "background"}
+    assigned: dict[_Cluster, str] = {background: "background"}
     # Only assign a "text" role when text was actually observed — otherwise
     # max() picks an arbitrary cluster and mislabels it (image-only pages).
-    if text_c.text_area > 0 and id(text_c) not in assigned:
-        assigned[id(text_c)] = "text"
+    if text_c.text_area > 0 and text_c not in assigned:
+        assigned[text_c] = "text"
 
-    remaining = [c for c in clusters if id(c) not in assigned]
+    remaining = [c for c in clusters if c not in assigned]
     # primary/accent = brand-sourced first, then most saturated, then area
     remaining.sort(key=lambda c: (
         1 if (c.sources - {"computed"}) else 0, _saturation(c.rgb), c.area,
     ), reverse=True)
     for i, c in enumerate(remaining[:3]):
-        assigned[id(c)] = "primary" if i == 0 else ("accent" if i == 1 else "muted")
+        assigned[c] = "primary" if i == 0 else ("accent" if i == 1 else "muted")
 
     out: list[ColorToken] = []
     for c in clusters:
-        role = assigned.get(id(c))
+        role = assigned.get(c)
         if role is None:
             continue
         coverage = c.area / total

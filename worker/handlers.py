@@ -613,9 +613,9 @@ async def handle_download_and_store_images(payload: dict) -> None:
 # ---------------------------------------------------------------------------
 
 def _safe_hex(css: str) -> str:
-    from parsers.capture._colors import parse_css_color
+    from parsers.capture._colors import _to_hex, parse_css_color
     rgb = parse_css_color(css or "")
-    return "#{:02x}{:02x}{:02x}".format(*rgb) if rgb else ""
+    return _to_hex(rgb) if rgb else ""
 
 
 async def _capture_hydrate_image_ids(doc_id: str) -> dict[str, tuple[str, str]]:

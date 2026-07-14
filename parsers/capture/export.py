@@ -1,6 +1,7 @@
 """Build a hyperframes-compatible capture/ zip from a stored SiteProfile."""
 from __future__ import annotations
 
+import asyncio
 import io
 import json
 import zipfile
@@ -43,36 +44,38 @@ async def build_hyperframes_zip(doc) -> bytes:
         desc = "\n".join(f"- **{a.get('kind')}**: {a.get('description', '')}"
                          for a in profile.get("assets", []))
         zf.writestr("capture/asset-descriptions.md", desc or "(no descriptions)")
-        # assets
+
+        # Collect every binary member as (zip_path, storage_key), then fetch
+        # them from S3 concurrently — a capture can have ~17 objects and the
+        # export is a synchronous response, so sequential GETs cost seconds.
+        members: list[tuple[str, str]] = []
         for a in profile.get("assets", []):
-            key = a.get("storage_key")
-            if not key:
-                continue
-            try:
-                zf.writestr(f"capture/assets/{a.get('kind')}.{a.get('format', 'bin')}",
-                            await storage.get(key))
-            except Exception:
-                continue
-        # screenshots
+            if a.get("storage_key"):
+                members.append((f"capture/assets/{a.get('kind')}.{a.get('format', 'bin')}",
+                                a["storage_key"]))
         for s in profile.get("screenshots", []):
             key = keys.get(s.get("image_id"))
-            if not key:
-                continue
-            label = (s.get("kind") if s.get("section_index") is None
-                     else f"section-{s['section_index']:02d}")
-            try:
-                zf.writestr(f"capture/screenshots/{label}.png", await storage.get(key))
-            except Exception:
-                continue
-        # captured font files (matched fonts have no file — only css_url in fonts.json)
+            if key:
+                label = (s.get("kind") if s.get("section_index") is None
+                         else f"section-{s['section_index']:02d}")
+                members.append((f"capture/screenshots/{label}.png", key))
         for role in ("display", "body"):
             for f in profile.get("fonts", {}).get(role, {}).get("files", []):
-                key = f.get("url")  # stored key for captured fonts
-                if not key or not key.startswith("captures/"):
-                    continue
-                try:
-                    zf.writestr(f"capture/fonts/{key.rsplit('/', 1)[-1]}",
-                                await storage.get(key))
-                except Exception:
-                    continue
+                key = f.get("url")  # stored key for captured (unmatched) fonts
+                if key and key.startswith("captures/"):
+                    members.append((f"capture/fonts/{key.rsplit('/', 1)[-1]}", key))
+
+        datas = await asyncio.gather(*(_safe_get(storage, k) for _, k in members))
+        for (path, _key), data in zip(members, datas):
+            if data is not None:
+                zf.writestr(path, data)
     return buf.getvalue()
+
+
+async def _safe_get(storage, key: str) -> bytes | None:
+    """Fetch one object; None on any failure so one missing object doesn't
+    abort the whole export."""
+    try:
+        return await storage.get(key)
+    except Exception:
+        return None
