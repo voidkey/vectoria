@@ -16,7 +16,8 @@ async def test_handle_capture_happy_path():
                     "container_max_width": 1200, "section_gaps": [96]},
         "sections": [{"index": 0, "heading": "Hero", "classNames": [], "bg": "#0b0b0f",
                       "rect": {"y": 0, "height": 600}}],
-        "text": {"headline": "Hello", "tagline": "world", "ctas": ["Start"]},
+        "text": {"headline": "Hello", "tagline": "world", "ctas": ["Start"],
+                 "full_text": "Hello world. Full page body copy here."},
         "assets": {"logo": None, "hero": None, "og_image": None, "favicon": None,
                    "video": None, "lottie": None},
         "motion": {"libraries": ["gsap"], "has_video_background": False, "has_canvas": True},
@@ -66,6 +67,7 @@ async def test_handle_capture_happy_path():
     assert isinstance(updates.get("profile"), dict)
     prof = updates["profile"]
     assert prof["text"]["headline"] == "Hello"
+    assert prof["text"]["full_text"] == "Hello world. Full page body copy here."
     assert prof["motion_hints"]["libraries"] == ["gsap"]
     assert {c["role"] for c in prof["colors"]} >= {"background", "text"}
     # 2 screenshots captured (above_fold + full_page), no image assets

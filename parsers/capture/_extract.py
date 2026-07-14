@@ -100,6 +100,9 @@ EXTRACT_JS = r"""
     ctas: Array.from(document.querySelectorAll('a,button'))
       .filter(a => /btn|cta|button/i.test(a.className) || a.tagName === 'BUTTON')
       .map(a => a.textContent.trim()).filter(t => t && t.length < 40).slice(0, 8),
+    // All visible DOM text in reading order (matches hyperframes visible-text).
+    // Capped so a huge page can't bloat the profile JSON column.
+    full_text: (document.body ? document.body.innerText : '').slice(0, 100000),
   };
 
   const pickLogo = () => {

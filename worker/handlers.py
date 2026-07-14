@@ -830,7 +830,7 @@ async def _capture_core(payload: dict) -> None:
         theme_color=raw.get("colors", {}).get("theme_color"),
         fonts=fonts, spacing=spacing, sections=sections,
         text=TextInfo(headline=t.get("headline", ""), tagline=t.get("tagline", ""),
-                      ctas=t.get("ctas", [])),
+                      ctas=t.get("ctas", []), full_text=t.get("full_text", "")),
         assets=profile_assets, screenshots=profile_shots,
         motion_hints=MotionHints(**raw.get("motion", {})),
     )

@@ -8,6 +8,7 @@ def test_extract_js_is_string():
     assert isinstance(EXTRACT_JS, str)
     assert "getComputedStyle" in EXTRACT_JS
     assert "samples" in EXTRACT_JS
+    assert "innerText" in EXTRACT_JS      # visible full-text capture
 
 
 @pytest.mark.asyncio
