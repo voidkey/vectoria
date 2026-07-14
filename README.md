@@ -126,6 +126,18 @@ GET /v1/knowledgebases/{kb_id}/documents/{doc_id}/images                        
 GET /v1/knowledgebases/{kb_id}/documents/{doc_id}/images/{img_id}/presigned-url   # get presigned URL
 ```
 
+### Website capture
+
+Render a URL and extract a deterministic **SiteProfile** — brand colors (with roles), typography, spacing tokens, page sections, key text, and downloaded assets (logo / hero / og image / favicon / background video / Lottie) plus desktop screenshots — for downstream generation agents. Captures are not indexed for RAG and don't show up in the document list.
+
+```
+POST /v1/knowledgebases/{kb_id}/captures                      # enqueue a capture -> 202 {id, status:"queued"}
+GET  /v1/knowledgebases/{kb_id}/captures/{id}                 # poll status + SiteProfile (presigned asset/screenshot URLs)
+GET  /v1/knowledgebases/{kb_id}/captures/{id}/export?format=hyperframes   # download a hyperframes-compatible capture/ zip
+```
+
+Async: `POST` returns immediately; a worker renders the page (shared Chromium pool), extracts the profile, stores assets/screenshots, and vision descriptions for logo/hero backfill into `profile.assets[].vision_status`. A captured font that matches a deployment-provided catalog (`FONT_CATALOG_PATH`) is referenced by its CDN URL instead of re-stored; unmatched fonts are downloaded to this deployment's bucket under the `captures/` prefix (add a lifecycle rule for that prefix).
+
 ### Query
 
 ```

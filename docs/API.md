@@ -196,6 +196,37 @@
 
 ---
 
+### 5.5 网站抓取（site capture）
+
+给一个 URL，渲染后抽取确定性的 **SiteProfile**（品牌色带角色/字体/间距/分区/关键文本/素材/截图），供下游生成类 agent 使用。产出**不进 RAG**（`index_status=skipped`），也不出现在 `GET /documents` 列表里。异步：`POST` 入队返回 `202`，`GET` 轮询，logo/hero 的 vision 描述异步回填。
+
+| 方法 | 路径 | 说明 | 状态码 |
+|------|------|------|--------|
+| POST | `/knowledgebases/{kb_id}/captures` | 建抓取任务并入队 | 202 |
+| GET | `/knowledgebases/{kb_id}/captures/{id}` | 轮询状态 + SiteProfile（素材/截图为预签名 URL） | 200 |
+| GET | `/knowledgebases/{kb_id}/captures/{id}/export?format=hyperframes` | 导出 hyperframes 兼容 `capture/` 目录 zip | 200 |
+
+**请求 - CreateCaptureRequest**
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `url` | string | 目标页面 URL（入队前做格式 + SSRF 校验） |
+| `max_screenshots` | int \| null | 可选，覆盖本次截图上限 |
+
+**响应 - CaptureResponse**
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `id` | string | 抓取（Document）ID |
+| `status` | string | `queued` / `capturing` / `completed` / `failed` |
+| `image_status` | string | 素材落库状态（vision 逐张进度见 profile 内 `assets[].vision_status`） |
+| `profile` | object \| null | 完成后为 SiteProfile；未完成为 `null` |
+
+> **字体复用**：抓到的 `font-family` 命中部署方注入的字体目录（`FONT_CATALOG_PATH`）时，profile 里引用该目录的 CDN URL（`renderable=true`，不重存）；未命中则把 WOFF2 下载进本部署的对象存储并标 `renderable=false`。
+> **导出未完成**返回 `409`；未知 `format` 返回 `422`；抓取不存在返回 `404`（`1213` `CAPTURE_NOT_FOUND`）。截图/素材存放在本部署桶的 `captures/` 前缀，建议给该前缀配生命周期规则。
+
+---
+
 ### 6. 图片查询
 
 | 方法 | 路径 | 说明 | 状态码 |
