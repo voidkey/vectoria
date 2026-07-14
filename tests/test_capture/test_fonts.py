@@ -10,6 +10,13 @@ def test_section_type_heuristics():
     assert section_type("Random", [], 2, 5) == "generic"
 
 
+def test_section_type_chinese():
+    assert section_type("选个方案，开始创作", [], 2, 10) == "pricing"
+    assert section_type("看看用户怎么说", [], 3, 10) == "testimonial"
+    assert section_type("更快更强的功能", [], 4, 10) == "features"
+    assert section_type("免费开始创作", [], 5, 10) == "cta"
+
+
 def test_cluster_spacing():
     scale = cluster_spacing([8, 9, 16, 15, 48, 47, 96])
     # near-duplicates (8/9, 15/16, 47/48) collapse to one representative each
@@ -18,6 +25,11 @@ def test_cluster_spacing():
     # consecutive buckets are more than tol apart
     assert all(b - a > 3 for a, b in zip(scale, scale[1:]))
     assert cluster_spacing([-5, 0, 8, 8]) == [8]  # non-positive dropped, dedup
+
+
+def test_cluster_spacing_drops_outliers():
+    # a 33554400px pill/circle radius is not a real design token
+    assert cluster_spacing([6, 10, 50, 33554400], max_val=500) == [6, 10, 50]
 
 
 def test_build_font_role_miss(monkeypatch):

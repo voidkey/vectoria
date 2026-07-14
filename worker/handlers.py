@@ -627,13 +627,22 @@ async def _capture_hydrate_image_ids(doc_id: str) -> dict[str, tuple[str, str]]:
     return {fn: (iid, skey) for fn, iid, skey in rows}
 
 
-# Only these image-asset kinds are worth a vision description. favicon is a
-# tiny icon (often .ico the vision model can't read), so it's stored but never
-# described — avoids a guaranteed-failing, billed vision call per capture.
+# Only these image-asset kinds are worth a vision description — AND only when
+# the bytes are a raster format the vision model can actually decode. A logo/
+# favicon is frequently SVG or .ico (vector/icon), which the vision API rejects;
+# those are stored but never described (avoids a guaranteed-failing, billed call).
 _VISION_ASSET_KINDS = ("logo", "hero", "og_image")
+_VISION_RASTER_EXT = ("png", "jpg", "jpeg", "webp", "gif")
 _IMG_EXT = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp",
-            "image/svg+xml": ".svg", "image/gif": ".gif"}
+            "image/svg+xml": ".svg", "image/gif": ".gif",
+            "image/x-icon": ".ico", "image/vnd.microsoft.icon": ".ico"}
 _BIN_EXT = {"video/mp4": ".mp4", "video/webm": ".webm", "application/json": ".json"}
+
+
+def _asset_gets_vision(kind: str, fname: str) -> bool:
+    """True only for vision-worthy kinds whose stored format is a raster the
+    vision model can decode (not svg/ico)."""
+    return kind in _VISION_ASSET_KINDS and fname.rsplit(".", 1)[-1] in _VISION_RASTER_EXT
 
 
 @_register("capture_site")
@@ -723,7 +732,7 @@ async def _capture_core(payload: dict) -> None:
         fname = f"{kind}{ext}"
         filename_kind[fname] = kind
         ref = image_ref_from_bytes(data, filename=fname, mime=ctype or "image/png", alt=kind)
-        (image_refs if kind in _VISION_ASSET_KINDS else novision_asset_refs).append(ref)
+        (image_refs if _asset_gets_vision(kind, fname) else novision_asset_refs).append(ref)
 
     # ---- screenshots -> ImageRef ----
     shot_refs: list = []
@@ -760,7 +769,7 @@ async def _capture_core(payload: dict) -> None:
         img_id, skey = row
         profile_assets.append(AssetRef(
             kind=kind, image_id=img_id, storage_key=skey, format=fname.rsplit(".", 1)[-1],
-            vision_status=("pending" if vision_configured and kind in _VISION_ASSET_KINDS else "skipped"),
+            vision_status=("pending" if vision_configured and _asset_gets_vision(kind, fname) else "skipped"),
         ))
 
     # ---- non-image binaries: background video / lottie ----
@@ -820,7 +829,7 @@ async def _capture_core(payload: dict) -> None:
     sp = raw.get("spacing", {})
     spacing = Spacing(
         scale=cluster_spacing(sp.get("margins", []) + sp.get("paddings", [])),
-        radii=cluster_spacing(sp.get("radii", [])),
+        radii=cluster_spacing(sp.get("radii", []), max_val=500),
         container_max_width=sp.get("container_max_width"),
         section_gap=(min(sp["section_gaps"]) if sp.get("section_gaps") else None),
     )

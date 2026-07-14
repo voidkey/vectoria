@@ -5,11 +5,13 @@ from parsers.capture.catalog import match_font
 from parsers.capture.profile import FontRole
 
 _TYPE_KEYWORDS = [
-    ("pricing", ("pric", "plan")),
-    ("features", ("feature",)),
-    ("testimonial", ("testimonial", "review", "quote")),
-    ("cta", ("cta", "get started", "sign up", "try ", "start free")),
-    ("footer", ("footer",)),
+    ("pricing", ("pric", "plan", "定价", "价格", "方案", "套餐", "订阅")),
+    ("features", ("feature", "功能", "特性", "能力")),
+    ("testimonial", ("testimonial", "review", "quote", "评价", "用户说",
+                     "怎么说", "口碑", "好评", "案例", "创作者")),
+    ("cta", ("cta", "get started", "sign up", "try ", "start free",
+             "免费开始", "开始创作", "立即", "马上", "试用", "开始使用")),
+    ("footer", ("footer", "页脚")),
 ]
 
 
@@ -25,9 +27,13 @@ def section_type(heading: str, class_names: list[str], index: int, total: int) -
     return "generic"
 
 
-def cluster_spacing(values: list[float], tol: int = 3) -> list[int]:
-    """Round + merge nearby px values into a sorted unique scale."""
-    rounded = sorted({int(round(v)) for v in values if v and v > 0})
+def cluster_spacing(values: list[float], tol: int = 3,
+                    max_val: int | None = None) -> list[int]:
+    """Round + merge nearby px values into a sorted unique scale. ``max_val``
+    drops absurd outliers (e.g. a 33554400px border-radius from a pill/circle
+    element) that aren't meaningful design tokens."""
+    rounded = sorted({int(round(v)) for v in values
+                      if v and v > 0 and (max_val is None or v <= max_val)})
     out: list[int] = []
     for v in rounded:
         if out and v - out[-1] <= tol:

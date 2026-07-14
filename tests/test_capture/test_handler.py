@@ -120,14 +120,16 @@ async def test_handle_capture_no_screenshots_no_assets_image_status_none():
 
 
 @pytest.mark.asyncio
-async def test_handle_capture_favicon_not_sent_to_vision():
-    """logo goes in the vision batch; favicon goes in the no-vision batch."""
+async def test_handle_capture_nonraster_assets_skip_vision():
+    """Raster hero → vision batch; SVG logo + .ico favicon → no-vision batch
+    (vision model can't decode svg/ico, so describing them always fails)."""
     raw = {
         "final_url": "https://x", "colors": {"samples": [], "css_vars": {}, "theme_color": None},
         "fonts": {"display": {}, "body": {}, "face_srcs": {}},
         "spacing": {}, "sections": [], "text": {},
-        "assets": {"logo": "https://x/logo.png", "favicon": "https://x/f.ico",
-                   "hero": None, "og_image": None, "video": None, "lottie": None},
+        "assets": {"logo": "https://x/logo.svg", "hero": "https://x/hero.png",
+                   "favicon": "https://x/f.ico", "og_image": None,
+                   "video": None, "lottie": None},
         "motion": {},
     }
     calls = []
@@ -137,7 +139,11 @@ async def test_handle_capture_favicon_not_sent_to_vision():
         return len(refs)
 
     async def fake_fetch(url, **kw):
-        return (b"x", "image/x-icon" if url.endswith(".ico") else "image/png")
+        if url.endswith(".svg"):
+            return (b"<svg/>", "image/svg+xml")
+        if url.endswith(".ico"):
+            return (b"x", "image/x-icon")
+        return (b"x", "image/png")
 
     ctx, page = AsyncMock(), AsyncMock()
     page.goto = AsyncMock(); page.evaluate = AsyncMock(return_value=raw)
@@ -168,9 +174,10 @@ async def test_handle_capture_favicon_not_sent_to_vision():
 
     vision_names = [n for v, names in calls if v is True for n in names]
     novision_names = [n for v, names in calls if v is False for n in names]
-    assert "logo.png" in vision_names
-    assert "favicon.png" not in vision_names          # favicon NOT sent to vision
-    assert "favicon.png" in novision_names
+    assert "hero.png" in vision_names                 # raster asset IS described
+    assert "logo.svg" not in vision_names             # svg logo NOT sent to vision
+    assert "logo.svg" in novision_names
+    assert "favicon.ico" in novision_names
 
 
 @pytest.mark.asyncio
