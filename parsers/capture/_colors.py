@@ -109,6 +109,27 @@ def _saturation(rgb: tuple[int, int, int]) -> float:
     return colorsys.rgb_to_hls(r, g, b)[2]
 
 
+def dominant_screenshot_hex(png_bytes: bytes) -> str | None:
+    """Most common color in a downscaled screenshot — the pixel-sampling half
+    of hyperframes-style extraction, used to cross-check the computed-style
+    background (and to catch gradient/image backgrounds the DOM misses).
+    Returns None if PIL can't decode the bytes."""
+    try:
+        import io
+
+        from PIL import Image
+
+        with Image.open(io.BytesIO(png_bytes)) as im:
+            small = im.convert("RGB").resize((64, 64))
+            colors = small.getcolors(64 * 64)  # [(count, (r,g,b)), ...]
+        if not colors:
+            return None
+        _, rgb = max(colors, key=lambda c: c[0])
+        return _to_hex(rgb)
+    except Exception:
+        return None
+
+
 class _Cluster:
     __slots__ = ("rgb", "lab", "area", "text_area", "sources")
 

@@ -665,7 +665,7 @@ async def _capture_core(payload: dict) -> None:
     from datetime import datetime, timezone
 
     from parsers.capture._assets import fetch_asset_bytes, image_ref_from_bytes
-    from parsers.capture._colors import process_colors
+    from parsers.capture._colors import dominant_screenshot_hex, process_colors
     from parsers.capture._extract import run_extract
     from parsers.capture._fonts import build_font_role, cluster_spacing, section_type
     from parsers.capture._screenshots import capture_screenshots
@@ -804,7 +804,13 @@ async def _capture_core(payload: dict) -> None:
                                            section_index=s["section_index"]))
 
     # ---- colors / spacing / sections ----
-    colors = process_colors(raw.get("colors", {}), delta_e_threshold=cfg.capture_color_delta_e)
+    # Pixel-sample the full-page screenshot's dominant color to cross-check the
+    # computed-style background (raises confidence + catches gradient/image bgs).
+    full_png = next((s["bytes"] for s in shots if s["kind"] == "full_page"), None)
+    screenshot_bg = dominant_screenshot_hex(full_png) if full_png else None
+    colors = process_colors(raw.get("colors", {}),
+                            delta_e_threshold=cfg.capture_color_delta_e,
+                            screenshot_bg_hex=screenshot_bg)
     sp = raw.get("spacing", {})
     spacing = Spacing(
         scale=cluster_spacing(sp.get("margins", []) + sp.get("paddings", [])),

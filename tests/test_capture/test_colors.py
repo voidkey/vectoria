@@ -1,6 +1,26 @@
+import io
+
 from parsers.capture._colors import (
     parse_css_color, rgb_to_lab, rgb_to_oklch, delta_e, process_colors,
+    dominant_screenshot_hex,
 )
+
+
+def test_dominant_screenshot_hex():
+    from PIL import Image
+    buf = io.BytesIO()
+    Image.new("RGB", (32, 32), (11, 11, 15)).save(buf, format="PNG")
+    assert dominant_screenshot_hex(buf.getvalue()) == "#0b0b0f"
+    assert dominant_screenshot_hex(b"not a png") is None
+
+
+def test_process_colors_screenshot_crosscheck_adds_source():
+    raw = {"samples": [{"color": "#0b0b0f", "area": 400000, "text": False},
+                       {"color": "#ffffff", "area": 100000, "text": True}],
+           "css_vars": {}, "theme_color": None}
+    colors = process_colors(raw, delta_e_threshold=10.0, screenshot_bg_hex="#0b0b0f")
+    bg = next(c for c in colors if c.role == "background")
+    assert "screenshot" in bg.sources
 
 
 def test_parse_hex_rgb_hsl():
