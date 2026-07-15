@@ -681,7 +681,8 @@ async def _capture_core(payload: dict) -> None:
     from parsers.capture._colors import dominant_screenshot_hex, process_colors
     from parsers.capture._extract import run_extract
     from parsers.capture._fonts import build_font_role, cluster_spacing, section_type
-    from parsers.capture._screenshots import autoscroll_page, capture_screenshots
+    from parsers.capture._screenshots import (
+        NEUTRALIZE_ANIMATION_CSS, capture_screenshots, prepare_page)
     from parsers.capture.profile import (
         AssetRef, FontFile, Fonts, MotionHints, ScreenshotRef, SectionInfo,
         SiteProfile, Spacing, TextInfo,
@@ -701,17 +702,38 @@ async def _capture_core(payload: dict) -> None:
                             timeout=int(cfg.capture_render_timeout * 1000))
         except Exception:
             logger.info("capture goto timed out/failed, using rendered DOM: %s", url)
+        # Mainstream capture waits for networkidle, not just `load`. Do it as a
+        # best-effort wait on top of `load`, capped so long-polling sites don't
+        # burn the whole budget.
+        try:
+            await page.wait_for_load_state(
+                "networkidle", timeout=int(cfg.capture_networkidle_timeout * 1000))
+        except Exception:
+            pass
         await page.wait_for_timeout(cfg.capture_settle_ms)
-        # Walk the page so scroll-reveal sections/lazy images render before we
-        # extract layout and screenshot — otherwise below-fold shots are blank.
-        await autoscroll_page(
+        # Collapse animation/transition timing so scroll-reveal effects are
+        # captured at their final frame, not mid-fade.
+        try:
+            await page.add_style_tag(content=NEUTRALIZE_ANIMATION_CSS)
+        except Exception:
+            pass
+        # Ready the page (walk it to fire reveals + lazy loads, wait for fonts +
+        # images, hide sticky chrome) before extract + per-section screenshots.
+        await prepare_page(
             page, step_frac=cfg.capture_scroll_step_frac,
-            step_ms=cfg.capture_scroll_step_ms, max_steps=cfg.capture_scroll_max_steps)
+            step_ms=cfg.capture_scroll_step_ms, max_steps=cfg.capture_scroll_max_steps,
+            img_wait_ms=cfg.capture_img_wait_ms)
         raw = await run_extract(page)
+        # Warn on likely-blocked / unhydrated pages (anti-bot challenge, empty SPA).
+        _ft = ((raw.get("text") or {}).get("full_text") or "").strip()
+        if len(_ft) < 100:
+            logger.warning("capture: only %d chars of text for %s — page may be "
+                           "blocked, challenged, or an unhydrated SPA", len(_ft), url)
         shots = await capture_screenshots(
             page, raw.get("sections", []),
             max_screenshots=cfg.capture_max_screenshots,
             max_height=cfg.capture_max_screenshot_height,
+            section_settle_ms=cfg.capture_section_settle_ms,
         )
 
     final_url = raw.get("final_url", url)

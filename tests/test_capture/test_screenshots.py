@@ -1,7 +1,7 @@
 import pytest
 from unittest.mock import AsyncMock
 
-from parsers.capture._screenshots import autoscroll_page, capture_screenshots
+from parsers.capture._screenshots import capture_screenshots, prepare_page
 
 
 @pytest.mark.asyncio
@@ -19,28 +19,39 @@ async def test_capture_screenshots_caps_and_labels():
 
 
 @pytest.mark.asyncio
-async def test_autoscroll_walks_down_and_returns_to_top():
+async def test_capture_sections_scroll_into_view_before_shot():
+    """Each section is scrolled to its top before being screenshotted."""
     page = AsyncMock()
+    page.screenshot = AsyncMock(return_value=b"PNG")
     page.viewport_size = {"width": 1280, "height": 800}
-    page.evaluate = AsyncMock(return_value=2000)   # scrollHeight; scrollTo returns ignored
-    await autoscroll_page(page, step_frac=0.8, step_ms=0, max_steps=60)
-    calls = [c.args[0] for c in page.evaluate.await_args_list]
+    sections = [{"index": 0, "rect": {"y": 1500, "height": 600}}]
+    await capture_screenshots(page, sections, max_screenshots=10, max_height=20000,
+                              section_settle_ms=0)
+    # the section's y (1500) was passed to a scrollTo evaluate call
     scroll_ys = [c.args[1] for c in page.evaluate.await_args_list if len(c.args) > 1]
-    assert scroll_ys[0] == 0                        # starts at top
-    assert scroll_ys == sorted(scroll_ys)           # monotonic walk down
-    assert "scrollTo(0, 0)" in calls[-1]            # ends back at the top
+    assert 1500 in scroll_ys
 
 
 @pytest.mark.asyncio
-async def test_autoscroll_disabled_when_max_steps_zero():
+async def test_prepare_page_runs_walk_when_enabled():
     page = AsyncMock()
-    await autoscroll_page(page, step_frac=0.8, step_ms=0, max_steps=0)
+    page.viewport_size = {"width": 1280, "height": 800}
+    await prepare_page(page, step_frac=0.8, step_ms=0, max_steps=60, img_wait_ms=0)
+    page.evaluate.assert_awaited_once()
+    js, arg = page.evaluate.await_args.args
+    assert "scrollTo" in js and "document.fonts" in js   # walk + font wait in one pass
+    assert arg["maxSteps"] == 60
+
+
+@pytest.mark.asyncio
+async def test_prepare_page_disabled_when_max_steps_zero():
+    page = AsyncMock()
+    await prepare_page(page, step_frac=0.8, step_ms=0, max_steps=0, img_wait_ms=0)
     page.evaluate.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_autoscroll_swallows_page_errors():
+async def test_prepare_page_swallows_errors():
     page = AsyncMock()
-    page.viewport_size = {"width": 1280, "height": 800}
     page.evaluate = AsyncMock(side_effect=RuntimeError("navigated away"))
-    await autoscroll_page(page, step_frac=0.8, step_ms=0, max_steps=5)  # no raise
+    await prepare_page(page, step_frac=0.8, step_ms=0, max_steps=5, img_wait_ms=0)  # no raise

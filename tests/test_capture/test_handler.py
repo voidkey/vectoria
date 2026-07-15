@@ -44,7 +44,8 @@ async def test_handle_capture_happy_path():
                          capture_settle_ms=1500, capture_max_screenshots=10,
                          capture_viewport_width=1280, capture_viewport_height=800,
                          capture_scroll_step_frac=0.8, capture_scroll_step_ms=0,
-                         capture_scroll_max_steps=0,
+                         capture_scroll_max_steps=0, capture_networkidle_timeout=0,
+                         capture_img_wait_ms=0, capture_section_settle_ms=0,
                          capture_max_asset_bytes=1000, capture_max_screenshot_height=20000,
                          capture_color_delta_e=10.0)
 
@@ -105,7 +106,8 @@ async def test_handle_capture_no_screenshots_no_assets_image_status_none():
                          capture_settle_ms=0, capture_max_screenshots=0,
                          capture_viewport_width=1280, capture_viewport_height=800,
                          capture_scroll_step_frac=0.8, capture_scroll_step_ms=0,
-                         capture_scroll_max_steps=0,
+                         capture_scroll_max_steps=0, capture_networkidle_timeout=0,
+                         capture_img_wait_ms=0, capture_section_settle_ms=0,
                          capture_max_asset_bytes=1000, capture_max_screenshot_height=20000,
                          capture_color_delta_e=10.0)
     with (
@@ -161,7 +163,8 @@ async def test_handle_capture_nonraster_assets_skip_vision():
                          capture_settle_ms=0, capture_max_screenshots=0,
                          capture_viewport_width=1280, capture_viewport_height=800,
                          capture_scroll_step_frac=0.8, capture_scroll_step_ms=0,
-                         capture_scroll_max_steps=0,
+                         capture_scroll_max_steps=0, capture_networkidle_timeout=0,
+                         capture_img_wait_ms=0, capture_section_settle_ms=0,
                          capture_max_asset_bytes=1000, capture_max_screenshot_height=20000,
                          capture_color_delta_e=10.0)
     with (
