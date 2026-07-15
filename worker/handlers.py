@@ -858,7 +858,7 @@ async def _capture_core(payload: dict) -> None:
         scale=cluster_spacing(sp.get("margins", []) + sp.get("paddings", [])),
         radii=cluster_spacing(sp.get("radii", []), max_val=500),
         container_max_width=sp.get("container_max_width"),
-        section_gap=(min(sp["section_gaps"]) if sp.get("section_gaps") else None),
+        section_gap=(round(min(sp["section_gaps"])) if sp.get("section_gaps") else None),
     )
     raw_sections = raw.get("sections", [])
     shot_by_section = {s.section_index: s.image_id

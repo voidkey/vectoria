@@ -232,3 +232,65 @@ async def test_handle_capture_unexpected_error_marks_failed_and_reraises():
 
     assert updates["status"] == "failed"
     assert updates["error_type"] == "parse_error"
+
+
+@pytest.mark.asyncio
+async def test_handle_capture_fractional_section_gap_does_not_crash():
+    """Regression: section_gaps are subpixel floats from getBoundingClientRect;
+    Spacing.section_gap is an int field, so a fractional min() used to raise a
+    Pydantic ValidationError and fail the whole capture. It must be rounded."""
+    raw = {
+        "final_url": "https://x/final",
+        "colors": {"samples": [{"color": "#0b0b0f", "area": 400000, "text": False}],
+                   "css_vars": {}, "theme_color": None},
+        "fonts": {"display": {"family": "Inter", "weight": 700, "selector": "h1"},
+                  "body": {"family": "Inter", "weight": 400, "selector": "p"},
+                  "face_srcs": {}},
+        # section_gaps intentionally fractional; container_max_width stays int.
+        "spacing": {"margins": [8, 16], "paddings": [16], "radii": [8],
+                    "container_max_width": 1200, "section_gaps": [96.7, 150.2]},
+        "sections": [{"index": 0, "heading": "Hero", "classNames": [], "bg": "#0b0b0f",
+                      "rect": {"y": 0, "height": 600}}],
+        "text": {"headline": "Hello", "tagline": "world", "ctas": ["Start"],
+                 "full_text": "Hello world. Full page body copy here."},
+        "assets": {"logo": None, "hero": None, "og_image": None, "favicon": None,
+                   "video": None, "lottie": None},
+        "motion": {"libraries": [], "has_video_background": False, "has_canvas": False},
+    }
+    updates = {}
+
+    async def fake_update(doc_id, **kw):
+        updates.update(kw)
+
+    ctx, page = AsyncMock(), AsyncMock()
+    page.goto = AsyncMock(); page.evaluate = AsyncMock(return_value=raw)
+    page.screenshot = AsyncMock(return_value=b"PNG"); page.wait_for_timeout = AsyncMock()
+    page.viewport_size = {"width": 1280, "height": 800}
+    ctx.new_page = AsyncMock(return_value=page)
+    psession = MagicMock()
+    psession.return_value.__aenter__ = AsyncMock(return_value=ctx)
+    psession.return_value.__aexit__ = AsyncMock(return_value=False)
+    settings = MagicMock(vision_base_url="", capture_render_timeout=30.0,
+                         capture_settle_ms=0, capture_max_screenshots=0,
+                         capture_viewport_width=1280, capture_viewport_height=800,
+                         capture_scroll_step_frac=0.8, capture_scroll_step_ms=0,
+                         capture_scroll_max_steps=0, capture_networkidle_timeout=0,
+                         capture_img_wait_ms=0, capture_section_settle_ms=0,
+                         capture_max_asset_bytes=1000, capture_max_screenshot_height=20000,
+                         capture_color_delta_e=10.0)
+    with (
+        patch("worker.handlers.update_doc", new=fake_update),
+        patch("worker.handlers.reresolve_and_check_ssrf", new=AsyncMock()),
+        patch("worker.handlers.parse_session", new=psession),
+        patch("worker.handlers.stream_upload_and_store_refs", new=AsyncMock(return_value=0)),
+        patch("worker.handlers.get_settings", return_value=settings),
+        patch("worker.handlers.get_storage", new=AsyncMock(return_value=AsyncMock())),
+        patch("worker.handlers.enqueue", new=AsyncMock()),
+        patch("worker.handlers._capture_hydrate_image_ids", new=AsyncMock(return_value={})),
+    ):
+        from worker.handlers import handle_capture
+        await handle_capture({"doc_id": "d1", "kb_id": "kb", "url": "https://x"})
+
+    assert updates.get("status") == "completed"       # did NOT crash on the float
+    gap = updates["profile"]["spacing"]["section_gap"]
+    assert gap == 97 and isinstance(gap, int)          # round(96.7)
