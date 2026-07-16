@@ -2,6 +2,7 @@ from dataclasses import dataclass, field
 from abc import ABC, abstractmethod
 from typing import ClassVar
 
+from api.errors import ErrorCode
 from parsers.image_ref import ImageRef
 
 
@@ -26,6 +27,11 @@ class PermanentParseError(Exception):
     raising the original exception — handler's per-attempt fallback
     + queue retry exists exactly for those.
     """
+    # Frontend-facing error code the worker persists on the failed doc
+    # (the worker reads this in a follow-up task).
+    # Subclasses and UnparseableUrlError override this with a more specific
+    # code; this base value is the catch-all fallback.
+    error_code: ClassVar[int] = ErrorCode.PARSE_UNRESOLVABLE
 
 
 class AntiBotBlockedError(PermanentParseError):
@@ -36,6 +42,7 @@ class AntiBotBlockedError(PermanentParseError):
     semantic is specifically "blocked by the site" rather than "unsupported URL
     pattern".
     """
+    error_code: ClassVar[int] = ErrorCode.LINK_ANTIBOT_BLOCKED
 
 
 class PageNotFoundError(PermanentParseError):
@@ -49,6 +56,7 @@ class PageNotFoundError(PermanentParseError):
     raise_if_gone`` from every fetch tier (curl_cffi / httpx / playwright) so a
     site's error-page boilerplate is never scraped and stored as content.
     """
+    error_code: ClassVar[int] = ErrorCode.LINK_PAGE_GONE
 
 
 @dataclass

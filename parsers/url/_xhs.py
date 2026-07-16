@@ -39,6 +39,7 @@ import lxml.html
 
 from config import get_settings
 from infra.metrics import URL_IMAGES_TRUNCATED_TOTAL
+from api.errors import ErrorCode
 from parsers.base import AntiBotBlockedError, ParseResult
 from parsers.url._blacklist import UnparseableUrlError
 from parsers.url._handlers import detect_block_reason
@@ -294,7 +295,8 @@ class XhsHandler:
                     raise UnparseableUrlError(
                         "URL pattern not supported: xiaohongshu video "
                         "note (text caption only; video content not yet "
-                        "ingestable). "
+                        "ingestable). ",
+                        code=ErrorCode.LINK_VIDEO_UNSUPPORTED,
                     )
                 html = await page.content()
         except UnparseableUrlError:
