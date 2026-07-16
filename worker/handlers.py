@@ -510,7 +510,7 @@ async def handle_index_document(payload: dict) -> None:
     await update_doc(
         doc_id, chunk_count=len(chunk_data),
         status="completed", index_status="completed",
-        error_msg="", error_type=None, error_trace=None,
+        error_msg="", error_type=None, error_trace=None, error_code=None,
     )
 
 
@@ -918,7 +918,7 @@ async def _capture_core(payload: dict) -> None:
                      image_status=("completed" if (image_refs or novision_refs) else "none"),
                      title=(t.get("headline") or final_url)[:500],
                      profile=profile.model_dump(),
-                     error_msg="", error_type=None, error_trace=None)
+                     error_msg="", error_type=None, error_trace=None, error_code=None)
 
     if vision_configured and image_refs:
         await enqueue("analyze_images", {"kb_id": kb_id, "doc_id": doc_id})
