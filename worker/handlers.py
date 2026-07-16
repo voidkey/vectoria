@@ -24,6 +24,7 @@ from db.models import Document, DocumentImage
 from infra.metrics import (
     DOCUMENT_OUTCOMES, PARSE_EMPTY_TOTAL, PARSE_FALLBACK_TOTAL, observe_parse,
 )
+from api.errors import ErrorCode
 from parsers.base import PermanentParseError
 from parsers.image_metadata import extract_metadata_into_refs
 from parsers.registry import registry
@@ -56,6 +57,27 @@ _DEP_LEVEL_ERRORS: tuple[type[BaseException], ...] = (
     CircuitOpenError,         # this engine's breaker is OPEN
     asyncio.TimeoutError,     # asyncio-side wall-clock cuts
 )
+
+
+def _parse_error_code(exc: BaseException | None, *, is_url: bool) -> int:
+    """Map any parse-stage exception to a frontend error code.
+
+    A total function over the exception types the worker can see:
+      * a PermanentParseError returns the code it carries (blacklist /
+        anti-bot / 404 etc.), falling back to PARSE_UNRESOLVABLE;
+      * a URL fetch timeout / network error → LINK_FETCH_TIMEOUT;
+      * anything else → a retryable PARSE_ERROR.
+
+    The dedicated ``except PermanentParseError`` sites read ``e.error_code``
+    directly; this classifier is used at the terminal re-raise site where
+    the exception type isn't statically known (``last_exc``).
+    """
+    if isinstance(exc, PermanentParseError):
+        return getattr(exc, "error_code", ErrorCode.PARSE_UNRESOLVABLE)
+    if is_url and isinstance(exc, (httpx.TimeoutException, httpx.NetworkError)):
+        return ErrorCode.LINK_FETCH_TIMEOUT
+    return ErrorCode.PARSE_ERROR
+
 
 logger = logging.getLogger(__name__)
 
@@ -230,6 +252,7 @@ async def handle_parse_document(payload: dict) -> None:
                     error_msg=f"Parsing failed: {e}"[:500],
                     error_type="permanent",
                     error_trace=traceback.format_exc(),
+                    error_code=getattr(e, "error_code", ErrorCode.PARSE_UNRESOLVABLE),
                 )
                 return
             except _DEP_LEVEL_ERRORS as e:
@@ -279,6 +302,7 @@ async def handle_parse_document(payload: dict) -> None:
                 doc_id, status="failed",
                 error_msg="Parsing returned empty or below-threshold content",
                 error_type="empty_content",
+                error_code=ErrorCode.EMPTY_CONTENT,
             )
             return
         logger.error(
@@ -291,6 +315,7 @@ async def handle_parse_document(payload: dict) -> None:
             error_msg=f"Parsing failed: {last_exc}"[:500],
             error_type="parse_error",
             error_trace=last_trace,
+            error_code=_parse_error_code(last_exc, is_url=not storage_key),
         )
         raise last_exc  # type: ignore[misc]
     assert used_engine is not None  # parse_result is set ⇒ used_engine is too
@@ -339,6 +364,7 @@ async def handle_parse_document(payload: dict) -> None:
                 error_type="image_only",
                 error_msg="",
                 error_trace=None,
+                error_code=None,
                 image_status="pending",
             )
             if parse_result.page_count is not None:
@@ -359,6 +385,7 @@ async def handle_parse_document(payload: dict) -> None:
             index_status="skipped",
             error_msg="Parsing returned empty or below-threshold content",
             error_type="empty_content",
+            error_code=ErrorCode.EMPTY_CONTENT,
         )
         return
 
@@ -375,6 +402,7 @@ async def handle_parse_document(payload: dict) -> None:
                 f"Parsed content exceeds {cfg.max_content_chars} characters"
             ),
             error_type="too_large",
+            error_code=ErrorCode.CONTENT_TOO_LARGE,
         )
         return
 
@@ -395,7 +423,7 @@ async def handle_parse_document(payload: dict) -> None:
         index_status="pending" if do_index else "skipped",
         parse_engine=used_engine,
         image_status=image_status,
-        error_msg="", error_type=None, error_trace=None,
+        error_msg="", error_type=None, error_trace=None, error_code=None,
     )
     if parse_result.page_count is not None:
         update_fields["page_count"] = parse_result.page_count
@@ -659,15 +687,18 @@ async def handle_capture(payload: dict) -> None:
         await _capture_core(payload)
     except PermanentParseError as e:
         await update_doc(doc_id, status="failed", error_type="permanent",
-                         error_msg=str(e)[:500])
+                         error_msg=str(e)[:500],
+                         error_code=getattr(e, "error_code", ErrorCode.PARSE_UNRESOLVABLE))
     except AppError as e:
         # SSRF / malformed URL — the submitter's problem, not infra. Terminal
         # so we don't burn 3 retries + a dead-task alert on a private-IP URL.
         await update_doc(doc_id, status="failed", error_type="url_fetch_error",
-                         error_msg=str(e)[:500])
+                         error_msg=str(e)[:500],
+                         error_code=e.code)
     except Exception as e:
         await update_doc(doc_id, status="failed", error_type="parse_error",
-                         error_msg=str(e)[:500], error_trace=traceback.format_exc())
+                         error_msg=str(e)[:500], error_trace=traceback.format_exc(),
+                         error_code=_parse_error_code(e, is_url=True))
         raise
 
 
