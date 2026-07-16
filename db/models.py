@@ -64,6 +64,12 @@ class Document(Base):
     #   failures (best-effort; see index_status / tasks.error).
     error_msg: Mapped[str] = mapped_column(Text, default="", server_default="")
     error_type: Mapped[str | None] = mapped_column(String(32), nullable=True, default=None)
+    # Frontend-facing structured error code (api.errors.ErrorCode). NULL for
+    # success and for legacy failed rows created before this column. Distinct
+    # from error_type (internal outcome label feeding digest/monitoring):
+    # error_code is the granular, stable code the API exposes; retryable and
+    # suggested_action are derived from it at serialize time via ERROR_META.
+    error_code: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
     error_trace: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
     image_status: Mapped[str] = mapped_column(
         String(20), default="none", server_default="none", nullable=False,
