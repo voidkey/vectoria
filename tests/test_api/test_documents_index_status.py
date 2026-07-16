@@ -10,10 +10,14 @@ def test_doc_to_response_passes_through_index_status():
     doc = SimpleNamespace(
         id="d", kb_id="k", title="t", source="s", chunk_count=0,
         status="completed", index_status="failed", error_msg="",
+        error_code=None,
         created_at=datetime(2026, 1, 1),
     )
     resp = _doc_to_response(doc)
     assert resp.index_status == "failed"
+    # error_fields(None) → all three error fields serialize as None
+    assert resp.error_code is None
+    assert resp.suggested_action is None
 
 
 @pytest.mark.asyncio

@@ -1,4 +1,5 @@
 from api.errors import Action, ErrorCode, ERROR_META, error_meta, error_fields
+from api.schemas import CaptureResponse, DocumentResponse
 
 
 def _all_codes() -> list[int]:
@@ -44,3 +45,45 @@ def test_error_fields_none_code():
 
 def test_error_meta_unknown_code():
     assert error_meta(424242) is None
+
+
+def test_document_response_has_error_fields():
+    r = DocumentResponse(
+        id="d", kb_id="k", title="t", source="s", chunk_count=0,
+        status="failed", error_code=1501, retryable=False,
+        suggested_action="upload_source", created_at="2026-07-16T00:00:00",
+    )
+    assert r.error_code == 1501
+    assert r.retryable is False
+    assert r.suggested_action == "upload_source"
+
+
+def test_document_response_error_fields_default_null():
+    r = DocumentResponse(
+        id="d", kb_id="k", title="t", source="s", chunk_count=0,
+        status="completed", created_at="2026-07-16T00:00:00",
+    )
+    assert r.error_code is None
+    assert r.retryable is None
+    assert r.suggested_action is None
+
+
+def test_capture_response_has_error_fields():
+    r = CaptureResponse(
+        id="c", kb_id="k", status="failed", error_code=1503,
+        retryable=False, suggested_action="upload_source",
+        created_at="2026-07-16T00:00:00",
+    )
+    assert r.error_code == 1503
+    assert r.retryable is False
+    assert r.suggested_action == "upload_source"
+
+
+def test_capture_response_error_fields_default_null():
+    r = CaptureResponse(
+        id="c", kb_id="k", status="queued",
+        created_at="2026-07-16T00:00:00",
+    )
+    assert r.error_code is None
+    assert r.retryable is None
+    assert r.suggested_action is None

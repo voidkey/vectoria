@@ -7,7 +7,7 @@ from fastapi import APIRouter, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 
-from api.errors import AppError, ErrorCode
+from api.errors import AppError, ErrorCode, error_fields
 from api.schemas import CaptureResponse, CreateCaptureRequest
 from api.url_validation import validate_url
 from db.base import get_session
@@ -91,7 +91,8 @@ async def get_capture(kb_id: str, cid: str) -> CaptureResponse:
     return CaptureResponse(id=doc.id, kb_id=kb_id, status=doc.status,
                            image_status=doc.image_status, error_msg=doc.error_msg,
                            profile=await _hydrate_profile(doc),
-                           created_at=doc.created_at.isoformat())
+                           created_at=doc.created_at.isoformat(),
+                           **error_fields(doc.error_code))
 
 
 @router.get("/{kb_id}/captures/{cid}/export")

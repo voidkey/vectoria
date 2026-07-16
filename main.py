@@ -10,7 +10,7 @@ from fastapi.responses import JSONResponse
 from prometheus_fastapi_instrumentator import Instrumentator
 
 from api.auth import require_api_key, verify_auth
-from api.errors import AppError, ErrorCode
+from api.errors import AppError, ErrorCode, error_meta
 from api.middleware import RequestIdMiddleware, RequestIdFilter
 from api.routes.analyze import router as analyze_router
 from api.routes.captures import router as captures_router
@@ -118,9 +118,16 @@ logger = logging.getLogger(__name__)
 
 @app.exception_handler(AppError)
 async def app_error_handler(request: Request, exc: AppError):
+    meta = error_meta(exc.code)
+    content = {
+        "code": exc.code,
+        "detail": exc.detail,
+        "retryable": meta.retryable if meta else None,
+        "suggested_action": meta.action.value if meta else None,
+    }
     return JSONResponse(
         status_code=exc.status_code,
-        content={"code": exc.code, "detail": exc.detail},
+        content=content,
         headers=exc.headers,
     )
 

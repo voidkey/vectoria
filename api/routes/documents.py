@@ -17,7 +17,7 @@ from api.schemas import (
     DocumentListResponse, OutlineItem,
     CreateUploadRequest, CreateUploadResponse,
 )
-from api.errors import AppError, ErrorCode
+from api.errors import AppError, ErrorCode, error_fields
 from api.rate_limit import RATE_LIMITED_RESPONSE, rate_limit
 from api.url_validation import validate_url
 from db.base import get_session
@@ -50,6 +50,7 @@ def _doc_to_response(doc: Document) -> DocumentResponse:
         chunk_count=doc.chunk_count,
         status=doc.status, index_status=doc.index_status, error_msg=doc.error_msg,
         created_at=doc.created_at.isoformat(),
+        **error_fields(doc.error_code),
     )
 
 
@@ -71,6 +72,7 @@ def _dedup_response(doc: Document) -> DocumentIngestResponse:
         content="",
         outline=[],
         image_status=doc.image_status,
+        **error_fields(doc.error_code),
     )
 
 
@@ -105,6 +107,9 @@ def _queued_response(doc: Document) -> DocumentIngestResponse:
     Avoids a second round-trip to re-read what we already know — keeps
     the API response under ~10 ms in the ``wait=false`` default mode.
     """
+    # Freshly enqueued: error_code is always None here, so no error_fields()
+    # spread (unlike the persisted-doc builders). If early errors ever get
+    # surfaced pre-parse, add **error_fields(doc.error_code) here too.
     return DocumentIngestResponse(
         id=doc.id, kb_id=doc.kb_id, title=doc.title, source=doc.source,
         chunk_count=doc.chunk_count, status=doc.status,
@@ -137,6 +142,7 @@ async def _fresh_ingest_response(doc_id: str) -> DocumentIngestResponse:
         content=doc.content or "",
         outline=[OutlineItem(**item) for item in outline],
         image_status=doc.image_status,
+        **error_fields(doc.error_code),
     )
 
 
@@ -858,6 +864,7 @@ async def get_document(kb_id: str, doc_id: str):
             image_count=len(doc.images),
             image_status=doc.image_status,
             page_count=doc.page_count,
+            **error_fields(doc.error_code),
         )
 
 

@@ -34,6 +34,11 @@ class CaptureResponse(BaseModel):
     status: str
     image_status: str = "none"
     error_msg: str = ""
+    # Structured error, derived from Document.error_code via ERROR_META.
+    # All three are None on success / legacy rows.
+    error_code: int | None = None
+    retryable: bool | None = None
+    suggested_action: str | None = None
     profile: dict | None = None
     created_at: str
 
@@ -80,6 +85,11 @@ class DocumentResponse(BaseModel):
     status: str
     index_status: str = "pending"
     error_msg: str = ""
+    # Structured error, derived from Document.error_code via ERROR_META.
+    # All three are None on success / legacy rows.
+    error_code: int | None = None
+    retryable: bool | None = None
+    suggested_action: str | None = None
     created_at: str
 
 
