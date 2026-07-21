@@ -2,6 +2,19 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 
+def _eval_router(raw):
+    """page.evaluate stub: media-catalog scripts return an empty list (so the
+    media path runs end-to-end without a real browser); every other script
+    (run_extract / design-styles / page.html) gets the canned ``raw`` dict."""
+    async def _run(script, *args, **kwargs):
+        if "assetMap" in script:        # ASSET_CATALOG_JS
+            return []
+        if "nearestCaption" in script:  # VIDEO_DESCRIPTORS_JS
+            return []
+        return raw
+    return _run
+
+
 @pytest.mark.asyncio
 async def test_handle_capture_happy_path():
     raw = {
@@ -30,7 +43,7 @@ async def test_handle_capture_happy_path():
     ctx = AsyncMock()
     page = AsyncMock()
     page.goto = AsyncMock()
-    page.evaluate = AsyncMock(return_value=raw)
+    page.evaluate = _eval_router(raw)
     page.screenshot = AsyncMock(return_value=b"PNG")
     page.viewport_size = {"width": 1280, "height": 800}
     page.wait_for_timeout = AsyncMock()
@@ -47,7 +60,8 @@ async def test_handle_capture_happy_path():
                          capture_scroll_max_steps=0, capture_networkidle_timeout=0,
                          capture_img_wait_ms=0, capture_section_settle_ms=0,
                          capture_max_asset_bytes=1000, capture_max_screenshot_height=20000,
-                         capture_color_delta_e=10.0)
+                         capture_color_delta_e=10.0,
+                         capture_asset_catalog_cap=200, capture_video_cap=20)
 
     with (
         patch("worker.handlers.update_doc", new=fake_update),
@@ -95,7 +109,7 @@ async def test_handle_capture_no_screenshots_no_assets_image_status_none():
         updates.update(kw)
 
     ctx, page = AsyncMock(), AsyncMock()
-    page.goto = AsyncMock(); page.evaluate = AsyncMock(return_value=raw)
+    page.goto = AsyncMock(); page.evaluate = _eval_router(raw)
     page.screenshot = AsyncMock(return_value=b""); page.wait_for_timeout = AsyncMock()
     page.viewport_size = {"width": 1280, "height": 800}
     ctx.new_page = AsyncMock(return_value=page)
@@ -109,7 +123,8 @@ async def test_handle_capture_no_screenshots_no_assets_image_status_none():
                          capture_scroll_max_steps=0, capture_networkidle_timeout=0,
                          capture_img_wait_ms=0, capture_section_settle_ms=0,
                          capture_max_asset_bytes=1000, capture_max_screenshot_height=20000,
-                         capture_color_delta_e=10.0)
+                         capture_color_delta_e=10.0,
+                         capture_asset_catalog_cap=200, capture_video_cap=20)
     with (
         patch("worker.handlers.update_doc", new=fake_update),
         patch("worker.handlers.reresolve_and_check_ssrf", new=AsyncMock()),
@@ -152,7 +167,7 @@ async def test_handle_capture_nonraster_assets_skip_vision():
         return (b"x", "image/png")
 
     ctx, page = AsyncMock(), AsyncMock()
-    page.goto = AsyncMock(); page.evaluate = AsyncMock(return_value=raw)
+    page.goto = AsyncMock(); page.evaluate = _eval_router(raw)
     page.screenshot = AsyncMock(return_value=b"PNG"); page.wait_for_timeout = AsyncMock()
     page.viewport_size = {"width": 1280, "height": 800}
     ctx.new_page = AsyncMock(return_value=page)
@@ -166,7 +181,8 @@ async def test_handle_capture_nonraster_assets_skip_vision():
                          capture_scroll_max_steps=0, capture_networkidle_timeout=0,
                          capture_img_wait_ms=0, capture_section_settle_ms=0,
                          capture_max_asset_bytes=1000, capture_max_screenshot_height=20000,
-                         capture_color_delta_e=10.0)
+                         capture_color_delta_e=10.0,
+                         capture_asset_catalog_cap=200, capture_video_cap=20)
     with (
         patch("worker.handlers.update_doc", new=AsyncMock()),
         patch("worker.handlers.reresolve_and_check_ssrf", new=AsyncMock()),
@@ -263,7 +279,7 @@ async def test_handle_capture_fractional_section_gap_does_not_crash():
         updates.update(kw)
 
     ctx, page = AsyncMock(), AsyncMock()
-    page.goto = AsyncMock(); page.evaluate = AsyncMock(return_value=raw)
+    page.goto = AsyncMock(); page.evaluate = _eval_router(raw)
     page.screenshot = AsyncMock(return_value=b"PNG"); page.wait_for_timeout = AsyncMock()
     page.viewport_size = {"width": 1280, "height": 800}
     ctx.new_page = AsyncMock(return_value=page)
@@ -277,7 +293,8 @@ async def test_handle_capture_fractional_section_gap_does_not_crash():
                          capture_scroll_max_steps=0, capture_networkidle_timeout=0,
                          capture_img_wait_ms=0, capture_section_settle_ms=0,
                          capture_max_asset_bytes=1000, capture_max_screenshot_height=20000,
-                         capture_color_delta_e=10.0)
+                         capture_color_delta_e=10.0,
+                         capture_asset_catalog_cap=200, capture_video_cap=20)
     with (
         patch("worker.handlers.update_doc", new=fake_update),
         patch("worker.handlers.reresolve_and_check_ssrf", new=AsyncMock()),

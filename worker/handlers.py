@@ -13,6 +13,7 @@ These are the same operations that previously ran inside
 
 import asyncio
 import logging
+import sys
 import traceback
 
 from sqlalchemy import select
@@ -33,6 +34,7 @@ from parsers.registry import registry
 from api.image_stream import stream_upload_and_store_refs
 from api.url_validation import reresolve_and_check_ssrf
 from parsers.url._browser import parse_session
+from parsers.capture.orchestrator import CaptureOutcome, run_capture
 from worker.queue import enqueue
 from rag.embedder import get_embedder
 from splitter.splitter import Splitter
@@ -640,12 +642,6 @@ async def handle_download_and_store_images(payload: dict) -> None:
 # capture_site (website capture -> SiteProfile)
 # ---------------------------------------------------------------------------
 
-def _safe_hex(css: str) -> str:
-    from parsers.capture._colors import _to_hex, parse_css_color
-    rgb = parse_css_color(css or "")
-    return _to_hex(rgb) if rgb else ""
-
-
 async def _capture_hydrate_image_ids(doc_id: str) -> dict[str, tuple[str, str]]:
     """filename -> (image_id, storage_key) for a doc's DocumentImage rows."""
     async with get_session() as session:
@@ -653,24 +649,6 @@ async def _capture_hydrate_image_ids(doc_id: str) -> dict[str, tuple[str, str]]:
             select(DocumentImage.filename, DocumentImage.id, DocumentImage.storage_key)
             .where(DocumentImage.doc_id == doc_id))).all()
     return {fn: (iid, skey) for fn, iid, skey in rows}
-
-
-# Only these image-asset kinds are worth a vision description — AND only when
-# the bytes are a raster format the vision model can actually decode. A logo/
-# favicon is frequently SVG or .ico (vector/icon), which the vision API rejects;
-# those are stored but never described (avoids a guaranteed-failing, billed call).
-_VISION_ASSET_KINDS = ("logo", "hero", "og_image")
-_VISION_RASTER_EXT = ("png", "jpg", "jpeg", "webp", "gif")
-_IMG_EXT = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp",
-            "image/svg+xml": ".svg", "image/gif": ".gif",
-            "image/x-icon": ".ico", "image/vnd.microsoft.icon": ".ico"}
-_BIN_EXT = {"video/mp4": ".mp4", "video/webm": ".webm", "application/json": ".json"}
-
-
-def _asset_gets_vision(kind: str, fname: str) -> bool:
-    """True only for vision-worthy kinds whose stored format is a raster the
-    vision model can decode (not svg/ico)."""
-    return kind in _VISION_ASSET_KINDS and fname.rsplit(".", 1)[-1] in _VISION_RASTER_EXT
 
 
 @_register("capture_site")
@@ -702,223 +680,71 @@ async def handle_capture(payload: dict) -> None:
         raise
 
 
+class _HandlerCaptureDeps:
+    """Real CaptureDeps for the worker: opens a stealthed parse_session page,
+    uploads ImageRefs to S3 + DB, and hydrates image ids. References the
+    worker.handlers module globals (parse_session/get_storage/stream_upload_
+    and_store_refs/_capture_hydrate_image_ids) so existing tests' patches bite."""
+    # Stealth (T1): realistic desktop Chrome UA + webdriver shim + locale so more
+    # sites render real content instead of a bot-challenge. Mirrors the anti-bot
+    # path in parsers/url/_generic.py. (T0 plain-HTTP tier + T2 proxy: TODO.)
+    _CAPTURE_UA = (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
+    _ANTI_WEBDRIVER = ("Object.defineProperty(navigator, 'webdriver', "
+                       "{get: () => undefined})")
+
+    def __init__(self, cfg, kb_id: str, doc_id: str, storage):
+        self._cfg = cfg
+        self._kb_id = kb_id
+        self._doc_id = doc_id
+        self.storage = storage
+
+    def open_page(self):
+        cfg = self._cfg
+        session = parse_session(
+            block_heavy=False, user_agent=self._CAPTURE_UA, locale="en-US",
+            init_script=self._ANTI_WEBDRIVER,
+            viewport={"width": cfg.capture_viewport_width,
+                      "height": cfg.capture_viewport_height})
+
+        class _PageCM:
+            async def __aenter__(_self):
+                ctx = await session.__aenter__()
+                try:
+                    return await ctx.new_page()
+                except BaseException:
+                    await session.__aexit__(*sys.exc_info())
+                    raise
+
+            async def __aexit__(_self, *exc):
+                return await session.__aexit__(*exc)
+
+        return _PageCM()
+
+    async def upload_image_refs(self, refs, *, vision_configured):
+        return await stream_upload_and_store_refs(
+            refs, kb_id=self._kb_id, doc_id=self._doc_id,
+            vision_configured=vision_configured)
+
+    async def hydrate_image_ids(self):
+        return await _capture_hydrate_image_ids(self._doc_id)
+
+
 async def _capture_core(payload: dict) -> None:
-    """Render a URL, extract a SiteProfile, store assets + screenshots, and
-    persist the profile on the site_capture Document. Vision descriptions for
-    image assets backfill via the existing analyze_images task."""
-    from datetime import datetime, timezone
-
-    from parsers.capture._assets import fetch_asset_bytes, image_ref_from_bytes
-    from parsers.capture._colors import dominant_screenshot_hex, process_colors
-    from parsers.capture._extract import run_extract
-    from parsers.capture._fonts import build_font_role, cluster_spacing, section_type
-    from parsers.capture._screenshots import (
-        NEUTRALIZE_ANIMATION_CSS, capture_screenshots, prepare_page)
-    from parsers.capture.profile import (
-        AssetRef, FontFile, Fonts, MotionHints, ScreenshotRef, SectionInfo,
-        SiteProfile, Spacing, TextInfo,
-    )
-
+    """Thin wrapper: SSRF pre-check, run the reusable capture orchestration,
+    then persist the profile + enqueue vision backfill."""
     doc_id, kb_id, url = payload["doc_id"], payload["kb_id"], payload["url"]
     cfg = get_settings()
     await reresolve_and_check_ssrf(url)
-
-    async with parse_session(
-        block_heavy=False,
-        viewport={"width": cfg.capture_viewport_width, "height": cfg.capture_viewport_height},
-    ) as ctx:
-        page = await ctx.new_page()
-        try:
-            await page.goto(url, wait_until="load",
-                            timeout=int(cfg.capture_render_timeout * 1000))
-        except Exception:
-            logger.info("capture goto timed out/failed, using rendered DOM: %s", url)
-        # Mainstream capture waits for networkidle, not just `load`. Do it as a
-        # best-effort wait on top of `load`, capped so long-polling sites don't
-        # burn the whole budget.
-        try:
-            await page.wait_for_load_state(
-                "networkidle", timeout=int(cfg.capture_networkidle_timeout * 1000))
-        except Exception:
-            pass
-        await page.wait_for_timeout(cfg.capture_settle_ms)
-        # Collapse animation/transition timing so scroll-reveal effects are
-        # captured at their final frame, not mid-fade.
-        try:
-            await page.add_style_tag(content=NEUTRALIZE_ANIMATION_CSS)
-        except Exception:
-            pass
-        # Ready the page (walk it to fire reveals + lazy loads, wait for fonts +
-        # images, hide sticky chrome) before extract + per-section screenshots.
-        await prepare_page(
-            page, step_frac=cfg.capture_scroll_step_frac,
-            step_ms=cfg.capture_scroll_step_ms, max_steps=cfg.capture_scroll_max_steps,
-            img_wait_ms=cfg.capture_img_wait_ms)
-        raw = await run_extract(page)
-        # Warn on likely-blocked / unhydrated pages (anti-bot challenge, empty SPA).
-        _ft = ((raw.get("text") or {}).get("full_text") or "").strip()
-        if len(_ft) < 100:
-            logger.warning("capture: only %d chars of text for %s — page may be "
-                           "blocked, challenged, or an unhydrated SPA", len(_ft), url)
-        shots = await capture_screenshots(
-            page, raw.get("sections", []),
-            max_screenshots=cfg.capture_max_screenshots,
-            max_height=cfg.capture_max_screenshot_height,
-            section_settle_ms=cfg.capture_section_settle_ms,
-        )
-
-    final_url = raw.get("final_url", url)
-    vision_configured = bool(cfg.vision_base_url)
-    obj_storage = await get_storage()
-    raw_assets = raw.get("assets", {})
-
-    # ---- image assets (logo/hero/og/favicon) -> fetch -> ImageRef ----
-    image_refs: list = []            # vision-worthy assets (logo/hero/og_image)
-    novision_asset_refs: list = []   # favicon etc. — stored, never described
-    filename_kind: dict[str, str] = {}
-    seen_urls: set[str] = set()
-    for kind in ("logo", "hero", "og_image", "favicon"):
-        a_url = raw_assets.get(kind)
-        if not a_url or a_url in seen_urls:
-            continue
-        seen_urls.add(a_url)
-        got = await fetch_asset_bytes(a_url, max_bytes=cfg.capture_max_asset_bytes)
-        if got is None:
-            continue
-        data, ctype = got
-        ext = _IMG_EXT.get(ctype, ".png")
-        fname = f"{kind}{ext}"
-        filename_kind[fname] = kind
-        ref = image_ref_from_bytes(data, filename=fname, mime=ctype or "image/png", alt=kind)
-        (image_refs if _asset_gets_vision(kind, fname) else novision_asset_refs).append(ref)
-
-    # ---- screenshots -> ImageRef ----
-    shot_refs: list = []
-    shot_meta: list[tuple[str, dict]] = []
-    for s in shots:
-        label = s["kind"] if s["section_index"] is None else f"section-{s['section_index']:02d}"
-        fname = f"screenshot-{label}.png"
-        shot_meta.append((fname, s))
-        shot_refs.append(image_ref_from_bytes(s["bytes"], filename=fname, mime="image/png",
-                                              width=s["width"], height=s["height"]))
-
-    # Two upload calls split by whether the image should get a vision
-    # description: logo/hero/og_image do; favicon + screenshots don't. The
-    # post-upload re-query joins on filename, which is safe because filenames
-    # are unique by construction: asset names are ``{kind}.{ext}`` for distinct
-    # kinds (duplicate URLs dropped above), screenshot names are ``screenshot-
-    # {label}.png`` for distinct labels — so name_picker never renames.
-    novision_refs = novision_asset_refs + shot_refs
-    if image_refs:
-        await stream_upload_and_store_refs(image_refs, kb_id=kb_id, doc_id=doc_id,
-                                           vision_configured=vision_configured)
-    if novision_refs:
-        await stream_upload_and_store_refs(novision_refs, kb_id=kb_id, doc_id=doc_id,
-                                           vision_configured=False)
-
-    fn_to_row = await _capture_hydrate_image_ids(doc_id)
-
-    # ---- image assets -> profile ----
-    profile_assets: list = []
-    for fname, kind in filename_kind.items():
-        row = fn_to_row.get(fname)
-        if not row:
-            continue
-        img_id, skey = row
-        profile_assets.append(AssetRef(
-            kind=kind, image_id=img_id, storage_key=skey, format=fname.rsplit(".", 1)[-1],
-            vision_status=("pending" if vision_configured and _asset_gets_vision(kind, fname) else "skipped"),
-        ))
-
-    # ---- non-image binaries: background video / lottie ----
-    for kind, a_url in (("background_video", raw_assets.get("video")),
-                        ("lottie", raw_assets.get("lottie"))):
-        if not a_url:
-            continue
-        got = await fetch_asset_bytes(a_url, max_bytes=cfg.capture_max_asset_bytes)
-        if got is None:
-            continue
-        data, ctype = got
-        ext = _BIN_EXT.get(ctype, ".bin")
-        key = f"captures/{kb_id}/{doc_id}/assets/{kind}{ext}"
-        await obj_storage.put(key, data, content_type=ctype or "application/octet-stream")
-        profile_assets.append(AssetRef(kind=kind, storage_key=key, format=ext.lstrip(".")))
-
-    # ---- fonts (catalog match; download woff2 on miss) ----
-    face_srcs = raw.get("fonts", {}).get("face_srcs", {})
-
-    async def _font_role(info: dict):
-        role = build_font_role(info, weights=[info.get("weight", 400)])
-        if not role.renderable:
-            srcs = face_srcs.get(role.family.lower(), [])
-            if srcs:
-                got = await fetch_asset_bytes(srcs[0], max_bytes=cfg.capture_max_asset_bytes)
-                if got:
-                    data, _ = got
-                    key = (f"captures/{kb_id}/{doc_id}/fonts/"
-                           f"{role.family.replace(' ', '-').lower()}.woff2")
-                    await obj_storage.put(key, data, content_type="font/woff2")
-                    role.files = [FontFile(url=key, weight=info.get("weight"), source="captured")]
-        return role
-
-    raw_fonts = raw.get("fonts", {})
-    fonts = Fonts(display=await _font_role(raw_fonts.get("display", {})),
-                  body=await _font_role(raw_fonts.get("body", {})))
-
-    # ---- screenshots -> profile ----
-    profile_shots: list = []
-    for fname, s in shot_meta:
-        row = fn_to_row.get(fname)
-        if not row:
-            continue
-        img_id, _skey = row
-        profile_shots.append(ScreenshotRef(kind=s["kind"], image_id=img_id,
-                                           width=s["width"], height=s["height"],
-                                           section_index=s["section_index"]))
-
-    # ---- colors / spacing / sections ----
-    # Pixel-sample the full-page screenshot's dominant color to cross-check the
-    # computed-style background (raises confidence + catches gradient/image bgs).
-    full_png = next((s["bytes"] for s in shots if s["kind"] == "full_page"), None)
-    screenshot_bg = dominant_screenshot_hex(full_png) if full_png else None
-    colors = process_colors(raw.get("colors", {}),
-                            delta_e_threshold=cfg.capture_color_delta_e,
-                            screenshot_bg_hex=screenshot_bg)
-    sp = raw.get("spacing", {})
-    spacing = Spacing(
-        scale=cluster_spacing(sp.get("margins", []) + sp.get("paddings", [])),
-        radii=cluster_spacing(sp.get("radii", []), max_val=500),
-        container_max_width=sp.get("container_max_width"),
-        section_gap=(round(min(sp["section_gaps"])) if sp.get("section_gaps") else None),
-    )
-    raw_sections = raw.get("sections", [])
-    shot_by_section = {s.section_index: s.image_id
-                       for s in profile_shots if s.section_index is not None}
-    sections = [SectionInfo(
-        index=s["index"], heading=s.get("heading", ""),
-        type=section_type(s.get("heading", ""), s.get("classNames", []),
-                          s["index"], len(raw_sections)),
-        bg_color=_safe_hex(s.get("bg", "")),
-        screenshot_image_id=shot_by_section.get(s["index"]),
-    ) for s in raw_sections]
-
-    t = raw.get("text", {})
-    profile = SiteProfile(
-        url=final_url, captured_at=datetime.now(timezone.utc).isoformat(),
-        fetch_tier="playwright", colors=colors,
-        theme_color=raw.get("colors", {}).get("theme_color"),
-        fonts=fonts, spacing=spacing, sections=sections,
-        text=TextInfo(headline=t.get("headline", ""), tagline=t.get("tagline", ""),
-                      ctas=t.get("ctas", []), full_text=t.get("full_text", "")),
-        assets=profile_assets, screenshots=profile_shots,
-        motion_hints=MotionHints(**raw.get("motion", {})),
-    )
+    storage = await get_storage()
+    deps = _HandlerCaptureDeps(cfg, kb_id, doc_id, storage)
+    outcome: CaptureOutcome = await run_capture(url, kb_id, doc_id, cfg, deps)
 
     await update_doc(doc_id, status="completed", index_status="skipped",
-                     image_status=("completed" if (image_refs or novision_refs) else "none"),
-                     title=(t.get("headline") or final_url)[:500],
-                     profile=profile.model_dump(),
+                     image_status=("completed" if outcome.has_images else "none"),
+                     title=outcome.title[:500], profile=outcome.profile.model_dump(),
                      error_msg="", error_type=None, error_trace=None, error_code=None)
-
-    if vision_configured and image_refs:
+    if outcome.enqueue_image_analysis:
         await enqueue("analyze_images", {"kb_id": kb_id, "doc_id": doc_id})
+
