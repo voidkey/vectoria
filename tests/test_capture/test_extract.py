@@ -19,6 +19,18 @@ def test_extract_js_collects_phase1_tokens():
         assert needle in EXTRACT_JS, needle
 
 
+def test_extract_js_collects_phase2_colors():
+    # Phase 2: real top-20 ranked colors + top-48 colorStats. The extractor must
+    # keep `samples` (process_colors consumes it) AND add the reference-shaped
+    # `ranked`/`stats`, built via elementFromPoint grid sampling and a 1x1-canvas
+    # modern-color-space resolver.
+    for needle in ("samples", "ranked", "stats",
+                   "elementFromPoint", "colorStats",
+                   "interactiveBg", "areaBg", "textCount",
+                   "getContext", "getImageData"):
+        assert needle in EXTRACT_JS, needle
+
+
 @pytest.mark.asyncio
 async def test_run_extract_passes_through():
     page = AsyncMock()

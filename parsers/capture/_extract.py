@@ -263,8 +263,200 @@ EXTRACT_JS = r"""
                 height: Math.round(document.documentElement.scrollHeight),
                 viewport: {width: window.innerWidth, height: window.innerHeight}};
 
+  // ── Phase 2: reference color parity (tokenExtractor.ts) ──────────────────
+  // Real top-20 usage-ranked `ranked` (hex strings) + top-48 `stats`
+  // (hyperframes DesignTokens colorStats). Fully guarded: runs inside
+  // page.evaluate with no caller try/except, so it must degrade to empty
+  // arrays rather than throw.
+  let colors_ranked = [], colors_stats = [];
+  try {
+    // 1x1-canvas resolver: turns ANY CSS color (incl. oklch/oklab/lab/hsl/
+    // color-mix/color(srgb)) into #RRGGBB. Guarded — canvas can throw/taint.
+    const rgbToHex = (color) => {
+      if (!color) return null;
+      if (color.startsWith('#')) return (color.length === 4
+        ? '#' + color[1]+color[1] + color[2]+color[2] + color[3]+color[3]
+        : color).toUpperCase();
+      let m = color.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
+      if (!m) {
+        const cm = color.match(/color\(srgb\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)/);
+        if (cm) {
+          m = [null, Math.round(parseFloat(cm[1])*255),
+               Math.round(parseFloat(cm[2])*255), Math.round(parseFloat(cm[3])*255)];
+        } else if (/oklch|oklab|lch|lab|hsla?|color-mix|color\(/.test(color)) {
+          try {
+            const cvs = document.createElement('canvas');
+            cvs.width = 1; cvs.height = 1;
+            const ctx2d = cvs.getContext('2d');
+            if (ctx2d) {
+              ctx2d.fillStyle = color;
+              ctx2d.fillRect(0, 0, 1, 1);
+              const px = ctx2d.getImageData(0, 0, 1, 1).data;
+              if (px[3] > 0)
+                return '#' + ((1<<24) + (px[0]<<16) + (px[1]<<8) + px[2]).toString(16).slice(1).toUpperCase();
+            }
+          } catch(e2) {}
+          try {
+            const tmp = document.createElement('div');
+            tmp.style.color = color;
+            document.body.appendChild(tmp);
+            const resolved = getComputedStyle(tmp).color;
+            document.body.removeChild(tmp);
+            if (resolved && resolved !== color) return rgbToHex(resolved);
+          } catch(e3) {}
+          return null;
+        } else {
+          return null;
+        }
+      }
+      return '#' + ((1<<24) + (parseInt(m[1])<<16) + (parseInt(m[2])<<8) + parseInt(m[3]))
+        .toString(16).slice(1).toUpperCase();
+    };
+    const csOf = (el) => { try { return getComputedStyle(el); } catch(e){ return null; } };
+
+    // ── ranking pass: summed-weight colorSet, top-20 ──
+    const colorSet = {};
+    const addColor = (c, weight) => {
+      if (!c || c === 'rgba(0, 0, 0, 0)' || c === 'transparent' ||
+          c === 'inherit' || c === 'initial' || c === 'currentcolor') return;
+      const hex = rgbToHex(c);
+      if (hex) colorSet[hex] = (colorSet[hex] || 0) + (weight || 1);
+    };
+    // (a) DOM computed styles on branded/structural candidates.
+    let cand = [];
+    try {
+      cand = Array.from(document.querySelectorAll(
+        "body, header, nav, main, footer, section, h1, h2, h3, h4, h5, h6, " +
+        "a, button, [role='button'], [class*='hero'], [class*='cta'], [class*='btn'], " +
+        "[class*='card'], [class*='badge'], [class*='tag'], [class*='accent'], [class*='highlight']"
+      )).slice(0, 200);
+    } catch(e) {}
+    for (const el of cand) {
+      const cs = csOf(el); if (!cs) continue;
+      addColor(cs.backgroundColor);
+      addColor(cs.color);
+      addColor(cs.borderColor);
+      addColor(cs.outlineColor);
+      const bgImg = cs.backgroundImage;
+      if (bgImg && bgImg !== 'none') {
+        const g = bgImg.match(/(?:#[0-9a-fA-F]{3,8}|rgba?\([^)]+\)|oklch\([^)]+\)|oklab\([^)]+\)|hsla?\([^)]+\)|lab\([^)]+\))/g);
+        if (g) g.forEach(gc => addColor(gc));
+      }
+      const shadow = cs.boxShadow;
+      if (shadow && shadow !== 'none') {
+        const sc = shadow.match(/(?:#[0-9a-fA-F]{3,8}|rgba?\([^)]+\))/g);
+        if (sc) sc.forEach(c => addColor(c));
+      }
+    }
+    // (b) html/body backgrounds — the dominant canvas color, weight 10.
+    try {
+      const htmlCs = csOf(document.documentElement);
+      const bodyCs = document.body ? csOf(document.body) : null;
+      if (htmlCs) addColor(htmlCs.backgroundColor, 10);
+      if (bodyCs) {
+        addColor(bodyCs.backgroundColor, 10);
+        const g = (bodyCs.background || '').match(/(?:#[0-9a-fA-F]{3,8}|rgba?\([^)]+\)|oklch\([^)]+\)|hsla?\([^)]+\))/g);
+        if (g) g.forEach(gc => addColor(gc, 8));
+      }
+    } catch(e) {}
+    // (c) 6x5 elementFromPoint grid — sample what the user actually SEES.
+    try {
+      const vpW = window.innerWidth, vpH = window.innerHeight;
+      const cols = 6, rows = 5;
+      for (let gy = 0; gy < rows; gy++) {
+        for (let gx = 0; gx < cols; gx++) {
+          try {
+            const gpx = Math.round((gx + 0.5) * vpW / cols);
+            const gpy = Math.round((gy + 0.5) * vpH / rows);
+            const at = document.elementFromPoint(gpx, gpy);
+            if (!at) continue;
+            const atCs = csOf(at); if (!atCs) continue;
+            addColor(atCs.color, 2);
+            let bgc = atCs.backgroundColor, walker = at;
+            while (walker && (!bgc || bgc === 'rgba(0, 0, 0, 0)' || bgc === 'transparent')) {
+              walker = walker.parentElement;
+              if (walker) { const wc = csOf(walker); bgc = wc ? wc.backgroundColor : bgc; }
+            }
+            addColor(bgc, 3);
+          } catch(e){}
+        }
+      }
+    } catch(e) {}
+    // (d) 500-el sweep — colored blocks the grid misses (banners/cards/code).
+    let sweepEls = [];
+    try { sweepEls = document.querySelectorAll('*'); } catch(e) {}
+    let swept = 0;
+    for (let si = 0; si < sweepEls.length && swept < 500; si++) {
+      const cs = csOf(sweepEls[si]); if (!cs) { swept++; continue; }
+      const bg = cs.backgroundColor;
+      if (bg && bg !== 'rgba(0, 0, 0, 0)' && bg !== 'transparent') {
+        const hex = rgbToHex(bg);
+        if (hex && hex !== '#FFFFFF' && hex !== '#000000') addColor(bg, 1);
+      }
+      swept++;
+    }
+    // (e) :root vars that resolve to a color value.
+    try {
+      const rootStyle = getComputedStyle(document.documentElement);
+      for (const k of Object.keys(css_vars)) {
+        const val = rootStyle.getPropertyValue(k).trim();
+        if (val && /^(#|rgb|hsl|oklch|oklab|lch|lab|color)/.test(val)) addColor(val);
+      }
+    } catch(e) {}
+    colors_ranked = Object.keys(colorSet)
+      .sort((a, b) => colorSet[b] - colorSet[a]).slice(0, 20);
+
+    // ── stats pass: classify bg / interactive / large-area / text; top-48. ──
+    const statMap = {};
+    const statFor = (hex) => {
+      if (!statMap[hex]) statMap[hex] =
+        {count: 0, bgCount: 0, interactiveBg: 0, areaBg: 0, textCount: 0, maxArea: 0};
+      return statMap[hex];
+    };
+    let statEls = [];
+    try { statEls = Array.from(sweepEls).slice(0, 9000); } catch(e) {}
+    for (const sEl of statEls) {
+      try {
+        const sCs = csOf(sEl); if (!sCs) continue;
+        if (sCs.display === 'none' || sCs.visibility === 'hidden') continue;
+        const sRect = sEl.getBoundingClientRect();
+        const sArea = sRect.width * sRect.height;
+        const sTag = sEl.tagName.toLowerCase();
+        const sRole = sEl.getAttribute('role') || '';
+        const sCls = sEl.getAttribute('class') || '';
+        const sInteractive = sTag === 'a' || sTag === 'button' ||
+          sRole === 'button' || sRole === 'link' || sRole === 'menuitem' || sRole === 'tab' ||
+          /\b(btn|button|cta|primary|action)\b/i.test(sCls);
+        const sBg = sCs.backgroundColor;
+        if (sBg && sBg !== 'rgba(0, 0, 0, 0)' && sBg !== 'transparent') {
+          const bgHex = rgbToHex(sBg);
+          if (bgHex) {
+            const st = statFor(bgHex);
+            st.count++; st.bgCount++;
+            if (sInteractive) st.interactiveBg++;
+            if (sArea > 50000) st.areaBg++;
+            if (sArea > st.maxArea) st.maxArea = Math.round(sArea);
+          }
+        }
+        const sColor = sCs.color;
+        if (sColor && sColor !== 'rgba(0, 0, 0, 0)' && sColor !== 'transparent') {
+          const txHex = rgbToHex(sColor);
+          if (txHex) { const st2 = statFor(txHex); st2.count++; st2.textCount++; }
+        }
+      } catch(e) {}
+    }
+    colors_stats = Object.keys(statMap).map(h => {
+      const s = statMap[h];
+      return {hex: h, count: s.count, bgCount: s.bgCount, interactiveBg: s.interactiveBg,
+              areaBg: s.areaBg, textCount: s.textCount, maxArea: s.maxArea};
+    }).filter(s => s.bgCount > 0 || s.interactiveBg > 0 || s.count >= 3)
+      .sort((a, b) => (b.bgCount + b.interactiveBg * 3 + b.textCount) -
+                      (a.bgCount + a.interactiveBg * 3 + a.textCount))
+      .slice(0, 48);
+  } catch(e) { colors_ranked = []; colors_stats = []; }
+
   return {final_url: location.href,
-          colors: {samples, css_vars, theme_color},
+          colors: {samples, css_vars, theme_color, ranked: colors_ranked, stats: colors_stats},
           fonts: {display, body, face_srcs},
           spacing, sections, text, assets, motion,
           headings, svgs, page};
