@@ -283,6 +283,12 @@ class Settings(BaseSettings):
     capture_max_asset_bytes: int = 25 * 1024 * 1024   # per non-image binary (video/lottie/woff2)
     capture_asset_catalog_cap: int = 200          # max URL-only media catalog entries (after dedup)
     capture_video_cap: int = 20                   # max DOM video descriptors
+    # Phase 3 asset-download parity. SVGs come from the already-extracted markup
+    # (no fetch); catalog images are fetched via SSRF-checked fetch_asset_bytes.
+    capture_max_svgs: int = 30                    # max page SVGs stored to assets/svgs/
+    capture_max_catalog_images: int = 40          # logged safety cap; context filters do the real gating
+    capture_min_image_bytes: int = 10000          # min-size gate for raster catalog images (junk/spacer filter)
+    capture_min_svg_bytes: int = 200              # min SVG markup length to bother storing
     capture_max_screenshot_height: int = 20000    # clamp full-page height (DoS guard)
     capture_color_delta_e: float = 10.0           # ΔE (CIE76) color-cluster merge threshold
     # Path to a deployment-provided JSON font catalog [{family,slug,css_url,weights}]
