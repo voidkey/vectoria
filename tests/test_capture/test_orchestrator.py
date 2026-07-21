@@ -99,6 +99,40 @@ async def test_run_capture_happy_path_builds_profile_without_browser_or_db():
 
 
 @pytest.mark.asyncio
+async def test_run_capture_maps_colors_ranked_and_stats():
+    """Phase 2: raw colors.ranked/colors.stats map onto the new profile fields;
+    role tokens (colors) are still built from colors.samples."""
+    stats = [{"hex": "#0B0B0F", "count": 40, "bgCount": 30, "interactiveBg": 2,
+              "areaBg": 6, "textCount": 1, "maxArea": 900000},
+             {"hex": "#FF3366", "count": 12, "bgCount": 4, "interactiveBg": 8,
+              "areaBg": 0, "textCount": 0, "maxArea": 5000}]
+    raw = {
+        "final_url": "https://x/final",
+        "colors": {"samples": [{"color": "#0b0b0f", "area": 400000, "text": False}],
+                   "css_vars": {}, "theme_color": None,
+                   "ranked": ["#0B0B0F", "#FFFFFF", "#FF3366"], "stats": stats},
+        "fonts": {"display": {"family": "Inter", "weight": 700, "selector": "h1"},
+                  "body": {"family": "Inter", "weight": 400, "selector": "p"},
+                  "face_srcs": {}},
+        "spacing": {"margins": [8], "paddings": [16], "radii": [8],
+                    "container_max_width": 1200, "section_gaps": []},
+        "sections": [], "text": {"headline": "Hi", "tagline": "", "ctas": [],
+                                 "full_text": ""},
+        "assets": {"logo": None, "hero": None, "og_image": None, "favicon": None,
+                   "video": None, "lottie": None},
+        "motion": {"libraries": [], "has_video_background": False, "has_canvas": False},
+    }
+    deps = _FakeDeps(_fake_page(raw), {})
+    from parsers.capture.orchestrator import run_capture
+    outcome = await run_capture("https://x", "kb", "d1", _settings(), deps)
+    prof = outcome.profile.model_dump()
+    assert prof["colors_ranked"] == ["#0B0B0F", "#FFFFFF", "#FF3366"]
+    assert prof["color_stats"] == stats
+    # role tokens still populated from samples
+    assert any(c["role"] == "background" for c in prof["colors"])
+
+
+@pytest.mark.asyncio
 async def test_run_capture_maps_phase1_tokens_and_strips_svg_markup():
     raw = {
         "final_url": "https://x/final",

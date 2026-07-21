@@ -41,46 +41,26 @@ def _fonts_array(fonts: dict) -> list[dict]:
     return out
 
 
-def _color_stats(colors: list[dict]) -> list[dict]:
-    """Synthesize the official tokens.json `colorStats` from vectoria's richer
-    role-tagged ColorTokens, so build-frame's brandRolesFromStats() picks brand
-    roles by FUNCTION (canvas = largest background, accent = interactive, ink =
-    text) instead of falling back to luminance/chroma guessing. Vectoria already
-    resolved `role` (background|primary|accent|text|muted) + `coverage`(0..1);
-    we project those onto the areaBg/interactiveBg/textCount fields the script ranks."""
-    stats: list[dict] = []
-    for c in colors:
-        hexv = c.get("hex")
-        if not hexv:
-            continue
-        role = (c.get("role") or "").lower()
-        cov = float(c.get("coverage") or 0.0)
-        s = {"hex": hexv, "areaBg": 0, "interactiveBg": 0, "textCount": 0,
-             "bgCount": 0, "maxArea": 0, "count": max(1, round(cov * 100))}
-        if role == "background":
-            area = max(1, round(cov * 10000))
-            s.update(areaBg=area, maxArea=area, bgCount=1)
-        elif role in ("accent", "primary"):
-            s["interactiveBg"] = max(1, round(cov * 10000))
-        elif role == "text":
-            s["textCount"] = max(1, round(cov * 1000))
-        stats.append(s)
-    return stats
-
-
 def _official_tokens(profile: dict) -> dict:
     """tokens.json in the official hyperframes shape build-frame.mjs reads:
-    {title, description, colors, fonts[], colorStats, spacing}. Colors stay as the
-    rich ColorTokens (build-frame reads `.hex`); title/description come from the
-    captured page text; fonts/colorStats are projected from vectoria's own fields."""
+    {title, description, colors, fonts[], colorStats, spacing}. `colors` is the
+    top-20 usage-ranked hex STRING list (reference shape) and `colorStats` the
+    REAL top-48 per-hex stats (Phase 2 — was synthetic object-colors + a stats
+    projection). title/description come from the captured page text; fonts are
+    projected from vectoria's role-keyed Fonts. If a stored profile predates the
+    ranking pass (empty colors_ranked), fall back to the role tokens' hexes so
+    downstream never gets an empty `colors`; colorStats then falls back to []."""
     text = profile.get("text", {}) or {}
+    ranked = profile.get("colors_ranked") or []
+    if not ranked:
+        ranked = [c["hex"] for c in (profile.get("colors") or []) if c.get("hex")]
     out = {
         "title": text.get("headline", ""),
         "description": text.get("tagline", ""),
         "ctas": text.get("ctas", []),  # extra (official schema ignores unknown keys); handy for downstream summaries
-        "colors": profile.get("colors", []),
+        "colors": ranked,
         "fonts": _fonts_array(profile.get("fonts", {}) or {}),
-        "colorStats": _color_stats(profile.get("colors", []) or []),
+        "colorStats": profile.get("color_stats") or [],
         "spacing": profile.get("spacing", {}),
         # Phase 1 — hyperframes DesignTokens parity. Vectoria's profile is
         # snake_case; project back to the verbatim camelCase keys build-frame reads.
@@ -133,9 +113,10 @@ async def build_hyperframes_zip(doc) -> bytes:
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         # extracted/tokens.json — official hyperframes shape (title/description/
-        # colors/fonts[]/colorStats/spacing) so build-frame.mjs remixes brand
-        # colors AND fonts onto the preset (was {colors, spacing}-only, which
-        # dropped brand typography + made role detection fall back to luminance).
+        # colors[str]/fonts[]/colorStats/spacing) so build-frame.mjs remixes
+        # brand colors AND fonts onto the preset. `colors` is the top-20 ranked
+        # hex list and `colorStats` the REAL per-hex stats that drive role
+        # detection (no longer projected from role tokens/luminance fallback).
         zf.writestr("capture/extracted/tokens.json",
                     json.dumps(_official_tokens(profile), ensure_ascii=False, indent=2))
         # extracted/fonts.json + fonts-manifest.json — the role-keyed Fonts object.

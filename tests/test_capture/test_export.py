@@ -12,6 +12,13 @@ async def test_build_hyperframes_zip_layout():
     doc.id, doc.kb_id = "d1", "kb"
     doc.profile = {
         "colors": [{"hex": "#000", "role": "background"}],
+        "colors_ranked": ["#0B0B0F", "#FFFFFF", "#FF3366"],
+        "color_stats": [{"hex": "#0B0B0F", "count": 40, "bgCount": 30,
+                         "interactiveBg": 2, "areaBg": 6, "textCount": 1,
+                         "maxArea": 900000},
+                        {"hex": "#FF3366", "count": 12, "bgCount": 4,
+                         "interactiveBg": 8, "areaBg": 0, "textCount": 0,
+                         "maxArea": 5000}],
         "spacing": {"scale": [8, 16]},
         "fonts": {"display": {"family": "Inter", "catalog_match": {"matched": False},
                               "files": [], "stack": "Inter", "renderable": False,
@@ -54,12 +61,20 @@ async def test_build_hyperframes_zip_layout():
     assert "capture/extracted/asset-descriptions.md" in names
     assert any(n.startswith("capture/assets/") for n in names)
     assert any(n.startswith("capture/screenshots/") for n in names)
-    # tokens.json is the official hyperframes shape: build-frame reads
-    # colors[].hex, the fonts[] array, and colorStats for brand-role detection.
+    # tokens.json is the official hyperframes shape: build-frame reads `colors`
+    # as a top-20 hex STRING list, the fonts[] array, and the REAL colorStats
+    # for brand-role detection (Phase 2 — was synthetic object-colors + stats).
     tokens = json.loads(zf.read("capture/extracted/tokens.json"))
-    assert tokens["colors"][0]["hex"] == "#000"
+    assert tokens["colors"] == ["#0B0B0F", "#FFFFFF", "#FF3366"]  # strings, not objects
+    assert all(isinstance(c, str) for c in tokens["colors"])
     assert tokens["fonts"][0]["family"] == "Inter"      # role-keyed Fonts flattened to array
-    assert tokens["colorStats"][0]["hex"] == "#000"     # projected from role/coverage
+    # Real per-hex stats pass through verbatim (top-48, hyperframes field names).
+    assert tokens["colorStats"][0]["hex"] == "#0B0B0F"
+    assert tokens["colorStats"][0]["areaBg"] == 6       # REAL count, not a coverage projection
+    assert tokens["colorStats"][0]["maxArea"] == 900000
+    assert tokens["colorStats"][1] == {"hex": "#FF3366", "count": 12, "bgCount": 4,
+                                       "interactiveBg": 8, "areaBg": 0, "textCount": 0,
+                                       "maxArea": 5000}
     assert b"a logo" in zf.read("capture/extracted/asset-descriptions.md")
 
     # Phase 1 — hyperframes DesignTokens parity: verbatim camelCase key names.
@@ -79,3 +94,23 @@ async def test_build_hyperframes_zip_layout():
     assert sec["callsToAction"] == ["Start"]
     assert sec["assetUrls"] == ["https://x/a.png"]
     assert sec["layout"] == "split" and sec["text"] == "hero body"
+
+
+def test_official_tokens_colors_fallback_when_ranked_empty():
+    """Legacy/partial profiles without colors_ranked fall back to the role
+    tokens' hexes so downstream never gets an empty `colors`; colorStats -> []."""
+    from parsers.capture.export import _official_tokens
+    tokens = _official_tokens({
+        "colors": [{"hex": "#123456", "role": "background"},
+                   {"hex": "#ABCDEF", "role": "accent"}],
+        "fonts": {}, "text": {"headline": "T"},
+    })
+    assert tokens["colors"] == ["#123456", "#ABCDEF"]  # from [c["hex"] ...]
+    assert all(isinstance(c, str) for c in tokens["colors"])
+    assert tokens["colorStats"] == []
+
+
+def test_official_tokens_no_synthetic_color_stats_helper():
+    """The synthetic _color_stats projection is gone."""
+    import parsers.capture.export as export_mod
+    assert not hasattr(export_mod, "_color_stats")
