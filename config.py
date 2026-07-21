@@ -290,6 +290,11 @@ class Settings(BaseSettings):
     capture_min_image_bytes: int = 10000          # min-size gate for raster catalog images (junk/spacer filter)
     capture_min_svg_bytes: int = 200              # min SVG markup length to bother storing
     capture_max_screenshot_height: int = 20000    # clamp full-page height (DoS guard)
+    # Bounded site-font face download (Phase 4, ported from hyperframes
+    # downloadAndRewriteFonts): per-family and total caps keep Google-Fonts-style
+    # 20+ unicode-range subsets from bloating the capture. Latin subsets prioritized.
+    capture_max_fonts_per_family: int = 6         # MAX_FONTS_PER_FAMILY
+    capture_max_total_fonts: int = 30             # MAX_TOTAL_FONTS
     capture_color_delta_e: float = 10.0           # ΔE (CIE76) color-cluster merge threshold
     # Path to a deployment-provided JSON font catalog [{family,slug,css_url,weights}]
     # used to reuse a downstream CDN font instead of re-storing. Empty = matching

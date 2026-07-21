@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import re
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -51,6 +52,16 @@ def _asset_gets_vision(kind: str, fname: str) -> bool:
     """True only for vision-worthy kinds whose stored format is a raster the
     vision model can decode (not svg/ico)."""
     return kind in _VISION_ASSET_KINDS and fname.rsplit(".", 1)[-1] in _VISION_RASTER_EXT
+
+
+_LATIN_SUBSET_RE = re.compile(r"latin|[A-Za-z0-9]{10,}\.woff", re.I)
+
+
+def _is_latin_subset(url: str) -> bool:
+    """True when a font URL looks like a Latin subset (or a hashed-filename face),
+    so it sorts ahead of CJK/Arabic unicode-range subsets. Mirrors the reference
+    sort key in assetDownloader.ts::downloadAndRewriteFonts."""
+    return bool(_LATIN_SUBSET_RE.search(url or ""))
 
 
 def _safe_hex(css: str) -> str:
@@ -345,8 +356,24 @@ async def run_capture(url: str, kb_id: str, doc_id: str, cfg, deps: CaptureDeps)
             kind="image", storage_key=key, url=c_url, format=ext.lstrip("."),
             description="", vision_status="skipped"))
 
-    # ---- fonts (catalog match; download woff2 on miss) ----
+    # ---- fonts (catalog match; download woff2 on miss + bounded site face set) ----
+    from parsers.capture._font_metadata import font_file_metadata
     face_srcs = raw.get("fonts", {}).get("face_srcs", {})
+    font_files: list[dict] = []             # raw FontFileMetadata dicts (+ storage_key)
+    seen_font_hashes: set[str] = set()      # content-hash dedup across role + face set
+
+    async def _store_face(data: bytes, basename: str) -> str:
+        """Store one woff2 face under assets/fonts/ (content-hash name) and append
+        its fonttools metadata to the accumulator. Deduped by content hash."""
+        digest = hashlib.sha1(data).hexdigest()[:8]
+        key = f"captures/{kb_id}/{doc_id}/assets/fonts/{digest}.woff2"
+        if digest not in seen_font_hashes:
+            seen_font_hashes.add(digest)
+            await storage.put(key, data, content_type="font/woff2")
+            meta = font_file_metadata(data, f"{digest}.woff2")
+            meta["storage_key"] = key
+            font_files.append(meta)
+        return key
 
     async def _font_role(info: dict):
         role = build_font_role(info, weights=[info.get("weight", 400)])
@@ -356,15 +383,43 @@ async def run_capture(url: str, kb_id: str, doc_id: str, cfg, deps: CaptureDeps)
                 got = await fetch_asset_bytes(srcs[0], max_bytes=cfg.capture_max_asset_bytes)
                 if got:
                     data, _ = got
-                    key = (f"captures/{kb_id}/{doc_id}/fonts/"
-                           f"{role.family.replace(' ', '-').lower()}.woff2")
-                    await storage.put(key, data, content_type="font/woff2")
+                    key = await _store_face(data, srcs[0])
                     role.files = [FontFile(url=key, weight=info.get("weight"), source="captured")]
         return role
 
     raw_fonts = raw.get("fonts", {})
     fonts = Fonts(display=await _font_role(raw_fonts.get("display", {})),
                   body=await _font_role(raw_fonts.get("body", {})))
+
+    # Bounded site face set (port of hyperframes downloadAndRewriteFonts): download
+    # the page's @font-face woff2 URLs, Latin subsets first, capped per-family and
+    # in total, best-effort per face. Role fonts already stored above are counted
+    # (content-hash dedup) so the manifest covers everything without double-storing.
+    total_fonts = len(font_files)
+    truncated = 0
+    for family_key, urls in face_srcs.items():
+        fam_count = 0
+        # Latin-subset priority: a URL whose path/query names a "latin" subset, or a
+        # long alphanumeric hashed filename ending in .woff(2), sorts before CJK/
+        # Arabic/etc unicode-range subsets (mirrors the reference sort key).
+        for f_url in sorted(urls, key=lambda u: 0 if _is_latin_subset(u) else 1):
+            if total_fonts >= cfg.capture_max_total_fonts:
+                truncated += 1
+                continue
+            if fam_count >= cfg.capture_max_fonts_per_family:
+                continue
+            got = await fetch_asset_bytes(f_url, max_bytes=cfg.capture_max_asset_bytes)
+            if got is None:
+                continue
+            data, _ = got
+            before = len(font_files)
+            await _store_face(data, f_url)
+            fam_count += 1
+            if len(font_files) > before:     # newly stored (not a content dup)
+                total_fonts += 1
+    if truncated:
+        logger.info("capture: total-font cap (%d) truncated %d face(s)",
+                    cfg.capture_max_total_fonts, truncated)
 
     # ---- screenshots -> profile ----
     profile_shots: list = []
@@ -442,7 +497,7 @@ async def run_capture(url: str, kb_id: str, doc_id: str, cfg, deps: CaptureDeps)
         color_stats=raw.get("colors", {}).get("stats", []) or [],
         css_variables=raw.get("colors", {}).get("css_vars", {}) or {},
         headings=headings, svgs=svgs, page=page,
-        fonts=fonts, spacing=spacing, sections=sections,
+        fonts=fonts, font_files=font_files, spacing=spacing, sections=sections,
         text=TextInfo(headline=t.get("headline", ""), tagline=t.get("tagline", ""),
                       ctas=t.get("ctas", []), full_text=t.get("full_text", "")),
         assets=profile_assets, screenshots=profile_shots,

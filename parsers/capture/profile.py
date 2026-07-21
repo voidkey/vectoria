@@ -155,6 +155,11 @@ class SiteProfile(BaseModel):
     svgs: list[SvgInfo] = Field(default_factory=list)
     page: PageGeom | None = None
     fonts: Fonts
+    # Phase 4: raw FontFileMetadata dicts (from fonttools) for every captured face
+    # — role fonts + the bounded site face set — each carrying its storage_key. Feeds
+    # the real fonts-manifest.json + full fonts.css at export. Defaults to [] so older
+    # stored profiles (no bounded face set) still validate and fall back at export.
+    font_files: list[dict] = Field(default_factory=list)
     spacing: Spacing
     sections: list[SectionInfo] = Field(default_factory=list)
     text: TextInfo

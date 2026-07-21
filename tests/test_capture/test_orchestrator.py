@@ -484,6 +484,167 @@ async def test_run_capture_catalog_image_does_not_clobber_named_hero():
     assert cat_path != named_path
 
 
+def _synth_woff2(family="Inter", subfamily="Regular", weight=400) -> bytes:
+    """A tiny valid woff2 face so font_file_metadata returns real metadata."""
+    import io as _io
+    from fontTools.fontBuilder import FontBuilder
+    from fontTools.ttLib.tables._g_l_y_f import Glyph
+    cps = [0x41, 0x42]
+    order = [".notdef", "g0", "g1"]
+    fb = FontBuilder(1000, isTTF=True)
+    fb.setupGlyphOrder(order)
+    fb.setupCharacterMap({0x41: "g0", 0x42: "g1"})
+    fb.setupGlyf({n: Glyph() for n in order})
+    fb.setupHorizontalMetrics({n: (500, 0) for n in order})
+    fb.setupHorizontalHeader(ascent=800, descent=-200)
+    fb.setupNameTable({"familyName": family, "styleName": subfamily,
+                       "psName": f"{family}-{subfamily}"})
+    fb.setupOS2(usWeightClass=weight, fsSelection=0x40)
+    fb.setupPost()
+    fb.font.flavor = "woff2"
+    buf = _io.BytesIO()
+    fb.save(buf)
+    return buf.getvalue()
+
+
+def _font_raw(face_srcs):
+    return {
+        "final_url": "https://x/final",
+        "colors": {"samples": [{"color": "#0b0b0f", "area": 400000, "text": False}],
+                   "css_vars": {}, "theme_color": None},
+        "fonts": {"display": {"family": "Inter", "weight": 700, "selector": "h1"},
+                  "body": {"family": "Inter", "weight": 400, "selector": "p"},
+                  "face_srcs": face_srcs},
+        "spacing": {"margins": [8], "paddings": [16], "radii": [8],
+                    "container_max_width": 1200, "section_gaps": []},
+        "sections": [], "text": {"headline": "Hi", "tagline": "", "ctas": [],
+                                 "full_text": ""},
+        "assets": {"logo": None, "hero": None, "og_image": None, "favicon": None,
+                   "video": None, "lottie": None},
+        "motion": {"libraries": [], "has_video_background": False, "has_canvas": False},
+    }
+
+
+def _font_settings():
+    cfg = _settings()
+    cfg.capture_max_fonts_per_family = 6
+    cfg.capture_max_total_fonts = 30
+    return cfg
+
+
+@pytest.mark.asyncio
+async def test_run_capture_prefers_latin_subset_and_collects_metadata():
+    """A family with a CJK and a Latin subset: Latin is fetched first; both are
+    stored under assets/fonts/ and their fonttools metadata is collected."""
+    face_srcs = {"inter": ["https://x/fonts/inter-cjk.woff2",
+                           "https://x/fonts/inter-latin.woff2"]}
+    raw = _font_raw(face_srcs)
+    deps = _FakeDeps(_fake_page(raw), {})
+    cfg = _font_settings()
+
+    fetch_order: list[str] = []
+
+    async def _fake_fetch(url, *, max_bytes):
+        fetch_order.append(url)
+        # distinct bytes per URL so they don't content-dedup
+        return _synth_woff2(subfamily=url.rsplit("/", 1)[-1]), "font/woff2"
+
+    from unittest.mock import patch
+    with patch("parsers.capture._assets.fetch_asset_bytes", new=_fake_fetch):
+        from parsers.capture.orchestrator import run_capture
+        outcome = await run_capture("https://x", "kb", "d1", cfg, deps)
+
+    # Latin subset fetched before CJK (role-font pass fetches srcs[0]=cjk first,
+    # then the bounded pass sorts Latin ahead — so latin appears in the face-set fetch).
+    assert "https://x/fonts/inter-latin.woff2" in fetch_order
+    ff = outcome.profile.font_files
+    assert len(ff) == 2
+    for m in ff:
+        assert m["storage_key"].startswith("captures/kb/d1/assets/fonts/")
+        assert m["identified"] is True
+        assert m["family"] == "Inter"
+    # The role-font passes fetch srcs[0] (cjk) first; the BOUNDED pass then iterates
+    # the family in Latin-first sorted order, so its two fetches are [latin, cjk].
+    assert fetch_order[-2:] == ["https://x/fonts/inter-latin.woff2",
+                                "https://x/fonts/inter-cjk.woff2"]
+
+
+@pytest.mark.asyncio
+async def test_run_capture_enforces_per_family_font_cap():
+    urls = [f"https://x/fonts/inter-{i}.woff2" for i in range(10)]
+    face_srcs = {"inter": urls}
+    raw = _font_raw(face_srcs)
+    deps = _FakeDeps(_fake_page(raw), {})
+    cfg = _font_settings()
+    cfg.capture_max_fonts_per_family = 3
+
+    async def _fake_fetch(url, *, max_bytes):
+        return _synth_woff2(subfamily=url.rsplit("/", 1)[-1]), "font/woff2"
+
+    from unittest.mock import patch
+    with patch("parsers.capture._assets.fetch_asset_bytes", new=_fake_fetch):
+        from parsers.capture.orchestrator import run_capture
+        outcome = await run_capture("https://x", "kb", "d1", cfg, deps)
+
+    # role-font pass stored inter-0 (srcs[0]); bounded pass adds up to family cap.
+    # Total per-family faces capped at 3 (the bounded loop counts fam faces).
+    assert len(outcome.profile.font_files) <= 4  # role dup counted separately
+    put_font_keys = [c.args[0] for c in deps.storage.put.call_args_list
+                     if "/assets/fonts/" in c.args[0]]
+    assert len(put_font_keys) <= 4
+
+
+@pytest.mark.asyncio
+async def test_run_capture_total_font_cap_logs_truncation(caplog):
+    import logging as _logging
+    # 5 families x 2 faces each = 10 faces; cap at 4 -> truncation logged.
+    face_srcs = {f"fam{i}": [f"https://x/fonts/f{i}-a.woff2",
+                             f"https://x/fonts/f{i}-b.woff2"] for i in range(5)}
+    raw = _font_raw(face_srcs)
+    deps = _FakeDeps(_fake_page(raw), {})
+    cfg = _font_settings()
+    cfg.capture_max_total_fonts = 4
+
+    async def _fake_fetch(url, *, max_bytes):
+        return _synth_woff2(subfamily=url.rsplit("/", 1)[-1]), "font/woff2"
+
+    from unittest.mock import patch
+    with caplog.at_level(_logging.INFO, logger="parsers.capture.orchestrator"):
+        with patch("parsers.capture._assets.fetch_asset_bytes", new=_fake_fetch):
+            from parsers.capture.orchestrator import run_capture
+            outcome = await run_capture("https://x", "kb", "d1", cfg, deps)
+
+    assert len(outcome.profile.font_files) <= 4
+    assert any("total-font cap" in r.message for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_run_capture_dedups_faces_by_content_hash():
+    """The same face bytes reached via role-font and the bounded pass store once."""
+    # role font (display Inter) resolves srcs[0]; the same URL also in the family
+    # list. Identical bytes -> single stored face.
+    same = "https://x/fonts/inter.woff2"
+    face_srcs = {"inter": [same]}
+    raw = _font_raw(face_srcs)
+    deps = _FakeDeps(_fake_page(raw), {})
+    cfg = _font_settings()
+
+    body = _synth_woff2()
+
+    async def _fake_fetch(url, *, max_bytes):
+        return body, "font/woff2"   # identical bytes every call
+
+    from unittest.mock import patch
+    with patch("parsers.capture._assets.fetch_asset_bytes", new=_fake_fetch):
+        from parsers.capture.orchestrator import run_capture
+        outcome = await run_capture("https://x", "kb", "d1", cfg, deps)
+
+    assert len(outcome.profile.font_files) == 1   # content-hash deduped
+    put_font_keys = [c.args[0] for c in deps.storage.put.call_args_list
+                     if "/assets/fonts/" in c.args[0]]
+    assert len(put_font_keys) == 1
+
+
 def json_dumps(obj):
     import json
     return json.dumps(obj)
