@@ -201,6 +201,487 @@ def _safe_hex(css: str) -> str:
     return _to_hex(rgb) if rgb else ""
 
 
+async def _store_page_svgs(raw: dict, kb_id: str, doc_id: str, cfg, storage) -> list:
+    """Store extracted page SVG markup under ``assets/svgs/`` (content-hash names).
+
+    SVGs come from the already-extracted markup (``raw["svgs"][*]["outerHTML"]``) —
+    no fetch needed, so no SSRF check applies; we store the markup bytes directly.
+    Named by sha1-of-markup (``logo-<hash>`` when isLogo, else ``svg-<hash>``) so the
+    filename can't drift from content and duplicate SVGs dedupe on the same hash.
+    Returns the stored AssetRefs (best-effort per SVG — one store failure logs + skips)."""
+    from parsers.capture.profile import AssetRef
+
+    svg_asset_refs: list = []
+    seen_svg_hashes: set[str] = set()
+    for svg in (raw.get("svgs") or [])[: cfg.capture_max_svgs]:
+        markup = svg.get("outerHTML") or ""
+        if not markup:
+            continue
+        markup_bytes = markup.encode("utf-8")
+        if len(markup_bytes) < cfg.capture_min_svg_bytes:
+            continue
+        digest = hashlib.sha1(markup_bytes).hexdigest()[:8]
+        if digest in seen_svg_hashes:
+            continue
+        seen_svg_hashes.add(digest)
+        is_logo = bool(svg.get("isLogo"))
+        name = f"{'logo' if is_logo else 'svg'}-{digest}"
+        key = f"captures/{kb_id}/{doc_id}/assets/svgs/{name}.svg"
+        try:
+            await storage.put(key, markup_bytes, content_type="image/svg+xml")
+            svg_asset_refs.append(AssetRef(
+                kind=("logo" if is_logo else "svg"), storage_key=key, format="svg"))
+        except Exception:
+            logger.info("capture: svg store failed for %s", key, exc_info=True)
+    return svg_asset_refs
+
+
+async def _fetch_named_assets(raw_assets: dict, cfg) -> tuple[list, list, dict, set]:
+    """Fetch the 4 named image assets (logo/hero/og_image/favicon) -> ImageRefs.
+
+    Returns ``(image_refs, novision_asset_refs, filename_kind, seen_urls)``:
+    vision-worthy raster assets (logo/hero/og_image) go to ``image_refs``; favicon and
+    non-raster (svg/ico) logos/heros go to ``novision_asset_refs``. ``filename_kind``
+    maps each stored filename -> kind for the post-hydration profile join; ``seen_urls``
+    carries the fetched URLs so the later catalog-image pass skips duplicates."""
+    from parsers.capture._assets import fetch_asset_bytes, image_ref_from_bytes
+
+    image_refs: list = []            # vision-worthy assets (logo/hero/og_image)
+    novision_asset_refs: list = []   # favicon etc. — stored, never described
+    filename_kind: dict[str, str] = {}
+    seen_urls: set[str] = set()
+    for kind in ("logo", "hero", "og_image", "favicon"):
+        a_url = raw_assets.get(kind)
+        if not a_url or a_url in seen_urls:
+            continue
+        seen_urls.add(a_url)
+        got = await fetch_asset_bytes(a_url, max_bytes=cfg.capture_max_asset_bytes)
+        if got is None:
+            continue
+        data, ctype = got
+        ext = _IMG_EXT.get(ctype, ".png")
+        fname = f"{kind}{ext}"
+        filename_kind[fname] = kind
+        ref = image_ref_from_bytes(data, filename=fname, mime=ctype or "image/png", alt=kind)
+        (image_refs if _asset_gets_vision(kind, fname) else novision_asset_refs).append(ref)
+    return image_refs, novision_asset_refs, filename_kind, seen_urls
+
+
+async def _store_binaries(raw_assets: dict, kb_id: str, doc_id: str, cfg, storage) -> list:
+    """Fetch + store the non-image named binaries (background video, legacy lottie).
+
+    Port of the original inline block: for ``video`` and ``lottie`` raw-asset URLs,
+    fetch (SSRF/size-capped) and store under ``assets/{kind}{ext}``. Returns the
+    stored AssetRefs in order. Note: unlike the best-effort helpers this preserves
+    the original's UNGUARDED storage.put (a store failure propagates)."""
+    from parsers.capture._assets import fetch_asset_bytes
+    from parsers.capture.profile import AssetRef
+
+    refs: list = []
+    for kind, a_url in (("background_video", raw_assets.get("video")),
+                        ("lottie", raw_assets.get("lottie"))):
+        if not a_url:
+            continue
+        got = await fetch_asset_bytes(a_url, max_bytes=cfg.capture_max_asset_bytes)
+        if got is None:
+            continue
+        data, ctype = got
+        ext = _BIN_EXT.get(ctype, ".bin")
+        key = f"captures/{kb_id}/{doc_id}/assets/{kind}{ext}"
+        await storage.put(key, data, content_type=ctype or "application/octet-stream")
+        refs.append(AssetRef(kind=kind, storage_key=key, format=ext.lstrip(".")))
+    return refs
+
+
+async def _store_lottie_previews(lottie_entries: list, lottie_refs: list,
+                                 lottie_preview_pngs: dict, kb_id: str, doc_id: str,
+                                 storage) -> tuple[list, dict | None]:
+    """Attach downloaded lottie refs + store preview PNGs + assemble the manifest.
+
+    The download/validate/store + best-effort preview render already happened inside
+    the page block (``lottie_refs`` / ``lottie_entries`` / ``lottie_preview_pngs``).
+    Here we store the preview PNGs (annotating each entry's ``preview`` in place),
+    collect the AssetRefs (downloaded refs first, then any preview refs, matching the
+    original append order), and build the manifest. Returns ``(profile_asset_refs,
+    lottie_manifest_or_None)``. Best-effort per preview."""
+    from parsers.capture.profile import AssetRef
+
+    if not lottie_entries:
+        return [], None
+    refs: list = list(lottie_refs)
+    preview_count = 0
+    for idx, entry in enumerate(lottie_entries):
+        name = entry.get("file", "").rsplit("/", 1)[-1]
+        png = lottie_preview_pngs.get(name)
+        if png:
+            pname = name.rsplit(".", 1)[0] + "-preview.png"
+            pkey = f"captures/{kb_id}/{doc_id}/assets/lottie/previews/{pname}"
+            try:
+                await storage.put(pkey, png, content_type="image/png")
+                entry["preview"] = f"assets/lottie/previews/{pname}"
+                refs.append(AssetRef(kind="lottie_preview", storage_key=pkey, format="png"))
+                preview_count += 1
+            except Exception:
+                logger.info("capture: lottie preview store failed for %s", pkey,
+                            exc_info=True)
+    manifest = {
+        "lotties": lottie_entries,
+        "meta": {"discovered": len(lottie_entries), "previews": preview_count},
+    }
+    return refs, manifest
+
+
+async def _store_videos(video_entries: list, video_previews: dict, capture_quality: str,
+                        kb_id: str, doc_id: str, cfg, storage) -> tuple[list, dict | None]:
+    """Store per-video preview frames + bounded/budgeted direct-ext body downloads.
+
+    Two-layer discovery already merged into ``video_entries``. Stores the preview
+    frames (captured while the page was open) as ``kind="video_preview"`` AssetRefs,
+    and DOWNLOADS direct-ext bodies (skip HLS/DASH/blob/data — ``download=False``) only
+    when ``capture_quality == "full"``, bounded by ``capture_max_video_downloads`` AND a
+    cumulative wall-clock budget. Each entry's ``preview``/``local_key``/``downloaded``
+    is annotated in place. Returns ``(profile_asset_refs, video_manifest_or_None)``.
+    Best-effort per video."""
+    from parsers.capture._assets import fetch_asset_bytes
+    from parsers.capture.profile import AssetRef
+
+    refs: list = []
+    video_dl_count = 0
+    video_dl_start = _monotonic()
+    video_budget_hit = False
+    allow_download = capture_quality == "full"
+    for idx, entry in enumerate(video_entries):
+        v_url = entry["url"]
+        # Preview frame (DOM videos only) -> assets/videos/previews/.
+        png = video_previews.get(v_url)
+        if png:
+            pkey = f"captures/{kb_id}/{doc_id}/assets/videos/previews/video-{idx}-preview.png"
+            try:
+                await storage.put(pkey, png, content_type="image/png")
+                entry["preview"] = f"assets/videos/previews/video-{idx}-preview.png"
+                refs.append(AssetRef(
+                    kind="video_preview", storage_key=pkey, url=v_url, format="png"))
+            except Exception:
+                logger.info("capture: video preview store failed for %s", pkey, exc_info=True)
+        # Direct-ext body download (guarded, bounded, budgeted).
+        if not (allow_download and entry.get("download")):
+            continue
+        if video_dl_count >= cfg.capture_max_video_downloads:
+            logger.info("capture: video download cap (%d) reached — %s not fetched",
+                        cfg.capture_max_video_downloads, v_url)
+            continue
+        # Cumulative wall-clock budget: stop STARTING new downloads once exceeded.
+        if _monotonic() - video_dl_start >= cfg.capture_video_download_budget_s:
+            if not video_budget_hit:
+                logger.info("capture: video download budget (%.0fs) exceeded — "
+                            "remaining bodies not fetched",
+                            cfg.capture_video_download_budget_s)
+                video_budget_hit = True
+            continue
+        got = await fetch_asset_bytes(v_url, max_bytes=cfg.capture_max_video_bytes)
+        if got is None:
+            continue
+        data, ctype = got
+        # Ext from content-type, else from the URL. Reusing the image-ext helper is
+        # safe here: we only reach this block when entry["download"] is True, which
+        # means is_downloadable_video_url() already confirmed the URL path ends in a
+        # direct video ext (.mp4/.webm/.mov/.m4v), so the helper's .jpg fallback is
+        # unreachable and it always returns the real video ext.
+        ext = _VIDEO_CT_EXT.get((ctype or "").lower()) or _catalog_image_ext(v_url)
+        vkey = f"captures/{kb_id}/{doc_id}/assets/videos/video-{idx}{ext}"
+        try:
+            await storage.put(vkey, data, content_type=ctype or "application/octet-stream")
+        except Exception:
+            logger.info("capture: video body store failed for %s", vkey, exc_info=True)
+            continue
+        video_dl_count += 1
+        entry["local_key"] = vkey
+        entry["downloaded"] = True
+        refs.append(AssetRef(
+            kind="video", storage_key=vkey, url=v_url, format=ext.lstrip(".")))
+
+    manifest = None
+    if video_entries:
+        manifest = {
+            "videos": video_entries,
+            "meta": {
+                "discovered": len(video_entries),
+                "downloaded": video_dl_count,
+                "previews": sum(1 for e in video_entries if e.get("preview")),
+            },
+        }
+    return refs, manifest
+
+
+async def _download_catalog_images(asset_catalog: list, seen_urls: set, kb_id: str,
+                                   doc_id: str, cfg, storage) -> tuple[list, list]:
+    """Download good-context catalog images (beyond the 4 named kinds).
+
+    Port of hyperframes assetDownloader.ts's catalog-image pass: keep only real
+    content images reached through a standard image context, drop tracking/junk +
+    favicons, fetch (SSRF+size-capped) and gate on a min-size threshold, then name by
+    page context (derive_asset_name). Dedups by URL against ``seen_urls`` (mutated in
+    place as it consumes, matching the original). Returns ``(profile_asset_refs,
+    asset_sheet_items)`` where the latter is ``(bytes, filename)`` of downloaded RASTER
+    images for the asset contact sheet (SVGs excluded — Pillow can't decode markup).
+    Best-effort per image.
+
+    NON-GOAL (explicit): these bulk catalog images get NO vision description —
+    vision_status="skipped". Vision stays scoped to the named logo/hero/og assets."""
+    from parsers.capture._assets import derive_asset_name, fetch_asset_bytes
+    from parsers.capture.profile import AssetRef
+
+    refs: list = []
+    # Seed with the reserved named-asset stems so a catalog image whose derived slug
+    # collides with one gets suffix-deduped (hero -> hero-2); without this a catalog
+    # "hero.jpg" would silently clobber the named hero in the export ZIP.
+    used_names: set[str] = {"logo", "hero", "og_image", "favicon",
+                            "background_video", "lottie"}
+    asset_sheet_items: list[tuple[bytes, str]] = []
+    good_catalog = []
+    for cat in asset_catalog:
+        c_url = cat.get("url", "")
+        if not c_url.startswith("http") or c_url in seen_urls:
+            continue
+        if cat.get("type") not in _CATALOG_IMAGE_TYPES:
+            continue
+        lurl = c_url.lower()
+        if any(j in lurl for j in _CATALOG_JUNK_SUBSTR) or "/favicon" in lurl:
+            continue
+        if not (_CATALOG_GOOD_CONTEXTS & set(cat.get("contexts") or [])):
+            continue
+        good_catalog.append(cat)
+    capped = good_catalog[: cfg.capture_max_catalog_images]
+    if len(good_catalog) > len(capped):
+        logger.info("capture: catalog image cap dropped %d of %d good-context images",
+                    len(good_catalog) - len(capped), len(good_catalog))
+    for cat in capped:
+        c_url = cat["url"]
+        # Load-bearing (not the earlier filter-loop check): dedups the same URL
+        # appearing twice within asset_catalog itself, since this loop also ADDs.
+        if c_url in seen_urls:
+            continue
+        seen_urls.add(c_url)
+        got = await fetch_asset_bytes(c_url, max_bytes=cfg.capture_max_asset_bytes)
+        if got is None:
+            continue
+        data, ctype = got
+        ext = _catalog_image_ext(c_url)
+        is_svg = ext == ".svg" or ".svg" in c_url.lower()
+        min_size = cfg.capture_min_svg_bytes if is_svg else cfg.capture_min_image_bytes
+        if len(data) < min_size:
+            continue
+        name = derive_asset_name(cat, used_names)
+        used_names.add(name)
+        key = f"captures/{kb_id}/{doc_id}/assets/{name}{ext}"
+        try:
+            await storage.put(key, data, content_type=ctype or "application/octet-stream")
+        except Exception:
+            logger.info("capture: catalog image store failed for %s", key, exc_info=True)
+            continue
+        refs.append(AssetRef(
+            kind="image", storage_key=key, url=c_url, format=ext.lstrip("."),
+            description="", vision_status="skipped"))
+        if not is_svg:
+            asset_sheet_items.append((data, f"{name}{ext}"))
+    return refs, asset_sheet_items
+
+
+async def _build_contact_sheets(shots: list, asset_sheet_items: list, svg_raster_items: list,
+                                kb_id: str, doc_id: str, url: str, storage) -> list:
+    """Build + store the scroll / asset / SVG contact sheets (pure Pillow).
+
+    Port of contactSheet.ts createScrollContactSheet / createAssetContactSheet. Built
+    from bytes already in hand (screenshot ``shots`` + downloaded raster catalog images
+    + in-page SVG rasters), so no browser + no re-fetch. Scroll: 3 cols, 9/page,
+    kind/section labels. Asset: 4 cols, 12/page, filename labels. SVG: 5 cols, 15/page,
+    basename labels. Returns the stored ``contact_sheet`` AssetRefs in order.
+    Best-effort — a Pillow/store failure logs + skips, never aborts."""
+    from parsers.capture._contact_sheet import build_contact_sheet
+    from parsers.capture.profile import AssetRef
+
+    refs: list = []
+
+    async def _store_sheets(pages: list, prefix: str) -> None:
+        for n, page_bytes in enumerate(pages, 1):
+            skey = f"captures/{kb_id}/{doc_id}/{prefix}/contact-sheet-{n}.jpg"
+            try:
+                await storage.put(skey, page_bytes, content_type="image/jpeg")
+                refs.append(AssetRef(kind="contact_sheet", storage_key=skey, format="jpg"))
+            except Exception:
+                logger.info("capture: contact sheet store failed for %s", skey, exc_info=True)
+
+    scroll_items = [(s["bytes"],
+                     (s["kind"] if s.get("section_index") is None
+                      else f"section-{s['section_index']:02d}"))
+                    for s in shots if s.get("bytes")]
+    try:
+        scroll_pages = build_contact_sheet(scroll_items, cols=3, per_page=9, thumb_w=600)
+        await _store_sheets(scroll_pages, "screenshots")
+    except Exception:
+        logger.info("capture: scroll contact sheet failed for %s", url, exc_info=True)
+    try:
+        asset_pages = build_contact_sheet(asset_sheet_items, cols=4, per_page=12, thumb_w=480)
+        await _store_sheets(asset_pages, "assets")
+    except Exception:
+        logger.info("capture: asset contact sheet failed for %s", url, exc_info=True)
+    # SVG contact sheet from the best-effort in-page rasters captured above. Empty
+    # when rasterization degraded (logged).
+    try:
+        svg_pages = build_contact_sheet(svg_raster_items, cols=5, per_page=15, thumb_w=200)
+        await _store_sheets(svg_pages, "assets/svgs")
+    except Exception:
+        logger.info("capture: svg contact sheet failed for %s", url, exc_info=True)
+    return refs
+
+
+async def _build_fonts(raw: dict, kb_id: str, doc_id: str, cfg, storage):
+    """Assemble the display/body font roles + bounded site face set.
+
+    Catalog-matches each role (build_font_role); on a non-renderable role, fetches the
+    first @font-face src and stores it. Then downloads the page's @font-face woff2 URLs
+    (Latin subsets first), capped per-family and in total, best-effort per face. Role
+    faces already stored are counted (content-hash dedup) so the manifest covers
+    everything without double-storing. Returns ``(Fonts, font_files)`` where font_files
+    is the list of raw FontFileMetadata dicts (+ storage_key)."""
+    from parsers.capture._assets import fetch_asset_bytes
+    from parsers.capture._font_metadata import font_file_metadata
+    from parsers.capture._fonts import build_font_role
+    from parsers.capture.profile import FontFile, Fonts
+
+    face_srcs = raw.get("fonts", {}).get("face_srcs", {})
+    font_files: list[dict] = []             # raw FontFileMetadata dicts (+ storage_key)
+    seen_font_hashes: set[str] = set()      # content-hash dedup across role + face set
+    seen_font_urls: set[str] = set()        # url-level dedup so we never refetch a face
+
+    async def _store_face(data: bytes) -> str:
+        """Store one woff2 face under assets/fonts/ (content-hash name) and append
+        its fonttools metadata to the accumulator. Deduped by content hash."""
+        digest = hashlib.sha1(data).hexdigest()[:8]
+        key = f"captures/{kb_id}/{doc_id}/assets/fonts/{digest}.woff2"
+        if digest not in seen_font_hashes:
+            seen_font_hashes.add(digest)
+            await storage.put(key, data, content_type="font/woff2")
+            meta = font_file_metadata(data, f"{digest}.woff2")
+            meta["storage_key"] = key
+            font_files.append(meta)
+        return key
+
+    async def _font_role(info: dict):
+        role = build_font_role(info, weights=[info.get("weight", 400)])
+        if not role.renderable:
+            srcs = face_srcs.get(role.family.lower(), [])
+            if srcs:
+                got = await fetch_asset_bytes(srcs[0], max_bytes=cfg.capture_max_asset_bytes)
+                seen_font_urls.add(srcs[0])
+                if got:
+                    data, _ = got
+                    key = await _store_face(data)
+                    role.files = [FontFile(url=key, weight=info.get("weight"), source="captured")]
+        return role
+
+    raw_fonts = raw.get("fonts", {})
+    fonts = Fonts(display=await _font_role(raw_fonts.get("display", {})),
+                  body=await _font_role(raw_fonts.get("body", {})))
+
+    # Bounded site face set (port of hyperframes downloadAndRewriteFonts): download
+    # the page's @font-face woff2 URLs, Latin subsets first, capped per-family and
+    # in total, best-effort per face. Role fonts already stored above are counted
+    # (content-hash dedup) so the manifest covers everything without double-storing.
+    total_fonts = len(font_files)
+    truncated = 0
+    for urls in face_srcs.values():
+        fam_count = 0
+        # Latin-subset priority: a URL whose path names a "latin" subset (or an
+        # opaque hashed filename) sorts before CJK/Arabic/etc unicode-range subsets
+        # (mirrors the reference sort key).
+        for f_url in sorted(urls, key=lambda u: 0 if _is_latin_subset(u) else 1):
+            if f_url in seen_font_urls:      # already fetched by the role-font pass
+                continue
+            if total_fonts >= cfg.capture_max_total_fonts:
+                truncated += 1
+                continue
+            if fam_count >= cfg.capture_max_fonts_per_family:
+                continue
+            seen_font_urls.add(f_url)
+            got = await fetch_asset_bytes(f_url, max_bytes=cfg.capture_max_asset_bytes)
+            if got is None:
+                continue
+            data, _ = got
+            before = len(font_files)
+            await _store_face(data)
+            if len(font_files) > before:     # newly stored (not a content dup)
+                fam_count += 1
+                total_fonts += 1
+    if truncated:
+        logger.info("capture: total-font cap (%d) truncated %d face(s)",
+                    cfg.capture_max_total_fonts, truncated)
+    return fonts, font_files
+
+
+def _build_layout_tokens(raw: dict, shots: list, profile_shots: list, cfg):
+    """Derive the pure profile tokens: colors / spacing / sections / headings / svgs /
+    page geometry. No side effects — only reads ``raw`` (+ the full-page screenshot for
+    dominant-color cross-check) and the already-hydrated ``profile_shots``. Returns
+    ``(colors, spacing, sections, headings, svgs, page)``.
+
+    camelCase (raw) -> snake_case (profile); SVG outerHTML is DROPPED here so the raw
+    markup never lands in the persisted profile (DB-bloat guard)."""
+    from parsers.capture._colors import dominant_screenshot_hex, process_colors
+    from parsers.capture._fonts import cluster_spacing, section_type
+    from parsers.capture.profile import (
+        Heading, PageGeom, SectionInfo, Spacing, SvgInfo)
+
+    # Pixel-sample the full-page screenshot's dominant color to cross-check the
+    # computed-style background (raises confidence + catches gradient/image bgs).
+    full_png = next((s["bytes"] for s in shots if s["kind"] == "full_page"), None)
+    screenshot_bg = dominant_screenshot_hex(full_png) if full_png else None
+    colors = process_colors(raw.get("colors", {}),
+                            delta_e_threshold=cfg.capture_color_delta_e,
+                            screenshot_bg_hex=screenshot_bg)
+    sp = raw.get("spacing", {})
+    spacing = Spacing(
+        scale=cluster_spacing(sp.get("margins", []) + sp.get("paddings", [])),
+        radii=cluster_spacing(sp.get("radii", []), max_val=500),
+        container_max_width=sp.get("container_max_width"),
+        section_gap=(round(min(sp["section_gaps"])) if sp.get("section_gaps") else None))
+    raw_sections = raw.get("sections", [])
+    shot_by_section = {s.section_index: s.image_id
+                       for s in profile_shots if s.section_index is not None}
+    sections = [SectionInfo(
+        index=s["index"], heading=s.get("heading", ""),
+        type=section_type(s.get("heading", ""), s.get("classNames", []),
+                          s["index"], len(raw_sections)),
+        bg_color=_safe_hex(s.get("bg", "")),
+        screenshot_image_id=shot_by_section.get(s["index"]),
+        layout=s.get("layout", ""),
+        background_image=s.get("backgroundImage", ""),
+        cta_texts=s.get("callsToAction", []),
+        asset_urls=s.get("assetUrls", []),
+        text=s.get("text", ""),
+    ) for s in raw_sections]
+
+    # Phase 1 tokens: headings / svgs / page geometry (hyperframes parity).
+    headings = [Heading(level=h.get("level", 1), text=h.get("text", ""),
+                        font_size=h.get("fontSize", ""),
+                        font_weight=h.get("fontWeight", ""),
+                        color=h.get("color", ""))
+                for h in raw.get("headings", [])]
+    svgs = [SvgInfo(label=s.get("label", ""), view_box=s.get("viewBox", ""),
+                    width=s.get("width", 0) or 0, height=s.get("height", 0) or 0,
+                    is_logo=bool(s.get("isLogo", False)))
+            for s in raw.get("svgs", [])]
+    raw_page = raw.get("page") or {}
+    page = None
+    if raw_page:
+        vp = raw_page.get("viewport", {}) or {}
+        page = PageGeom(width=raw_page.get("width", 0) or 0,
+                        height=raw_page.get("height", 0) or 0,
+                        viewport_width=vp.get("width", 0) or 0,
+                        viewport_height=vp.get("height", 0) or 0)
+    return colors, spacing, sections, headings, svgs, page
+
+
 @dataclass
 class CaptureOutcome:
     profile: SiteProfile
@@ -234,13 +715,10 @@ async def run_capture(url: str, kb_id: str, doc_id: str, cfg, deps: CaptureDeps)
     patch parsers.capture._assets.fetch_asset_bytes keep biting at call time."""
     from parsers.capture._animations import (
         IO_CAPTURE_JS, SHADER_CAPTURE_JS, collect_animation_catalog,
-        collect_shaders, detect_libraries, start_cdp_animation_capture)
-    from parsers.capture._assets import (
-        derive_asset_name, fetch_asset_bytes, image_ref_from_bytes)
-    from parsers.capture._colors import dominant_screenshot_hex, process_colors
+        collect_shaders, start_cdp_animation_capture)
+    from parsers.capture._assets import image_ref_from_bytes
     from parsers.capture._design_styles import extract_design_styles
     from parsers.capture._extract import run_extract
-    from parsers.capture._fonts import build_font_role, cluster_spacing, section_type
     from parsers.capture._html import extract_page_html
     from parsers.capture._media import (
         catalog_assets, make_video_response_handler, merge_video_manifest,
@@ -249,8 +727,7 @@ async def run_capture(url: str, kb_id: str, doc_id: str, cfg, deps: CaptureDeps)
     from parsers.capture._screenshots import (
         NEUTRALIZE_ANIMATION_CSS, capture_screenshots, prepare_page)
     from parsers.capture.profile import (
-        AssetRef, FontFile, Fonts, Heading, MotionHints, PageGeom, ScreenshotRef,
-        SectionInfo, Spacing, SvgInfo, TextInfo)
+        AssetRef, MotionHints, ScreenshotRef, TextInfo)
 
     async with deps.open_page() as page:
         # Pre-nav hooks (must run BEFORE goto): capture WebGL shaders + record
@@ -425,32 +902,7 @@ async def run_capture(url: str, kb_id: str, doc_id: str, cfg, deps: CaptureDeps)
     raw_assets = raw.get("assets", {})
 
     # ---- page SVGs -> assets/svgs/ (content-hash names) ----
-    # SVGs come from the already-extracted markup (raw["svgs"][*]["outerHTML"]) —
-    # no fetch needed, so no SSRF check applies; we store the markup bytes directly.
-    # Named by sha1-of-markup ("logo-<hash>" when isLogo, else "svg-<hash>") so the
-    # filename can't drift from content and duplicate SVGs dedupe on the same hash.
-    svg_asset_refs: list = []
-    seen_svg_hashes: set[str] = set()
-    for svg in (raw.get("svgs") or [])[: cfg.capture_max_svgs]:
-        markup = svg.get("outerHTML") or ""
-        if not markup:
-            continue
-        markup_bytes = markup.encode("utf-8")
-        if len(markup_bytes) < cfg.capture_min_svg_bytes:
-            continue
-        digest = hashlib.sha1(markup_bytes).hexdigest()[:8]
-        if digest in seen_svg_hashes:
-            continue
-        seen_svg_hashes.add(digest)
-        is_logo = bool(svg.get("isLogo"))
-        name = f"{'logo' if is_logo else 'svg'}-{digest}"
-        key = f"captures/{kb_id}/{doc_id}/assets/svgs/{name}.svg"
-        try:
-            await storage.put(key, markup_bytes, content_type="image/svg+xml")
-            svg_asset_refs.append(AssetRef(
-                kind=("logo" if is_logo else "svg"), storage_key=key, format="svg"))
-        except Exception:
-            logger.info("capture: svg store failed for %s", key, exc_info=True)
+    svg_asset_refs = await _store_page_svgs(raw, kb_id, doc_id, cfg, storage)
 
     # ---- page.html (self-contained structural reference; only when quality==full) ----
     page_html_key = None
@@ -460,24 +912,8 @@ async def run_capture(url: str, kb_id: str, doc_id: str, cfg, deps: CaptureDeps)
                           content_type="text/html; charset=utf-8")
 
     # ---- image assets (logo/hero/og/favicon) -> fetch -> ImageRef ----
-    image_refs: list = []            # vision-worthy assets (logo/hero/og_image)
-    novision_asset_refs: list = []   # favicon etc. — stored, never described
-    filename_kind: dict[str, str] = {}
-    seen_urls: set[str] = set()
-    for kind in ("logo", "hero", "og_image", "favicon"):
-        a_url = raw_assets.get(kind)
-        if not a_url or a_url in seen_urls:
-            continue
-        seen_urls.add(a_url)
-        got = await fetch_asset_bytes(a_url, max_bytes=cfg.capture_max_asset_bytes)
-        if got is None:
-            continue
-        data, ctype = got
-        ext = _IMG_EXT.get(ctype, ".png")
-        fname = f"{kind}{ext}"
-        filename_kind[fname] = kind
-        ref = image_ref_from_bytes(data, filename=fname, mime=ctype or "image/png", alt=kind)
-        (image_refs if _asset_gets_vision(kind, fname) else novision_asset_refs).append(ref)
+    image_refs, novision_asset_refs, filename_kind, seen_urls = \
+        await _fetch_named_assets(raw_assets, cfg)
 
     # ---- screenshots -> ImageRef ----
     shot_refs: list = []
@@ -516,297 +952,29 @@ async def run_capture(url: str, kb_id: str, doc_id: str, cfg, deps: CaptureDeps)
                            else "skipped")))
 
     # ---- non-image binaries: background video / lottie ----
-    for kind, a_url in (("background_video", raw_assets.get("video")),
-                        ("lottie", raw_assets.get("lottie"))):
-        if not a_url:
-            continue
-        got = await fetch_asset_bytes(a_url, max_bytes=cfg.capture_max_asset_bytes)
-        if got is None:
-            continue
-        data, ctype = got
-        ext = _BIN_EXT.get(ctype, ".bin")
-        key = f"captures/{kb_id}/{doc_id}/assets/{kind}{ext}"
-        await storage.put(key, data, content_type=ctype or "application/octet-stream")
-        profile_assets.append(AssetRef(kind=kind, storage_key=key, format=ext.lstrip(".")))
+    profile_assets.extend(await _store_binaries(raw_assets, kb_id, doc_id, cfg, storage))
 
     # ---- lotties: attach downloaded refs + build manifest (previews rendered in-page) ----
-    # The download + validate + store + best-effort preview render happened INSIDE the
-    # page block (lottie_refs / lottie_entries / lottie_preview_pngs). Here we attach the
-    # AssetRefs, store the preview PNGs, and assemble the manifest. Best-effort throughout.
-    lottie_manifest = None
-    if lottie_entries:
-        profile_assets.extend(lottie_refs)
-        preview_count = 0
-        for idx, entry in enumerate(lottie_entries):
-            name = entry.get("file", "").rsplit("/", 1)[-1]
-            png = lottie_preview_pngs.get(name)
-            if png:
-                pname = name.rsplit(".", 1)[0] + "-preview.png"
-                pkey = f"captures/{kb_id}/{doc_id}/assets/lottie/previews/{pname}"
-                try:
-                    await storage.put(pkey, png, content_type="image/png")
-                    entry["preview"] = f"assets/lottie/previews/{pname}"
-                    profile_assets.append(AssetRef(
-                        kind="lottie_preview", storage_key=pkey, format="png"))
-                    preview_count += 1
-                except Exception:
-                    logger.info("capture: lottie preview store failed for %s", pkey,
-                                exc_info=True)
-        lottie_manifest = {
-            "lotties": lottie_entries,
-            "meta": {"discovered": len(lottie_entries), "previews": preview_count},
-        }
+    _lottie_refs, lottie_manifest = await _store_lottie_previews(
+        lottie_entries, lottie_refs, lottie_preview_pngs, kb_id, doc_id, storage)
+    profile_assets.extend(_lottie_refs)
 
     # ---- video manifest: preview frames + bounded/budgeted direct-ext downloads ----
-    # Two-layer discovery already merged into video_entries. Store per-video preview
-    # frames (captured while the page was open) as kind="video_preview" AssetRefs, and
-    # DOWNLOAD direct-ext bodies (skip HLS/DASH/blob/data — download=False) only when
-    # capture_quality == "full" (don't pull MBs off a challenge/partial page), bounded
-    # by capture_max_video_downloads AND a cumulative wall-clock budget. Best-effort per
-    # video; each entry's `preview`/`local_key`/`downloaded` is annotated in place.
-    video_dl_count = 0
-    video_dl_start = _monotonic()
-    video_budget_hit = False
-    allow_download = capture_quality == "full"
-    for idx, entry in enumerate(video_entries):
-        v_url = entry["url"]
-        # Preview frame (DOM videos only) -> assets/videos/previews/.
-        png = video_previews.get(v_url)
-        if png:
-            pkey = f"captures/{kb_id}/{doc_id}/assets/videos/previews/video-{idx}-preview.png"
-            try:
-                await storage.put(pkey, png, content_type="image/png")
-                entry["preview"] = f"assets/videos/previews/video-{idx}-preview.png"
-                profile_assets.append(AssetRef(
-                    kind="video_preview", storage_key=pkey, url=v_url, format="png"))
-            except Exception:
-                logger.info("capture: video preview store failed for %s", pkey, exc_info=True)
-        # Direct-ext body download (guarded, bounded, budgeted).
-        if not (allow_download and entry.get("download")):
-            continue
-        if video_dl_count >= cfg.capture_max_video_downloads:
-            logger.info("capture: video download cap (%d) reached — %s not fetched",
-                        cfg.capture_max_video_downloads, v_url)
-            continue
-        # Cumulative wall-clock budget: stop STARTING new downloads once exceeded.
-        if _monotonic() - video_dl_start >= cfg.capture_video_download_budget_s:
-            if not video_budget_hit:
-                logger.info("capture: video download budget (%.0fs) exceeded — "
-                            "remaining bodies not fetched",
-                            cfg.capture_video_download_budget_s)
-                video_budget_hit = True
-            continue
-        got = await fetch_asset_bytes(v_url, max_bytes=cfg.capture_max_video_bytes)
-        if got is None:
-            continue
-        data, ctype = got
-        # Ext from content-type, else from the URL. Reusing the image-ext helper is
-        # safe here: we only reach this block when entry["download"] is True, which
-        # means is_downloadable_video_url() already confirmed the URL path ends in a
-        # direct video ext (.mp4/.webm/.mov/.m4v), so the helper's .jpg fallback is
-        # unreachable and it always returns the real video ext.
-        ext = _VIDEO_CT_EXT.get((ctype or "").lower()) or _catalog_image_ext(v_url)
-        vkey = f"captures/{kb_id}/{doc_id}/assets/videos/video-{idx}{ext}"
-        try:
-            await storage.put(vkey, data, content_type=ctype or "application/octet-stream")
-        except Exception:
-            logger.info("capture: video body store failed for %s", vkey, exc_info=True)
-            continue
-        video_dl_count += 1
-        entry["local_key"] = vkey
-        entry["downloaded"] = True
-        profile_assets.append(AssetRef(
-            kind="video", storage_key=vkey, url=v_url, format=ext.lstrip(".")))
-
-    video_manifest = None
-    if video_entries:
-        video_manifest = {
-            "videos": video_entries,
-            "meta": {
-                "discovered": len(video_entries),
-                "downloaded": video_dl_count,
-                "previews": sum(1 for e in video_entries if e.get("preview")),
-            },
-        }
+    _video_refs, video_manifest = await _store_videos(
+        video_entries, video_previews, capture_quality, kb_id, doc_id, cfg, storage)
+    profile_assets.extend(_video_refs)
 
     # ---- good-context catalog images (beyond the 4 named kinds) ----
-    # Port of hyperframes assetDownloader.ts's catalog-image pass: keep only real
-    # content images reached through a standard image context, drop tracking/junk
-    # + favicons, fetch (SSRF+size-capped) and gate on a min-size threshold, then
-    # name by page context (derive_asset_name). Dedup by URL; skip URLs already
-    # pulled as a named asset. Best-effort per image — one failure never aborts.
-    #
-    # NON-GOAL (explicit): these bulk catalog images get NO vision description —
-    # vision_status="skipped". Vision stays scoped to the named logo/hero/og assets
-    # above (which flow through DocumentImage rows the analyze_images task backfills);
-    # these are plain S3 puts with no ImageRef, so there's nothing for vision to key on.
-    # Seed with the reserved named-asset stems (logo/hero/og_image/favicon/
-    # background_video/lottie) so a catalog image whose derived slug collides with
-    # one gets suffix-deduped (hero -> hero-2). Both routes land under
-    # capture/assets/ in the export ZIP (named as {kind}.{format}, catalog as
-    # {slug}.{ext}), and the final zf.writestr is unconditional — without this
-    # seed a catalog "hero.jpg" would silently clobber the named hero.
-    used_names: set[str] = {"logo", "hero", "og_image", "favicon",
-                            "background_video", "lottie"}
-    # (bytes, filename) of downloaded RASTER catalog images, kept for the asset
-    # contact sheet (Pillow can't decode SVG markup, so those are excluded here).
-    asset_sheet_items: list[tuple[bytes, str]] = []
-    good_catalog = []
-    for cat in asset_catalog:
-        c_url = cat.get("url", "")
-        if not c_url.startswith("http") or c_url in seen_urls:
-            continue
-        if cat.get("type") not in _CATALOG_IMAGE_TYPES:
-            continue
-        lurl = c_url.lower()
-        if any(j in lurl for j in _CATALOG_JUNK_SUBSTR) or "/favicon" in lurl:
-            continue
-        if not (_CATALOG_GOOD_CONTEXTS & set(cat.get("contexts") or [])):
-            continue
-        good_catalog.append(cat)
-    capped = good_catalog[: cfg.capture_max_catalog_images]
-    if len(good_catalog) > len(capped):
-        logger.info("capture: catalog image cap dropped %d of %d good-context images",
-                    len(good_catalog) - len(capped), len(good_catalog))
-    for cat in capped:
-        c_url = cat["url"]
-        # Load-bearing (not the earlier filter-loop check): dedups the same URL
-        # appearing twice within asset_catalog itself, since this loop also ADDs.
-        if c_url in seen_urls:
-            continue
-        seen_urls.add(c_url)
-        got = await fetch_asset_bytes(c_url, max_bytes=cfg.capture_max_asset_bytes)
-        if got is None:
-            continue
-        data, ctype = got
-        ext = _catalog_image_ext(c_url)
-        is_svg = ext == ".svg" or ".svg" in c_url.lower()
-        min_size = cfg.capture_min_svg_bytes if is_svg else cfg.capture_min_image_bytes
-        if len(data) < min_size:
-            continue
-        name = derive_asset_name(cat, used_names)
-        used_names.add(name)
-        key = f"captures/{kb_id}/{doc_id}/assets/{name}{ext}"
-        try:
-            await storage.put(key, data, content_type=ctype or "application/octet-stream")
-        except Exception:
-            logger.info("capture: catalog image store failed for %s", key, exc_info=True)
-            continue
-        profile_assets.append(AssetRef(
-            kind="image", storage_key=key, url=c_url, format=ext.lstrip("."),
-            description="", vision_status="skipped"))
-        if not is_svg:
-            asset_sheet_items.append((data, f"{name}{ext}"))
+    _catalog_refs, asset_sheet_items = await _download_catalog_images(
+        asset_catalog, seen_urls, kb_id, doc_id, cfg, storage)
+    profile_assets.extend(_catalog_refs)
 
-    # ---- contact sheets: scroll (screenshots) + asset (catalog images), pure Pillow ----
-    # Port of contactSheet.ts createScrollContactSheet / createAssetContactSheet. Built
-    # from bytes already in hand (screenshot `shots` + downloaded raster catalog images),
-    # so no browser + no re-fetch. Scroll: 3 cols, 9/page, kind/section labels. Asset:
-    # 4 cols, 12/page, filename labels. Best-effort — a Pillow failure logs + skips,
-    # never aborts. Pages route to capture/screenshots/ and capture/assets/ at export.
-    from parsers.capture._contact_sheet import build_contact_sheet
-
-    async def _store_sheets(pages: list, prefix: str) -> None:
-        for n, page_bytes in enumerate(pages, 1):
-            skey = f"captures/{kb_id}/{doc_id}/{prefix}/contact-sheet-{n}.jpg"
-            try:
-                await storage.put(skey, page_bytes, content_type="image/jpeg")
-                profile_assets.append(AssetRef(
-                    kind="contact_sheet", storage_key=skey, format="jpg"))
-            except Exception:
-                logger.info("capture: contact sheet store failed for %s", skey, exc_info=True)
-
-    scroll_items = [(s["bytes"],
-                     (s["kind"] if s.get("section_index") is None
-                      else f"section-{s['section_index']:02d}"))
-                    for s in shots if s.get("bytes")]
-    try:
-        scroll_pages = build_contact_sheet(scroll_items, cols=3, per_page=9, thumb_w=600)
-        await _store_sheets(scroll_pages, "screenshots")
-    except Exception:
-        logger.info("capture: scroll contact sheet failed for %s", url, exc_info=True)
-    try:
-        asset_pages = build_contact_sheet(asset_sheet_items, cols=4, per_page=12, thumb_w=480)
-        await _store_sheets(asset_pages, "assets")
-    except Exception:
-        logger.info("capture: asset contact sheet failed for %s", url, exc_info=True)
-    # SVG contact sheet (5 cols, 15/page, basename labels) from the best-effort
-    # in-page rasters captured above. Empty when rasterization degraded (logged).
-    try:
-        svg_pages = build_contact_sheet(svg_raster_items, cols=5, per_page=15, thumb_w=200)
-        await _store_sheets(svg_pages, "assets/svgs")
-    except Exception:
-        logger.info("capture: svg contact sheet failed for %s", url, exc_info=True)
+    # ---- contact sheets: scroll (screenshots) + asset (catalog images) + svg ----
+    profile_assets.extend(await _build_contact_sheets(
+        shots, asset_sheet_items, svg_raster_items, kb_id, doc_id, url, storage))
 
     # ---- fonts (catalog match; download woff2 on miss + bounded site face set) ----
-    from parsers.capture._font_metadata import font_file_metadata
-    face_srcs = raw.get("fonts", {}).get("face_srcs", {})
-    font_files: list[dict] = []             # raw FontFileMetadata dicts (+ storage_key)
-    seen_font_hashes: set[str] = set()      # content-hash dedup across role + face set
-    seen_font_urls: set[str] = set()        # url-level dedup so we never refetch a face
-
-    async def _store_face(data: bytes) -> str:
-        """Store one woff2 face under assets/fonts/ (content-hash name) and append
-        its fonttools metadata to the accumulator. Deduped by content hash."""
-        digest = hashlib.sha1(data).hexdigest()[:8]
-        key = f"captures/{kb_id}/{doc_id}/assets/fonts/{digest}.woff2"
-        if digest not in seen_font_hashes:
-            seen_font_hashes.add(digest)
-            await storage.put(key, data, content_type="font/woff2")
-            meta = font_file_metadata(data, f"{digest}.woff2")
-            meta["storage_key"] = key
-            font_files.append(meta)
-        return key
-
-    async def _font_role(info: dict):
-        role = build_font_role(info, weights=[info.get("weight", 400)])
-        if not role.renderable:
-            srcs = face_srcs.get(role.family.lower(), [])
-            if srcs:
-                got = await fetch_asset_bytes(srcs[0], max_bytes=cfg.capture_max_asset_bytes)
-                seen_font_urls.add(srcs[0])
-                if got:
-                    data, _ = got
-                    key = await _store_face(data)
-                    role.files = [FontFile(url=key, weight=info.get("weight"), source="captured")]
-        return role
-
-    raw_fonts = raw.get("fonts", {})
-    fonts = Fonts(display=await _font_role(raw_fonts.get("display", {})),
-                  body=await _font_role(raw_fonts.get("body", {})))
-
-    # Bounded site face set (port of hyperframes downloadAndRewriteFonts): download
-    # the page's @font-face woff2 URLs, Latin subsets first, capped per-family and
-    # in total, best-effort per face. Role fonts already stored above are counted
-    # (content-hash dedup) so the manifest covers everything without double-storing.
-    total_fonts = len(font_files)
-    truncated = 0
-    for urls in face_srcs.values():
-        fam_count = 0
-        # Latin-subset priority: a URL whose path names a "latin" subset (or an
-        # opaque hashed filename) sorts before CJK/Arabic/etc unicode-range subsets
-        # (mirrors the reference sort key).
-        for f_url in sorted(urls, key=lambda u: 0 if _is_latin_subset(u) else 1):
-            if f_url in seen_font_urls:      # already fetched by the role-font pass
-                continue
-            if total_fonts >= cfg.capture_max_total_fonts:
-                truncated += 1
-                continue
-            if fam_count >= cfg.capture_max_fonts_per_family:
-                continue
-            seen_font_urls.add(f_url)
-            got = await fetch_asset_bytes(f_url, max_bytes=cfg.capture_max_asset_bytes)
-            if got is None:
-                continue
-            data, _ = got
-            before = len(font_files)
-            await _store_face(data)
-            if len(font_files) > before:     # newly stored (not a content dup)
-                fam_count += 1
-                total_fonts += 1
-    if truncated:
-        logger.info("capture: total-font cap (%d) truncated %d face(s)",
-                    cfg.capture_max_total_fonts, truncated)
+    fonts, font_files = await _build_fonts(raw, kb_id, doc_id, cfg, storage)
 
     # ---- screenshots -> profile ----
     profile_shots: list = []
@@ -819,56 +987,9 @@ async def run_capture(url: str, kb_id: str, doc_id: str, cfg, deps: CaptureDeps)
                                            width=s["width"], height=s["height"],
                                            section_index=s["section_index"]))
 
-    # ---- colors / spacing / sections ----
-    # Pixel-sample the full-page screenshot's dominant color to cross-check the
-    # computed-style background (raises confidence + catches gradient/image bgs).
-    full_png = next((s["bytes"] for s in shots if s["kind"] == "full_page"), None)
-    screenshot_bg = dominant_screenshot_hex(full_png) if full_png else None
-    colors = process_colors(raw.get("colors", {}),
-                            delta_e_threshold=cfg.capture_color_delta_e,
-                            screenshot_bg_hex=screenshot_bg)
-    sp = raw.get("spacing", {})
-    spacing = Spacing(
-        scale=cluster_spacing(sp.get("margins", []) + sp.get("paddings", [])),
-        radii=cluster_spacing(sp.get("radii", []), max_val=500),
-        container_max_width=sp.get("container_max_width"),
-        section_gap=(round(min(sp["section_gaps"])) if sp.get("section_gaps") else None))
-    raw_sections = raw.get("sections", [])
-    shot_by_section = {s.section_index: s.image_id
-                       for s in profile_shots if s.section_index is not None}
-    sections = [SectionInfo(
-        index=s["index"], heading=s.get("heading", ""),
-        type=section_type(s.get("heading", ""), s.get("classNames", []),
-                          s["index"], len(raw_sections)),
-        bg_color=_safe_hex(s.get("bg", "")),
-        screenshot_image_id=shot_by_section.get(s["index"]),
-        layout=s.get("layout", ""),
-        background_image=s.get("backgroundImage", ""),
-        cta_texts=s.get("callsToAction", []),
-        asset_urls=s.get("assetUrls", []),
-        text=s.get("text", ""),
-    ) for s in raw_sections]
-
-    # ---- Phase 1 tokens: headings / svgs / page geometry (hyperframes parity) ----
-    # camelCase (raw) -> snake_case (profile); SVG outerHTML is DROPPED here so the
-    # raw markup never lands in the persisted profile (DB-bloat guard).
-    headings = [Heading(level=h.get("level", 1), text=h.get("text", ""),
-                        font_size=h.get("fontSize", ""),
-                        font_weight=h.get("fontWeight", ""),
-                        color=h.get("color", ""))
-                for h in raw.get("headings", [])]
-    svgs = [SvgInfo(label=s.get("label", ""), view_box=s.get("viewBox", ""),
-                    width=s.get("width", 0) or 0, height=s.get("height", 0) or 0,
-                    is_logo=bool(s.get("isLogo", False)))
-            for s in raw.get("svgs", [])]
-    raw_page = raw.get("page") or {}
-    page = None
-    if raw_page:
-        vp = raw_page.get("viewport", {}) or {}
-        page = PageGeom(width=raw_page.get("width", 0) or 0,
-                        height=raw_page.get("height", 0) or 0,
-                        viewport_width=vp.get("width", 0) or 0,
-                        viewport_height=vp.get("height", 0) or 0)
+    # ---- colors / spacing / sections / headings / svgs / page geometry ----
+    colors, spacing, sections, headings, svgs, page = _build_layout_tokens(
+        raw, shots, profile_shots, cfg)
 
     # Drop the transient parsed-lottie dicts (carried only for the preview pass) so
     # the persisted manifest stays lean + JSON-serializable.
