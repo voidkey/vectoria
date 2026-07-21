@@ -7,6 +7,7 @@ injected via CaptureDeps; the worker supplies a real implementation and does the
 final update_doc + enqueue based on the returned CaptureOutcome."""
 from __future__ import annotations
 
+import hashlib
 import logging
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
@@ -158,6 +159,34 @@ async def run_capture(url: str, kb_id: str, doc_id: str, cfg, deps: CaptureDeps)
     storage = deps.storage
     raw_assets = raw.get("assets", {})
 
+    # ---- page SVGs -> assets/svgs/ (content-hash names) ----
+    # SVGs come from the already-extracted markup (raw["svgs"][*]["outerHTML"]) —
+    # no fetch needed, so no SSRF check applies; we store the markup bytes directly.
+    # Named by sha1-of-markup ("logo-<hash>" when isLogo, else "svg-<hash>") so the
+    # filename can't drift from content and duplicate SVGs dedupe on the same hash.
+    svg_asset_refs: list = []
+    seen_svg_hashes: set[str] = set()
+    for svg in (raw.get("svgs") or [])[: cfg.capture_max_svgs]:
+        markup = svg.get("outerHTML") or ""
+        if not markup:
+            continue
+        markup_bytes = markup.encode("utf-8")
+        if len(markup_bytes) < cfg.capture_min_svg_bytes:
+            continue
+        digest = hashlib.sha1(markup_bytes).hexdigest()[:8]
+        if digest in seen_svg_hashes:
+            continue
+        seen_svg_hashes.add(digest)
+        is_logo = bool(svg.get("isLogo"))
+        name = f"{'logo' if is_logo else 'svg'}-{digest}"
+        key = f"captures/{kb_id}/{doc_id}/assets/svgs/{name}.svg"
+        try:
+            await storage.put(key, markup_bytes, content_type="image/svg+xml")
+            svg_asset_refs.append(AssetRef(
+                kind=("logo" if is_logo else "svg"), storage_key=key, format="svg"))
+        except Exception:
+            logger.info("capture: svg store failed for %s", key, exc_info=True)
+
     # ---- page.html (self-contained structural reference; only when quality==full) ----
     page_html_key = None
     if page_html:
@@ -210,7 +239,7 @@ async def run_capture(url: str, kb_id: str, doc_id: str, cfg, deps: CaptureDeps)
     fn_to_row = await deps.hydrate_image_ids()
 
     # ---- image assets -> profile ----
-    profile_assets: list = []
+    profile_assets: list = list(svg_asset_refs)
     for fname, kind in filename_kind.items():
         row = fn_to_row.get(fname)
         if not row:

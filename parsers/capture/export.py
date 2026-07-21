@@ -106,6 +106,21 @@ def _sections_out(sections: list[dict]) -> list[dict]:
             for s in sections]
 
 
+def _asset_zip_path(a: dict, storage_key: str) -> str:
+    """ZIP path for one AssetRef. Downloaded assets (SVGs under assets/svgs/,
+    bulk catalog images with kind=="image") are keyed by the BASENAME of their
+    already-unique storage_key (content-hash / derived slug) so many of them
+    can't collide on ``{kind}.{format}`` (every svg -> svg.svg, every image ->
+    image.jpg). Named assets (logo/hero/og_image/favicon/background_video/lottie)
+    keep the stable ``{kind}.{format}`` name."""
+    basename = storage_key.rsplit("/", 1)[-1]
+    if "/assets/svgs/" in storage_key:
+        return f"capture/assets/svgs/{basename}"
+    if a.get("kind") == "image":
+        return f"capture/assets/{basename}"
+    return f"capture/assets/{a.get('kind')}.{a.get('format', 'bin')}"
+
+
 async def build_hyperframes_zip(doc) -> bytes:
     profile = doc.profile or {}
     storage = await get_storage()
@@ -150,9 +165,10 @@ async def build_hyperframes_zip(doc) -> bytes:
         if profile.get("page_html_key"):
             members.append(("capture/extracted/page.html", profile["page_html_key"]))
         for a in profile.get("assets", []):
-            if a.get("storage_key"):
-                members.append((f"capture/assets/{a.get('kind')}.{a.get('format', 'bin')}",
-                                a["storage_key"]))
+            skey = a.get("storage_key")
+            if not skey:
+                continue
+            members.append((_asset_zip_path(a, skey), skey))
         for s in profile.get("screenshots", []):
             key = keys.get(s.get("image_id"))
             if key:

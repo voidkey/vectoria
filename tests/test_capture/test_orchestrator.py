@@ -58,7 +58,9 @@ def _settings():
         capture_networkidle_timeout=0, capture_img_wait_ms=0,
         capture_section_settle_ms=0, capture_max_asset_bytes=1000,
         capture_max_screenshot_height=20000, capture_color_delta_e=10.0,
-        capture_asset_catalog_cap=200, capture_video_cap=20)
+        capture_asset_catalog_cap=200, capture_video_cap=20,
+        capture_max_svgs=30, capture_min_svg_bytes=200,
+        capture_max_catalog_images=40, capture_min_image_bytes=10000)
 
 
 @pytest.mark.asyncio
@@ -188,6 +190,60 @@ async def test_run_capture_maps_phase1_tokens_and_strips_svg_markup():
     assert sec["cta_texts"] == ["Start", "Learn"]
     assert sec["asset_urls"] == ["https://x/a.png"]
     assert sec["text"] == "hero body text"
+
+
+@pytest.mark.asyncio
+async def test_run_capture_downloads_svgs_to_assets_svgs_with_content_hash():
+    logo_markup = "<svg width='120' height='40'>" + "L" * 300 + "</svg>"
+    plain_markup = "<svg viewBox='0 0 24 24'>" + "P" * 300 + "</svg>"
+    tiny_markup = "<svg></svg>"  # below capture_min_svg_bytes -> skipped
+    raw = {
+        "final_url": "https://x/final",
+        "colors": {"samples": [{"color": "#0b0b0f", "area": 400000, "text": False}],
+                   "css_vars": {}, "theme_color": None},
+        "fonts": {"display": {"family": "Inter", "weight": 700, "selector": "h1"},
+                  "body": {"family": "Inter", "weight": 400, "selector": "p"},
+                  "face_srcs": {}},
+        "spacing": {"margins": [8], "paddings": [16], "radii": [8],
+                    "container_max_width": 1200, "section_gaps": []},
+        "sections": [], "text": {"headline": "Hi", "tagline": "", "ctas": [],
+                                 "full_text": ""},
+        "svgs": [
+            {"label": "logo", "viewBox": "0 0 120 40", "outerHTML": logo_markup,
+             "isLogo": True},
+            {"label": "icon", "viewBox": "0 0 24 24", "outerHTML": plain_markup,
+             "isLogo": False},
+            {"label": "dup", "viewBox": "0 0 120 40", "outerHTML": logo_markup,
+             "isLogo": True},  # duplicate content -> deduped by hash
+            {"label": "tiny", "outerHTML": tiny_markup, "isLogo": False},
+        ],
+        "assets": {"logo": None, "hero": None, "og_image": None, "favicon": None,
+                   "video": None, "lottie": None},
+        "motion": {"libraries": [], "has_video_background": False, "has_canvas": False},
+    }
+    deps = _FakeDeps(_fake_page(raw), {})
+    cfg = _settings()
+    cfg.capture_max_svgs = 30
+    cfg.capture_min_svg_bytes = 200
+
+    from parsers.capture.orchestrator import run_capture
+    outcome = await run_capture("https://x", "kb", "d1", cfg, deps)
+
+    svg_refs = [a for a in outcome.profile.assets if a.format == "svg"]
+    # logo + plain, dup deduped, tiny skipped
+    assert len(svg_refs) == 2
+    kinds = {a.kind for a in svg_refs}
+    assert kinds == {"logo", "svg"}
+    for a in svg_refs:
+        assert a.storage_key.startswith("captures/kb/d1/assets/svgs/")
+    logo_ref = next(a for a in svg_refs if a.kind == "logo")
+    assert "/svgs/logo-" in logo_ref.storage_key
+    plain_ref = next(a for a in svg_refs if a.kind == "svg")
+    assert "/svgs/svg-" in plain_ref.storage_key
+    # S3 puts happened for exactly the 2 stored SVGs (svg content-type)
+    put_keys = [c.args[0] for c in deps.storage.put.call_args_list
+                if "/assets/svgs/" in c.args[0]]
+    assert len(put_keys) == 2
 
 
 def json_dumps(obj):

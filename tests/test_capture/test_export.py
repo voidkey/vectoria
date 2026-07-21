@@ -96,6 +96,37 @@ async def test_build_hyperframes_zip_layout():
     assert sec["layout"] == "split" and sec["text"] == "hero body"
 
 
+@pytest.mark.asyncio
+async def test_build_zip_routes_downloaded_svgs_by_basename():
+    """Downloaded SVGs (format=svg, storage_key under assets/svgs/) go to
+    capture/assets/svgs/<basename> — keyed by the unique content-hash basename,
+    not {kind}.{format} (which would collide many svgs on svg.svg)."""
+    doc = type("D", (), {})()
+    doc.id, doc.kb_id = "d1", "kb"
+    doc.profile = {
+        "fonts": {}, "text": {"headline": "T"}, "screenshots": [], "spacing": {},
+        "assets": [
+            {"kind": "logo", "storage_key": "captures/kb/d1/assets/svgs/logo-abc123.svg",
+             "format": "svg"},
+            {"kind": "svg", "storage_key": "captures/kb/d1/assets/svgs/svg-def456.svg",
+             "format": "svg"},
+        ],
+    }
+    storage = AsyncMock()
+    storage.get = AsyncMock(return_value=b"<svg/>")
+    with (
+        patch("parsers.capture.export.get_storage", new=AsyncMock(return_value=storage)),
+        patch("parsers.capture.export._image_keys", new=AsyncMock(return_value={})),
+    ):
+        from parsers.capture.export import build_hyperframes_zip
+        data = await build_hyperframes_zip(doc)
+    names = set(zipfile.ZipFile(io.BytesIO(data)).namelist())
+    assert "capture/assets/svgs/logo-abc123.svg" in names
+    assert "capture/assets/svgs/svg-def456.svg" in names
+    # not collapsed to {kind}.{format}
+    assert "capture/assets/svg.svg" not in names
+
+
 def test_official_tokens_colors_fallback_when_ranked_empty():
     """Legacy/partial profiles without colors_ranked fall back to the role
     tokens' hexes so downstream never gets an empty `colors`; colorStats -> []."""
