@@ -4,6 +4,7 @@ from parsers.capture._media import (
     cap_items,
     catalog_assets,
     dedupe_srcset_variants,
+    merge_video_manifest,
     video_descriptors,
 )
 
@@ -125,3 +126,68 @@ async def test_video_descriptors_caps():
     out = await video_descriptors(page, cap=3)
     assert len(out) == 3
     assert out[0]["src"] == "https://x.com/v0.mp4"
+
+
+# ---- merge_video_manifest ----
+
+def test_merge_video_manifest_shapes_entries_verbatim_keys():
+    dom = [{"src": "https://x.com/hero.mp4", "width": 1280, "height": 720,
+            "poster": "https://x.com/p.jpg"}]
+    out = merge_video_manifest(set(), dom, cap=6)
+    assert len(out) == 1
+    e = out[0]
+    # Exact key set — nothing more, nothing less.
+    assert set(e) == {"url", "source", "width", "height", "poster", "download", "preview"}
+    assert e["url"] == "https://x.com/hero.mp4"
+    assert e["source"] == "dom"
+    assert e["width"] == 1280
+    assert e["height"] == 720
+    assert e["poster"] == "https://x.com/p.jpg"
+    assert e["download"] is True     # direct .mp4 ext
+    assert e["preview"] is None      # filled later by orchestrator
+
+
+def test_merge_video_manifest_dedups_url_in_both_network_and_dom():
+    # DOM (rich) wins over the network-only thin entry for the same URL.
+    dom = [{"src": "https://x.com/clip.mp4", "width": 800, "height": 450}]
+    net = {"https://x.com/clip.mp4", "https://x.com/other.webm"}
+    out = merge_video_manifest(net, dom, cap=6)
+    urls = [e["url"] for e in out]
+    assert urls.count("https://x.com/clip.mp4") == 1
+    clip = next(e for e in out if e["url"] == "https://x.com/clip.mp4")
+    assert clip["source"] == "dom"           # DOM entry kept, not overwritten by network
+    assert clip["width"] == 800
+    other = next(e for e in out if e["url"] == "https://x.com/other.webm")
+    assert other["source"] == "network"
+    assert other["width"] == 0               # thin network entry
+
+
+def test_merge_video_manifest_marks_hls_dash_blob_not_downloadable():
+    net = {
+        "https://x.com/stream.m3u8",   # HLS
+        "https://x.com/stream.mpd",    # DASH
+        "blob:https://x.com/abc",      # blob
+        "data:video/mp4;base64,AAAA",  # data
+        "https://x.com/real.mov",      # direct ext
+    }
+    out = merge_video_manifest(net, [], cap=10)
+    by_url = {e["url"]: e for e in out}
+    assert by_url["https://x.com/stream.m3u8"]["download"] is False
+    assert by_url["https://x.com/stream.mpd"]["download"] is False
+    assert by_url["blob:https://x.com/abc"]["download"] is False
+    assert by_url["data:video/mp4;base64,AAAA"]["download"] is False
+    assert by_url["https://x.com/real.mov"]["download"] is True
+
+
+def test_merge_video_manifest_caps_total():
+    dom = [{"src": f"https://x.com/v{i}.mp4"} for i in range(4)]
+    net = {f"https://x.com/n{i}.mp4" for i in range(10)}
+    out = merge_video_manifest(net, dom, cap=6)
+    assert len(out) == 6
+    # DOM entries are kept first (richer), so all 4 DOM urls survive the cap.
+    dom_urls = {f"https://x.com/v{i}.mp4" for i in range(4)}
+    assert dom_urls <= {e["url"] for e in out}
+
+
+def test_merge_video_manifest_empty():
+    assert merge_video_manifest(set(), [], cap=6) == []

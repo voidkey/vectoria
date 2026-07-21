@@ -179,3 +179,10 @@ class SiteProfile(BaseModel):
     # default (None / []) so older stored profiles still validate + export.
     animation_catalog: dict | None = None
     shaders: list[dict] = Field(default_factory=list)
+    # Phase 7: two-layer (network + DOM) video manifest — {videos:[{url, source,
+    # width, height, poster, download, preview}], meta:{discovered, downloaded,
+    # previews}}. Downloaded bodies + preview frames land as AssetRefs in `assets`
+    # (kind="video"/"video_preview"); the manifest carries the discovery record +
+    # per-video metadata. Kept alongside the URL-only `videos` descriptor catalog.
+    # Defaults to None so older stored profiles still validate + export (file omitted).
+    video_manifest: dict | None = None

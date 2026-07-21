@@ -283,6 +283,15 @@ class Settings(BaseSettings):
     capture_max_asset_bytes: int = 25 * 1024 * 1024   # per non-image binary (video/lottie/woff2)
     capture_asset_catalog_cap: int = 200          # max URL-only media catalog entries (after dedup)
     capture_video_cap: int = 20                   # max DOM video descriptors
+    # Phase 7 video manifest (ported from hyperframes mediaCapture.ts): two-layer
+    # (network + DOM) discovery -> manifest at all quality levels; direct-ext bodies
+    # (skip HLS .m3u8 / DASH .mpd / blob / data) downloaded only when quality==full,
+    # bounded by a count cap AND a cumulative wall-clock budget so a throttled host
+    # or many large clips can't stall the capture.
+    capture_max_videos: int = 6                    # max distinct videos in the manifest
+    capture_max_video_downloads: int = 3           # max bodies actually downloaded
+    capture_max_video_bytes: int = 75 * 1024 * 1024
+    capture_video_download_budget_s: float = 180.0  # cumulative download wall-clock cap (s)
     # Phase 3 asset-download parity. SVGs come from the already-extracted markup
     # (no fetch); catalog images are fetched via SSRF-checked fetch_asset_bytes.
     capture_max_svgs: int = 30                    # max page SVGs stored to assets/svgs/

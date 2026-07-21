@@ -24,6 +24,9 @@ def test_siteprofile_roundtrip():
     assert d["shaders"] == []
     assert p2.animation_catalog is None
     assert p2.shaders == []
+    # Phase 7: video_manifest default (backward-compat).
+    assert d["video_manifest"] is None
+    assert p2.video_manifest is None
 
 
 def test_siteprofile_carries_animation_catalog_and_shaders():
@@ -50,3 +53,28 @@ def test_siteprofile_carries_animation_catalog_and_shaders():
     p3 = SiteProfile.model_validate(old)
     assert p3.animation_catalog is None
     assert p3.shaders == []
+
+
+def test_siteprofile_carries_video_manifest():
+    from parsers.capture.profile import (
+        SiteProfile, Fonts, FontRole, CatalogMatch, Spacing, TextInfo, MotionHints,
+    )
+    vm = {"videos": [{"url": "https://x/hero.mp4", "source": "dom", "width": 1280,
+                      "height": 720, "poster": "", "download": True,
+                      "preview": None}],
+          "meta": {"discovered": 1, "downloaded": 0, "previews": 0}}
+    p = SiteProfile(
+        url="https://x", captured_at="2026-07-14T00:00:00Z",
+        fonts=Fonts(
+            display=FontRole(family="Inter", stack="Inter", sample_selector="h1",
+                             catalog_match=CatalogMatch(matched=False), renderable=False),
+            body=FontRole(family="Inter", stack="Inter", sample_selector="p",
+                          catalog_match=CatalogMatch(matched=False), renderable=False)),
+        spacing=Spacing(), text=TextInfo(headline="Hi"), motion_hints=MotionHints(),
+        video_manifest=vm)
+    d = p.model_dump()
+    assert d["video_manifest"]["videos"][0]["url"] == "https://x/hero.mp4"
+    # Old profile dict lacking the key still validates (backward-compat).
+    old = {k: v for k, v in d.items() if k != "video_manifest"}
+    p2 = SiteProfile.model_validate(old)
+    assert p2.video_manifest is None

@@ -10,6 +10,11 @@ def test_capture_settings_defaults():
     assert s.capture_max_screenshot_height == 20000
     assert s.capture_color_delta_e == 10.0
     assert s.font_catalog_path == ""
+    # Phase 7: video manifest download bounds.
+    assert s.capture_max_videos == 6
+    assert s.capture_max_video_downloads == 3
+    assert s.capture_max_video_bytes == 75 * 1024 * 1024
+    assert s.capture_video_download_budget_s == 180.0
 
 
 def test_capture_not_found_code():

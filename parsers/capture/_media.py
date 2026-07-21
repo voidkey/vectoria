@@ -358,3 +358,71 @@ async def video_descriptors(page, *, cap: int = 20) -> list[dict]:
     if truncated:
         logger.warning("capture: videos truncated %d -> %d", len(items), cap)
     return kept
+
+
+# Direct-file video extensions we're willing to download. Streaming manifests
+# (HLS .m3u8 / DASH .mpd) and blob:/data: pseudo-URLs are NEVER downloaded — they
+# aren't a single fetchable body (mirrors mediaCapture.ts DOWNLOADABLE_VIDEO_EXTS).
+DOWNLOADABLE_VIDEO_EXTS = (".mp4", ".webm", ".mov", ".m4v")
+
+
+def is_downloadable_video_url(url: str) -> bool:
+    """True only for a direct-file video URL (http[s] with a downloadable ext).
+
+    False for HLS (.m3u8), DASH (.mpd), and blob:/data: pseudo-URLs — those are
+    streaming manifests / in-memory blobs, not a single fetchable body. Pure."""
+    if not url or url.startswith(("blob:", "data:")):
+        return False
+    try:
+        path = urlsplit(url).path.lower()
+    except (ValueError, TypeError):
+        return False
+    return path.endswith(DOWNLOADABLE_VIDEO_EXTS)
+
+
+def merge_video_manifest(network_urls: set, dom_videos: list, cap: int) -> list[dict]:
+    """Merge two-layer video discovery into capped manifest entries.
+
+    Port of mediaCapture.ts::captureVideoManifest's merge step, mapped to
+    vectoria's manifest entry shape. Layer 2 (DOM, rich — carries width/height/
+    poster) is kept ahead of Layer 1 (network-only, thin) so a clip seen in both
+    lands once as the richer DOM entry. Deduped by URL, then capped (DOM entries
+    first so the cap never drops a rich entry in favour of a thin one).
+
+    Each entry has the verbatim key set ``{url, source, width, height, poster,
+    download, preview}``: ``source`` is "dom" or "network"; ``download`` marks a
+    direct-ext body the orchestrator may fetch (False for HLS/DASH/blob/data);
+    ``preview`` starts None and is filled by the orchestrator's screenshot pass.
+    Pure — no I/O."""
+    by_url: dict[str, dict] = {}
+    for d in dom_videos or []:
+        url = d.get("src") or ""
+        if not url or url in by_url:
+            continue
+        by_url[url] = {
+            "url": url,
+            "source": "dom",
+            "width": d.get("width", 0) or 0,
+            "height": d.get("height", 0) or 0,
+            "poster": d.get("poster") or "",
+            "download": is_downloadable_video_url(url),
+            "preview": None,
+        }
+    for url in network_urls or set():
+        if not url or url in by_url:
+            continue
+        by_url[url] = {
+            "url": url,
+            "source": "network",
+            "width": 0,
+            "height": 0,
+            "poster": "",
+            "download": is_downloadable_video_url(url),
+            "preview": None,
+        }
+    items = list(by_url.values())
+    kept, truncated = cap_items(items, cap)
+    if truncated:
+        logger.info("capture: video manifest cap dropped %d of %d discovered videos",
+                    len(items) - len(kept), len(items))
+    return kept
