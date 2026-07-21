@@ -11,6 +11,14 @@ def test_extract_js_is_string():
     assert "innerText" in EXTRACT_JS      # visible full-text capture
 
 
+def test_extract_js_collects_phase1_tokens():
+    # Phase 1: headings / svgs (with isLogo) / page geometry / section layout.
+    for needle in ("headings", "svgs", "isLogo", "outerHTML",
+                   "layout", "callsToAction", "assetUrls",
+                   "scrollWidth", "viewBox"):
+        assert needle in EXTRACT_JS, needle
+
+
 @pytest.mark.asyncio
 async def test_run_extract_passes_through():
     page = AsyncMock()
