@@ -262,19 +262,128 @@ async def test_build_zip_emits_fonts_css_for_captured_fonts():
 
 
 def test_fonts_css_caps_total_faces_at_30():
+    """Fallback path (no font_files): cap the role-font faces at 30."""
     from parsers.capture.export import _fonts_css
     files = [{"url": f"captures/kb/d1/fonts/f{i}.woff2", "weight": 400,
               "style": "normal", "format": "woff2"} for i in range(40)]
-    fonts = {"display": {"family": "Fam", "files": files}, "body": {"family": "", "files": []}}
-    css = _fonts_css(fonts)
+    profile = {"fonts": {"display": {"family": "Fam", "files": files},
+                         "body": {"family": "", "files": []}}}
+    css = _fonts_css(profile)
+    assert css.count("@font-face") == 30
+
+
+def test_fonts_css_caps_font_files_at_30():
+    """Phase 4 path: font_files faces capped at 30."""
+    from parsers.capture.export import _fonts_css
+    ff = [{"storage_key": f"captures/kb/d1/assets/fonts/{i:08x}.woff2",
+           "family": "Fam", "weight": 400, "style": "normal"} for i in range(40)]
+    css = _fonts_css({"font_files": ff})
     assert css.count("@font-face") == 30
 
 
 def test_fonts_css_empty_when_no_captured_files():
     from parsers.capture.export import _fonts_css
     # renderable/catalog-matched fonts have no captured files -> no css
-    assert _fonts_css({"display": {"family": "Inter", "files": []},
-                       "body": {"family": "Inter", "files": []}}) == ""
+    assert _fonts_css({"fonts": {"display": {"family": "Inter", "files": []},
+                                 "body": {"family": "Inter", "files": []}}}) == ""
+
+
+@pytest.mark.asyncio
+async def test_build_zip_emits_real_fonts_manifest_from_font_files():
+    """Phase 4: fonts-manifest.json is the real types.ts::FontsManifest built from
+    profile.font_files, and fonts.css has one @font-face per captured face."""
+    doc = type("D", (), {})()
+    doc.id, doc.kb_id = "d1", "kb"
+    doc.profile = {
+        "captured_at": "2026-07-21T00:00:00+00:00",
+        "text": {"headline": "T"}, "screenshots": [], "spacing": {}, "assets": [],
+        "fonts": {},
+        "font_files": [
+            {"file": "aaaa1111.woff2", "family": "Inter", "rawFamily": "Inter",
+             "subfamily": "Regular", "postscript": "Inter-Regular", "weight": 400,
+             "style": "normal", "variationAxes": [], "identified": True,
+             "isIcon": False,
+             "storage_key": "captures/kb/d1/assets/fonts/aaaa1111.woff2"},
+            {"file": "bbbb2222.woff2", "family": "Inter", "rawFamily": "Inter",
+             "subfamily": "Bold", "postscript": "Inter-Bold", "weight": 700,
+             "style": "normal", "variationAxes": [], "identified": True,
+             "isIcon": False,
+             "storage_key": "captures/kb/d1/assets/fonts/bbbb2222.woff2"},
+            {"file": "cccc3333.woff2", "family": "", "rawFamily": "",
+             "subfamily": "", "postscript": "", "weight": 0, "style": "normal",
+             "variationAxes": [], "identified": False, "isIcon": False,
+             "storage_key": "captures/kb/d1/assets/fonts/cccc3333.woff2"},
+        ],
+    }
+    storage = AsyncMock()
+    storage.get = AsyncMock(return_value=b"WOFF2")
+    with (
+        patch("parsers.capture.export.get_storage", new=AsyncMock(return_value=storage)),
+        patch("parsers.capture.export._image_keys", new=AsyncMock(return_value={})),
+    ):
+        from parsers.capture.export import build_hyperframes_zip
+        data = await build_hyperframes_zip(doc)
+    zf = zipfile.ZipFile(io.BytesIO(data))
+    names = set(zf.namelist())
+
+    manifest = json.loads(zf.read("capture/extracted/fonts-manifest.json"))
+    assert set(manifest) == {"files", "families", "unidentified", "meta"}
+    assert manifest["meta"] == {"generatedAt": "2026-07-21T00:00:00+00:00",
+                                "tool": "fonttools"}
+    assert len(manifest["files"]) == 3
+    assert manifest["unidentified"] == ["cccc3333.woff2"]
+    fam = next(f for f in manifest["families"] if f["family"] == "Inter")
+    assert fam["weights"] == [400, 700]
+    assert fam["fileCount"] == 2
+    assert fam["files"] == ["aaaa1111.woff2", "bbbb2222.woff2"]
+
+    # fonts.css + woff2 members for the two identified faces.
+    assert "capture/assets/fonts/fonts.css" in names
+    assert "capture/assets/fonts/aaaa1111.woff2" in names
+    assert "capture/assets/fonts/bbbb2222.woff2" in names
+    css = zf.read("capture/assets/fonts/fonts.css").decode()
+    assert css.count("@font-face") == 2   # unidentified (family="") skipped
+    assert 'src: url("./aaaa1111.woff2")' in css
+    assert "font-weight: 700" in css
+
+
+@pytest.mark.asyncio
+async def test_build_zip_fonts_manifest_fallback_empty_font_files():
+    """Old profiles without font_files still export: an empty-but-well-formed
+    manifest and the role-font fallback fonts.css."""
+    doc = type("D", (), {})()
+    doc.id, doc.kb_id = "d1", "kb"
+    doc.profile = {
+        "captured_at": "2026-07-20T00:00:00+00:00",
+        "text": {"headline": "T"}, "screenshots": [], "spacing": {}, "assets": [],
+        "fonts": {
+            "display": {"family": "Poppins", "renderable": False,
+                        "catalog_match": {"matched": False},
+                        "files": [{"url": "captures/kb/d1/fonts/poppins.woff2",
+                                   "weight": 700, "style": "normal"}]},
+            "body": {"family": "Inter", "renderable": False,
+                     "catalog_match": {"matched": False}, "files": []},
+        },
+        # no font_files key at all
+    }
+    storage = AsyncMock()
+    storage.get = AsyncMock(return_value=b"WOFF2")
+    with (
+        patch("parsers.capture.export.get_storage", new=AsyncMock(return_value=storage)),
+        patch("parsers.capture.export._image_keys", new=AsyncMock(return_value={})),
+    ):
+        from parsers.capture.export import build_hyperframes_zip
+        data = await build_hyperframes_zip(doc)
+    zf = zipfile.ZipFile(io.BytesIO(data))
+    manifest = json.loads(zf.read("capture/extracted/fonts-manifest.json"))
+    assert manifest == {"files": [], "families": [], "unidentified": [],
+                        "meta": {"generatedAt": "2026-07-20T00:00:00+00:00",
+                                 "tool": "fonttools"}}
+    # Fallback fonts.css from the role-font files still works.
+    css = zf.read("capture/assets/fonts/fonts.css").decode()
+    assert 'font-family: "Poppins"' in css
+    assert 'src: url("./poppins.woff2")' in css
+    assert "capture/assets/fonts/poppins.woff2" in set(zf.namelist())
 
 
 def test_official_tokens_colors_fallback_when_ranked_empty():

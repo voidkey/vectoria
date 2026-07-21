@@ -10,6 +10,7 @@ from sqlalchemy import select
 
 from db.base import get_session
 from db.models import DocumentImage
+from parsers.capture._font_metadata import build_fonts_manifest
 from storage import get_storage
 
 
@@ -110,18 +111,42 @@ def _sections_out(sections: list[dict]) -> list[dict]:
 _MAX_TOTAL_FONTS = 30
 
 
-def _fonts_css(fonts: dict) -> str:
-    """Synthesize a minimal @font-face stylesheet for the CAPTURED role fonts.
+def _font_face_block(family: str, weight, style: str, basename: str) -> str:
+    return (
+        "@font-face {\n"
+        f"  font-family: \"{family}\";\n"
+        f"  font-weight: {weight or 400};\n"
+        f"  font-style: {style or 'normal'};\n"
+        f"  src: url(\"./{basename}\") format(\"woff2\");\n"
+        "}")
 
-    The reference (assetDownloader.ts::downloadAndRewriteFonts) rewrites the site's
-    own CSS to local paths; vectoria instead emits a fresh stylesheet from its
-    role-font files — simpler and sufficient for build-frame to stage the faces.
-    One @font-face per captured woff2 file, referencing it locally as
-    ``./<basename>`` (the woff2 lands next to this CSS at capture/assets/fonts/).
-    Only captured files (stored under ``captures/``) are included; catalog-matched
-    / renderable fonts served from a CDN have no local file. Total faces capped at
-    _MAX_TOTAL_FONTS. Returns "" when there are no captured files."""
+
+def _fonts_css(profile: dict) -> str:
+    """Synthesize an @font-face stylesheet for every captured face.
+
+    Phase 4: emits one @font-face per entry in ``profile["font_files"]`` (the
+    bounded site face set + role fonts, with fonttools-derived family/weight/style),
+    each referencing its woff2 locally as ``./<basename>`` (staged alongside this
+    CSS at capture/assets/fonts/). Falls back to the role-font ``files`` for older
+    profiles that predate ``font_files``. Only captured files (stored under
+    ``captures/``) are included; CDN/catalog fonts have no local file. Faces capped
+    at _MAX_TOTAL_FONTS. Returns "" when there are no captured files."""
     blocks: list[str] = []
+    font_files = profile.get("font_files") or []
+    if font_files:
+        for m in font_files:
+            if len(blocks) >= _MAX_TOTAL_FONTS:
+                break
+            key = m.get("storage_key") or ""
+            family = (m.get("family") or "").strip()
+            if not key.startswith("captures/") or not family:
+                continue
+            blocks.append(_font_face_block(
+                family, m.get("weight"), m.get("style"), key.rsplit("/", 1)[-1]))
+        return "\n".join(blocks)
+
+    # Fallback: old profiles without font_files — synthesize from role-font files.
+    fonts = profile.get("fonts", {}) or {}
     for role in ("display", "body"):
         fr = fonts.get(role) or {}
         family = (fr.get("family") or "").strip()
@@ -133,16 +158,8 @@ def _fonts_css(fonts: dict) -> str:
             key = f.get("url") or ""
             if not key.startswith("captures/"):
                 continue  # CDN/catalog font — no local file to reference
-            basename = key.rsplit("/", 1)[-1]
-            weight = f.get("weight") or 400
-            style = f.get("style") or "normal"
-            blocks.append(
-                "@font-face {\n"
-                f"  font-family: \"{family}\";\n"
-                f"  font-weight: {weight};\n"
-                f"  font-style: {style};\n"
-                f"  src: url(\"./{basename}\") format(\"woff2\");\n"
-                "}")
+            blocks.append(_font_face_block(
+                family, f.get("weight"), f.get("style"), key.rsplit("/", 1)[-1]))
     return "\n".join(blocks)
 
 
@@ -174,12 +191,16 @@ async def build_hyperframes_zip(doc) -> bytes:
         # detection (no longer projected from role tokens/luminance fallback).
         zf.writestr("capture/extracted/tokens.json",
                     json.dumps(_official_tokens(profile), ensure_ascii=False, indent=2))
-        # extracted/fonts.json + fonts-manifest.json — the role-keyed Fonts object.
-        # Emitted under both names: fonts.json (legacy) and fonts-manifest.json
-        # (the name the website-to-video font-identification step reads).
-        fonts_obj = json.dumps(profile.get("fonts", {}), ensure_ascii=False, indent=2)
-        zf.writestr("capture/extracted/fonts.json", fonts_obj)
-        zf.writestr("capture/extracted/fonts-manifest.json", fonts_obj)
+        # extracted/fonts.json — the role-keyed Fonts object (legacy shape).
+        zf.writestr("capture/extracted/fonts.json",
+                    json.dumps(profile.get("fonts", {}), ensure_ascii=False, indent=2))
+        # extracted/fonts-manifest.json — the REAL types.ts::FontsManifest built from
+        # captured font bytes (fonttools). Fallback for old profiles without
+        # font_files: an empty-but-well-formed manifest so downstream never breaks.
+        font_files = profile.get("font_files") or []
+        manifest = build_fonts_manifest(font_files, profile.get("captured_at", ""))
+        zf.writestr("capture/extracted/fonts-manifest.json",
+                    json.dumps(manifest, ensure_ascii=False, indent=2))
         # extracted/visible-text.txt
         t = profile.get("text", {})
         text_body = "\n\n".join(filter(None, [
@@ -204,7 +225,7 @@ async def build_hyperframes_zip(doc) -> bytes:
         # the captured woff2 files (staged alongside at capture/assets/fonts/), so
         # build-frame can register the faces locally. Only emitted when there are
         # captured font files. Generated from profile["fonts"] (no S3 needed).
-        fonts_css = _fonts_css(profile.get("fonts", {}) or {})
+        fonts_css = _fonts_css(profile)
         if fonts_css:
             zf.writestr("capture/assets/fonts/fonts.css", fonts_css)
 
@@ -226,13 +247,20 @@ async def build_hyperframes_zip(doc) -> bytes:
                 label = (s.get("kind") if s.get("section_index") is None
                          else f"section-{s['section_index']:02d}")
                 members.append((f"capture/screenshots/{label}.png", key))
+        # Captured woff2 faces -> capture/assets/fonts/ (where build-frame.mjs globs
+        # to stage @font-face faces). Phase 4: the bounded face set (font_files) plus
+        # the role-font files; deduped by storage key so a role font that's also in
+        # font_files isn't written twice. Old profiles carry only role-font files.
+        seen_font_keys: set[str] = set()
+        font_keys = [m.get("storage_key") for m in (profile.get("font_files") or [])]
         for role in ("display", "body"):
             for f in profile.get("fonts", {}).get(role, {}).get("files", []):
-                key = f.get("url")  # stored key for captured (unmatched) fonts
-                if key and key.startswith("captures/"):
-                    # capture/assets/fonts/ — where build-frame.mjs looks to stage
-                    # @font-face faces (it globs capture/assets/fonts, not capture/fonts).
-                    members.append((f"capture/assets/fonts/{key.rsplit('/', 1)[-1]}", key))
+                font_keys.append(f.get("url"))
+        for key in font_keys:
+            if not key or not key.startswith("captures/") or key in seen_font_keys:
+                continue
+            seen_font_keys.add(key)
+            members.append((f"capture/assets/fonts/{key.rsplit('/', 1)[-1]}", key))
 
         datas = await asyncio.gather(*(_safe_get(storage, k) for _, k in members))
         for (path, _key), data in zip(members, datas):

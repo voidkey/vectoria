@@ -54,14 +54,32 @@ def _asset_gets_vision(kind: str, fname: str) -> bool:
     return kind in _VISION_ASSET_KINDS and fname.rsplit(".", 1)[-1] in _VISION_RASTER_EXT
 
 
-_LATIN_SUBSET_RE = re.compile(r"latin|[A-Za-z0-9]{10,}\.woff", re.I)
+# Non-latin unicode-range subset tokens that a font URL/path may name; a face so
+# labelled sorts AFTER a latin/hashed face (explicitly de-prioritized).
+_NON_LATIN_SUBSETS = ("cyrillic", "greek", "vietnamese", "cjk", "korean",
+                      "japanese", "arabic", "thai", "hebrew")
+_HASHED_BASENAME_RE = re.compile(r"[A-Za-z0-9]{8,}")
 
 
 def _is_latin_subset(url: str) -> bool:
-    """True when a font URL looks like a Latin subset (or a hashed-filename face),
-    so it sorts ahead of CJK/Arabic unicode-range subsets. Mirrors the reference
-    sort key in assetDownloader.ts::downloadAndRewriteFonts."""
-    return bool(_LATIN_SUBSET_RE.search(url or ""))
+    """True when a font URL looks like a Latin subset or an opaque hashed-filename
+    face, so it sorts ahead of explicitly non-latin (CJK/Arabic/...) unicode-range
+    subsets. Mirrors the reference sort key in assetDownloader.ts::
+    downloadAndRewriteFonts. A ``latin`` token in the path wins; a hashed/opaque
+    basename (e.g. ``19cfc7226ec3afaa-s.woff2``) is treated as NEUTRAL — still
+    True so it outranks a named non-latin subset — because we can't tell its
+    coverage from the name alone. Pure helper."""
+    from urllib.parse import urlsplit
+    path = urlsplit(url or "").path.lower()
+    if "latin" in path:
+        return True
+    basename = path.rsplit("/", 1)[-1]
+    stem = basename.rsplit(".", 1)[0] if "." in basename else basename
+    # A named non-latin subset is de-prioritized; anything else (including a long
+    # opaque hash) is treated as latin-neutral and kept ahead of those.
+    if any(tok in stem for tok in _NON_LATIN_SUBSETS):
+        return False
+    return bool(_HASHED_BASENAME_RE.search(stem))
 
 
 def _safe_hex(css: str) -> str:
@@ -361,8 +379,9 @@ async def run_capture(url: str, kb_id: str, doc_id: str, cfg, deps: CaptureDeps)
     face_srcs = raw.get("fonts", {}).get("face_srcs", {})
     font_files: list[dict] = []             # raw FontFileMetadata dicts (+ storage_key)
     seen_font_hashes: set[str] = set()      # content-hash dedup across role + face set
+    seen_font_urls: set[str] = set()        # url-level dedup so we never refetch a face
 
-    async def _store_face(data: bytes, basename: str) -> str:
+    async def _store_face(data: bytes) -> str:
         """Store one woff2 face under assets/fonts/ (content-hash name) and append
         its fonttools metadata to the accumulator. Deduped by content hash."""
         digest = hashlib.sha1(data).hexdigest()[:8]
@@ -381,9 +400,10 @@ async def run_capture(url: str, kb_id: str, doc_id: str, cfg, deps: CaptureDeps)
             srcs = face_srcs.get(role.family.lower(), [])
             if srcs:
                 got = await fetch_asset_bytes(srcs[0], max_bytes=cfg.capture_max_asset_bytes)
+                seen_font_urls.add(srcs[0])
                 if got:
                     data, _ = got
-                    key = await _store_face(data, srcs[0])
+                    key = await _store_face(data)
                     role.files = [FontFile(url=key, weight=info.get("weight"), source="captured")]
         return role
 
@@ -397,25 +417,28 @@ async def run_capture(url: str, kb_id: str, doc_id: str, cfg, deps: CaptureDeps)
     # (content-hash dedup) so the manifest covers everything without double-storing.
     total_fonts = len(font_files)
     truncated = 0
-    for family_key, urls in face_srcs.items():
+    for urls in face_srcs.values():
         fam_count = 0
-        # Latin-subset priority: a URL whose path/query names a "latin" subset, or a
-        # long alphanumeric hashed filename ending in .woff(2), sorts before CJK/
-        # Arabic/etc unicode-range subsets (mirrors the reference sort key).
+        # Latin-subset priority: a URL whose path names a "latin" subset (or an
+        # opaque hashed filename) sorts before CJK/Arabic/etc unicode-range subsets
+        # (mirrors the reference sort key).
         for f_url in sorted(urls, key=lambda u: 0 if _is_latin_subset(u) else 1):
+            if f_url in seen_font_urls:      # already fetched by the role-font pass
+                continue
             if total_fonts >= cfg.capture_max_total_fonts:
                 truncated += 1
                 continue
             if fam_count >= cfg.capture_max_fonts_per_family:
                 continue
+            seen_font_urls.add(f_url)
             got = await fetch_asset_bytes(f_url, max_bytes=cfg.capture_max_asset_bytes)
             if got is None:
                 continue
             data, _ = got
             before = len(font_files)
-            await _store_face(data, f_url)
-            fam_count += 1
+            await _store_face(data)
             if len(font_files) > before:     # newly stored (not a content dup)
+                fam_count += 1
                 total_fonts += 1
     if truncated:
         logger.info("capture: total-font cap (%d) truncated %d face(s)",

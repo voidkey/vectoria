@@ -88,6 +88,8 @@ def infer_weight_from_subfamily(subfamily: str) -> int | None:
     """Guess weight from a subfamily string ("Bold", "Light", ...) when OS/2 is
     absent. Spaces and hyphens are collapsed so "Extra Light"/"Extra-Light" match
     "ExtraLight". Returns 400 as the default (never None) — mirrors the reference."""
+    # Intentionally coarser than WEIGHT_TOKEN_TO_VALUE (no Hairline/950-style
+    # tokens), matching the reference; OS/2 usWeightClass normally wins over this.
     s = re.sub(r"[\s-]+", "", subfamily.lower())
     if "thin" in s:
         return 100

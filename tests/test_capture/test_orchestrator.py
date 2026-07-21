@@ -484,6 +484,23 @@ async def test_run_capture_catalog_image_does_not_clobber_named_hero():
     assert cat_path != named_path
 
 
+def test_is_latin_subset_hashed_and_named():
+    from parsers.capture.orchestrator import _is_latin_subset
+    # Hashed Next.js face (the -s suffix used to break the old .woff-anchored
+    # regex) is treated as latin-neutral -> True.
+    assert _is_latin_subset("https://x/_next/static/media/19cfc7226ec3afaa-s.woff2")
+    # An explicit `latin` token wins.
+    assert _is_latin_subset("https://x/fonts/inter-latin.woff2")
+    # An explicit non-latin subset is de-prioritized.
+    assert not _is_latin_subset("https://x/fonts/inter-cyrillic.woff2")
+    # ...and a hashed/latin face sorts ahead of a cyrillic one.
+    urls = ["https://x/fonts/inter-cyrillic.woff2",
+            "https://x/_next/static/media/19cfc7226ec3afaa-s.woff2"]
+    ordered = sorted(urls, key=lambda u: 0 if _is_latin_subset(u) else 1)
+    assert ordered[0].endswith("19cfc7226ec3afaa-s.woff2")
+    assert ordered[1].endswith("inter-cyrillic.woff2")
+
+
 def _synth_woff2(family="Inter", subfamily="Regular", weight=400) -> bytes:
     """A tiny valid woff2 face so font_file_metadata returns real metadata."""
     import io as _io
@@ -554,8 +571,8 @@ async def test_run_capture_prefers_latin_subset_and_collects_metadata():
         from parsers.capture.orchestrator import run_capture
         outcome = await run_capture("https://x", "kb", "d1", cfg, deps)
 
-    # Latin subset fetched before CJK (role-font pass fetches srcs[0]=cjk first,
-    # then the bounded pass sorts Latin ahead — so latin appears in the face-set fetch).
+    # Latin subset fetched (role-font pass fetches srcs[0]=cjk; the bounded pass
+    # sorts Latin ahead and skips the already-seen cjk URL).
     assert "https://x/fonts/inter-latin.woff2" in fetch_order
     ff = outcome.profile.font_files
     assert len(ff) == 2
@@ -563,10 +580,13 @@ async def test_run_capture_prefers_latin_subset_and_collects_metadata():
         assert m["storage_key"].startswith("captures/kb/d1/assets/fonts/")
         assert m["identified"] is True
         assert m["family"] == "Inter"
-    # The role-font passes fetch srcs[0] (cjk) first; the BOUNDED pass then iterates
-    # the family in Latin-first sorted order, so its two fetches are [latin, cjk].
-    assert fetch_order[-2:] == ["https://x/fonts/inter-latin.woff2",
-                                "https://x/fonts/inter-cjk.woff2"]
+    # The role-font passes fetch srcs[0] (cjk) and mark it seen; the BOUNDED pass
+    # then iterates Latin-first, fetching ONLY latin (cjk is url-deduped, never
+    # refetched). So the last bounded fetch is latin, and cjk is not refetched.
+    assert fetch_order[-1] == "https://x/fonts/inter-latin.woff2"
+    assert fetch_order.count("https://x/fonts/inter-latin.woff2") == 1
+    # cjk fetched only by the role pass(es), never by the bounded loop.
+    assert "https://x/fonts/inter-cjk.woff2" in fetch_order
 
 
 @pytest.mark.asyncio
