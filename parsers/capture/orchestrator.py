@@ -292,7 +292,14 @@ async def run_capture(url: str, kb_id: str, doc_id: str, cfg, deps: CaptureDeps)
     # vision_status="skipped". Vision stays scoped to the named logo/hero/og assets
     # above (which flow through DocumentImage rows the analyze_images task backfills);
     # these are plain S3 puts with no ImageRef, so there's nothing for vision to key on.
-    used_names: set[str] = set()
+    # Seed with the reserved named-asset stems (logo/hero/og_image/favicon/
+    # background_video/lottie) so a catalog image whose derived slug collides with
+    # one gets suffix-deduped (hero -> hero-2). Both routes land under
+    # capture/assets/ in the export ZIP (named as {kind}.{format}, catalog as
+    # {slug}.{ext}), and the final zf.writestr is unconditional — without this
+    # seed a catalog "hero.jpg" would silently clobber the named hero.
+    used_names: set[str] = {"logo", "hero", "og_image", "favicon",
+                            "background_video", "lottie"}
     good_catalog = []
     for cat in asset_catalog:
         c_url = cat.get("url", "")
@@ -312,6 +319,8 @@ async def run_capture(url: str, kb_id: str, doc_id: str, cfg, deps: CaptureDeps)
                     len(good_catalog) - len(capped), len(good_catalog))
     for cat in capped:
         c_url = cat["url"]
+        # Load-bearing (not the earlier filter-loop check): dedups the same URL
+        # appearing twice within asset_catalog itself, since this loop also ADDs.
         if c_url in seen_urls:
             continue
         seen_urls.add(c_url)

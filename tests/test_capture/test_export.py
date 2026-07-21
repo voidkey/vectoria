@@ -97,6 +97,66 @@ async def test_build_hyperframes_zip_layout():
 
 
 @pytest.mark.asyncio
+async def test_asset_descriptions_skips_blank_description_assets():
+    """M1: Phase 3 adds many svg/logo/image refs with description="" — those must
+    NOT emit noise "- **kind**: " lines with nothing after the colon. Only assets
+    with a real description show up; blanks are dropped."""
+    doc = type("D", (), {})()
+    doc.id, doc.kb_id = "d1", "kb"
+    doc.profile = {
+        "fonts": {}, "text": {"headline": "T"}, "screenshots": [], "spacing": {},
+        "assets": [
+            {"kind": "logo", "storage_key": "captures/kb/d1/assets/logo.svg",
+             "format": "svg", "description": ""},          # blank -> skipped
+            {"kind": "image", "storage_key": "captures/kb/d1/assets/pic.jpg",
+             "format": "jpg", "description": ""},           # blank -> skipped
+            {"kind": "hero", "storage_key": "captures/kb/d1/assets/hero.jpg",
+             "format": "jpg", "description": "the hero shot"},  # kept
+        ],
+    }
+    storage = AsyncMock()
+    storage.get = AsyncMock(return_value=b"BYTES")
+    with (
+        patch("parsers.capture.export.get_storage", new=AsyncMock(return_value=storage)),
+        patch("parsers.capture.export._image_keys", new=AsyncMock(return_value={})),
+    ):
+        from parsers.capture.export import build_hyperframes_zip
+        data = await build_hyperframes_zip(doc)
+    zf = zipfile.ZipFile(io.BytesIO(data))
+    md = zf.read("capture/extracted/asset-descriptions.md").decode()
+    assert "- **hero**: the hero shot" in md
+    # No noise lines: nothing ends in a bare colon-space, and blanks are gone.
+    assert "- **logo**: " not in md
+    assert "- **image**: " not in md
+    assert md.strip() == "- **hero**: the hero shot"
+
+
+@pytest.mark.asyncio
+async def test_asset_descriptions_fallback_when_all_blank():
+    """When every asset has a blank description, the (no descriptions) fallback
+    still applies (empty join -> fallback string)."""
+    doc = type("D", (), {})()
+    doc.id, doc.kb_id = "d1", "kb"
+    doc.profile = {
+        "fonts": {}, "text": {"headline": "T"}, "screenshots": [], "spacing": {},
+        "assets": [
+            {"kind": "logo", "storage_key": "captures/kb/d1/assets/logo.svg",
+             "format": "svg", "description": ""},
+        ],
+    }
+    storage = AsyncMock()
+    storage.get = AsyncMock(return_value=b"<svg/>")
+    with (
+        patch("parsers.capture.export.get_storage", new=AsyncMock(return_value=storage)),
+        patch("parsers.capture.export._image_keys", new=AsyncMock(return_value={})),
+    ):
+        from parsers.capture.export import build_hyperframes_zip
+        data = await build_hyperframes_zip(doc)
+    zf = zipfile.ZipFile(io.BytesIO(data))
+    assert zf.read("capture/extracted/asset-descriptions.md").decode() == "(no descriptions)"
+
+
+@pytest.mark.asyncio
 async def test_build_zip_routes_downloaded_svgs_by_basename():
     """Downloaded SVGs (format=svg, storage_key under assets/svgs/) go to
     capture/assets/svgs/<basename> — keyed by the unique content-hash basename,
@@ -154,6 +214,67 @@ async def test_build_zip_routes_catalog_images_by_basename():
     assert "capture/assets/hero-product.jpg" in names
     assert "capture/assets/pricing-table.png" in names
     assert "capture/assets/image.jpg" not in names  # not collapsed
+
+
+@pytest.mark.asyncio
+async def test_build_zip_emits_fonts_css_for_captured_fonts():
+    """Captured role fonts (woff2 stored under captures/.../fonts/) get a
+    synthesized capture/assets/fonts/fonts.css with local @font-face src."""
+    doc = type("D", (), {})()
+    doc.id, doc.kb_id = "d1", "kb"
+    doc.profile = {
+        "text": {"headline": "T"}, "screenshots": [], "spacing": {}, "assets": [],
+        "fonts": {
+            "display": {"family": "Poppins", "stack": "Poppins", "renderable": False,
+                        "catalog_match": {"matched": False}, "sample_selector": "h1",
+                        "weights": [700],
+                        "files": [{"url": "captures/kb/d1/fonts/poppins.woff2",
+                                   "weight": 700, "style": "normal", "format": "woff2"}]},
+            "body": {"family": "Inter", "stack": "Inter", "renderable": False,
+                     "catalog_match": {"matched": False}, "sample_selector": "p",
+                     "weights": [400],
+                     "files": [{"url": "captures/kb/d1/fonts/inter.woff2",
+                                "weight": 400, "style": "normal", "format": "woff2"}]},
+        },
+    }
+    storage = AsyncMock()
+    storage.get = AsyncMock(return_value=b"WOFF2")
+    with (
+        patch("parsers.capture.export.get_storage", new=AsyncMock(return_value=storage)),
+        patch("parsers.capture.export._image_keys", new=AsyncMock(return_value={})),
+    ):
+        from parsers.capture.export import build_hyperframes_zip
+        data = await build_hyperframes_zip(doc)
+    zf = zipfile.ZipFile(io.BytesIO(data))
+    names = set(zf.namelist())
+    assert "capture/assets/fonts/fonts.css" in names
+    # the woff2 members are still emitted
+    assert "capture/assets/fonts/poppins.woff2" in names
+    assert "capture/assets/fonts/inter.woff2" in names
+    css = zf.read("capture/assets/fonts/fonts.css").decode()
+    assert 'font-family: "Poppins"' in css
+    assert 'font-family: "Inter"' in css
+    assert 'src: url("./poppins.woff2")' in css
+    assert 'src: url("./inter.woff2")' in css
+    assert "font-weight: 700" in css
+    assert "font-style: normal" in css
+    assert css.count("@font-face") == 2
+
+
+def test_fonts_css_caps_total_faces_at_30():
+    from parsers.capture.export import _fonts_css
+    files = [{"url": f"captures/kb/d1/fonts/f{i}.woff2", "weight": 400,
+              "style": "normal", "format": "woff2"} for i in range(40)]
+    fonts = {"display": {"family": "Fam", "files": files}, "body": {"family": "", "files": []}}
+    css = _fonts_css(fonts)
+    assert css.count("@font-face") == 30
+
+
+def test_fonts_css_empty_when_no_captured_files():
+    from parsers.capture.export import _fonts_css
+    # renderable/catalog-matched fonts have no captured files -> no css
+    assert _fonts_css({"display": {"family": "Inter", "files": []},
+                       "body": {"family": "Inter", "files": []}}) == ""
 
 
 def test_official_tokens_colors_fallback_when_ranked_empty():

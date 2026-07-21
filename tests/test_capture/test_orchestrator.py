@@ -362,6 +362,128 @@ async def test_run_capture_catalog_image_cap_logs_truncation(caplog):
                for r in caplog.records)
 
 
+@pytest.mark.asyncio
+async def test_run_capture_dedups_duplicate_catalog_url_within_catalog():
+    """M2: the same URL appearing twice within asset_catalog is fetched/stored
+    once — the in-download seen_urls check (which also ADDs) dedups it."""
+    big = b"J" * 20000
+    dup = {"url": "https://x/img/same.jpg", "type": "Image", "aboveFold": True,
+           "contexts": ["img[src]"], "description": "Same Pic"}
+    catalog = [dict(dup), dict(dup)]   # identical URL twice
+    raw = {
+        "final_url": "https://x/final",
+        "colors": {"samples": [{"color": "#0b0b0f", "area": 400000, "text": False}],
+                   "css_vars": {}, "theme_color": None},
+        "fonts": {"display": {"family": "Inter", "weight": 700, "selector": "h1"},
+                  "body": {"family": "Inter", "weight": 400, "selector": "p"},
+                  "face_srcs": {}},
+        "spacing": {"margins": [8], "paddings": [16], "radii": [8],
+                    "container_max_width": 1200, "section_gaps": []},
+        "sections": [], "text": {"headline": "Hi", "tagline": "", "ctas": [],
+                                 "full_text": ""},
+        "assets": {"logo": None, "hero": None, "og_image": None, "favicon": None,
+                   "video": None, "lottie": None},
+        "motion": {"libraries": [], "has_video_background": False, "has_canvas": False},
+    }
+    page = _fake_page(raw)
+
+    async def _catalog_eval(script, *a, **k):
+        if "assetMap" in script:
+            return list(catalog)
+        if "nearestCaption" in script:
+            return []
+        return raw
+    page.evaluate = _catalog_eval
+    deps = _FakeDeps(page, {})
+    cfg = _settings()
+
+    fetches: list[str] = []
+
+    async def _fake_fetch(url, *, max_bytes):
+        fetches.append(url)
+        return big, "image/jpeg"
+
+    from unittest.mock import patch
+    with patch("parsers.capture._assets.fetch_asset_bytes", new=_fake_fetch):
+        from parsers.capture.orchestrator import run_capture
+        outcome = await run_capture("https://x", "kb", "d1", cfg, deps)
+
+    img_refs = [a for a in outcome.profile.assets if a.kind == "image"]
+    assert len(img_refs) == 1                       # stored once
+    assert fetches.count("https://x/img/same.jpg") == 1   # fetched once
+
+
+@pytest.mark.asyncio
+async def test_run_capture_catalog_image_does_not_clobber_named_hero():
+    """Export-path collision guard: a catalog image whose derived slug would be
+    ``hero`` must NOT reuse the named-hero stem (else both route to the same
+    ``capture/assets/hero.jpg`` ZIP member and the catalog image silently
+    clobbers the named logo/hero/favicon). The reserved-stem seed of
+    ``used_names`` forces a suffix/dedup so the two land on distinct keys."""
+    big = b"J" * 20000
+    # aboveFold + heading "Hero" -> derived slug base is "hero" (reserved stem).
+    catalog = [
+        {"url": "https://x/i/00.jpg", "type": "Image", "aboveFold": True,
+         "contexts": ["img[src]"], "nearestHeading": "Hero"},
+    ]
+    raw = {
+        "final_url": "https://x/final",
+        "colors": {"samples": [{"color": "#0b0b0f", "area": 400000, "text": False}],
+                   "css_vars": {}, "theme_color": None},
+        "fonts": {"display": {"family": "Inter", "weight": 700, "selector": "h1"},
+                  "body": {"family": "Inter", "weight": 400, "selector": "p"},
+                  "face_srcs": {}},
+        "spacing": {"margins": [8], "paddings": [16], "radii": [8],
+                    "container_max_width": 1200, "section_gaps": []},
+        "sections": [], "text": {"headline": "Hi", "tagline": "", "ctas": [],
+                                 "full_text": ""},
+        # A NAMED hero asset present too -> stored as captures/kb/d1/assets/hero.jpg.
+        "assets": {"logo": None, "hero": "https://x/hero.jpg", "og_image": None,
+                   "favicon": None, "video": None, "lottie": None},
+        "motion": {"libraries": [], "has_video_background": False, "has_canvas": False},
+    }
+    page = _fake_page(raw)
+
+    async def _catalog_eval(script, *a, **k):
+        if "assetMap" in script:
+            return list(catalog)
+        if "nearestCaption" in script:
+            return []
+        return raw
+    page.evaluate = _catalog_eval
+    # named hero flows through upload_image_refs -> hydrate; give it a row so the
+    # named AssetRef (kind="hero") lands in the profile with hero.jpg.
+    hydrate = {"hero.jpg": ("img-hero", "captures/kb/d1/assets/hero.jpg")}
+    deps = _FakeDeps(page, hydrate)
+    cfg = _settings()
+
+    async def _fake_fetch(url, *, max_bytes):
+        return big, "image/jpeg"
+
+    from unittest.mock import patch
+    with patch("parsers.capture._assets.fetch_asset_bytes", new=_fake_fetch):
+        from parsers.capture.orchestrator import run_capture
+        outcome = await run_capture("https://x", "kb", "d1", cfg, deps)
+
+    assets = outcome.profile.assets
+    named_hero = next(a for a in assets if a.kind == "hero")
+    catalog_img = next(a for a in assets if a.kind == "image")
+    # The catalog image must NOT reuse the named hero's stem.
+    assert named_hero.storage_key == "captures/kb/d1/assets/hero.jpg"
+    assert catalog_img.storage_key != named_hero.storage_key
+    assert not catalog_img.storage_key.endswith("/hero.jpg")
+
+    # And the derived ZIP members are distinct (the actual collision surface).
+    from parsers.capture.export import _asset_zip_path
+    named_path = _asset_zip_path(
+        {"kind": named_hero.kind, "format": named_hero.format}, named_hero.storage_key)
+    cat_path = _asset_zip_path(
+        {"kind": catalog_img.kind, "format": catalog_img.format},
+        catalog_img.storage_key)
+    assert named_path == "capture/assets/hero.jpg"
+    assert cat_path != named_path
+
+
 def json_dumps(obj):
     import json
     return json.dumps(obj)

@@ -106,6 +106,46 @@ def _sections_out(sections: list[dict]) -> list[dict]:
             for s in sections]
 
 
+# Cap on synthesized @font-face rules (mirrors hyperframes MAX_TOTAL_FONTS).
+_MAX_TOTAL_FONTS = 30
+
+
+def _fonts_css(fonts: dict) -> str:
+    """Synthesize a minimal @font-face stylesheet for the CAPTURED role fonts.
+
+    The reference (assetDownloader.ts::downloadAndRewriteFonts) rewrites the site's
+    own CSS to local paths; vectoria instead emits a fresh stylesheet from its
+    role-font files — simpler and sufficient for build-frame to stage the faces.
+    One @font-face per captured woff2 file, referencing it locally as
+    ``./<basename>`` (the woff2 lands next to this CSS at capture/assets/fonts/).
+    Only captured files (stored under ``captures/``) are included; catalog-matched
+    / renderable fonts served from a CDN have no local file. Total faces capped at
+    _MAX_TOTAL_FONTS. Returns "" when there are no captured files."""
+    blocks: list[str] = []
+    for role in ("display", "body"):
+        fr = fonts.get(role) or {}
+        family = (fr.get("family") or "").strip()
+        if not family:
+            continue
+        for f in fr.get("files", []) or []:
+            if len(blocks) >= _MAX_TOTAL_FONTS:
+                break
+            key = f.get("url") or ""
+            if not key.startswith("captures/"):
+                continue  # CDN/catalog font — no local file to reference
+            basename = key.rsplit("/", 1)[-1]
+            weight = f.get("weight") or 400
+            style = f.get("style") or "normal"
+            blocks.append(
+                "@font-face {\n"
+                f"  font-family: \"{family}\";\n"
+                f"  font-weight: {weight};\n"
+                f"  font-style: {style};\n"
+                f"  src: url(\"./{basename}\") format(\"woff2\");\n"
+                "}")
+    return "\n".join(blocks)
+
+
 def _asset_zip_path(a: dict, storage_key: str) -> str:
     """ZIP path for one AssetRef. Downloaded assets (SVGs under assets/svgs/,
     bulk catalog images with kind=="image") are keyed by the BASENAME of their
@@ -148,14 +188,25 @@ async def build_hyperframes_zip(doc) -> bytes:
         zf.writestr("capture/extracted/visible-text.txt", text_body)
         # extracted/asset-descriptions.md — under extracted/ (the path the skills
         # read: capture/extracted/asset-descriptions.md), not top-level capture/.
+        # Skip blank-description assets (Phase 3 adds many svg/logo/image refs with
+        # description=""): a media-heavy page would otherwise emit dozens of noise
+        # lines with nothing after the colon. Fallback stays "(no descriptions)".
         desc = "\n".join(f"- **{a.get('kind')}**: {a.get('description', '')}"
-                         for a in profile.get("assets", []))
+                         for a in profile.get("assets", []) if a.get("description"))
         zf.writestr("capture/extracted/asset-descriptions.md", desc or "(no descriptions)")
         # extracted/design-styles.json — computed design system (only present when
         # capture_quality == full). Inlined in the profile, so write directly.
         if profile.get("design_styles"):
             zf.writestr("capture/extracted/design-styles.json",
                         json.dumps(profile["design_styles"], ensure_ascii=False, indent=2))
+
+        # assets/fonts/fonts.css — synthesized @font-face stylesheet pointing at
+        # the captured woff2 files (staged alongside at capture/assets/fonts/), so
+        # build-frame can register the faces locally. Only emitted when there are
+        # captured font files. Generated from profile["fonts"] (no S3 needed).
+        fonts_css = _fonts_css(profile.get("fonts", {}) or {})
+        if fonts_css:
+            zf.writestr("capture/assets/fonts/fonts.css", fonts_css)
 
         # Collect every binary member as (zip_path, storage_key), then fetch
         # them from S3 concurrently — a capture can have ~17 objects and the
