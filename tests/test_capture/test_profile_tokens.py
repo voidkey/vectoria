@@ -60,6 +60,33 @@ def test_new_token_fields_roundtrip():
     assert sec["text"] == "hero body text"
 
 
+def test_colors_ranked_and_color_stats_roundtrip():
+    """Phase 2: SiteProfile carries the reference-shaped colors_ranked (top-20
+    hex strings) and color_stats (top-48 raw stat dicts) alongside role tokens."""
+    stats = [{"hex": "#0B0B0F", "count": 42, "bgCount": 30, "interactiveBg": 3,
+              "areaBg": 5, "textCount": 2, "maxArea": 900000}]
+    p = _base_profile(colors_ranked=["#0B0B0F", "#FFFFFF", "#FF3366"],
+                      color_stats=stats)
+    d = p.model_dump()
+    assert d["colors_ranked"] == ["#0B0B0F", "#FFFFFF", "#FF3366"]
+    assert d["color_stats"] == stats
+    assert d["color_stats"][0]["interactiveBg"] == 3  # verbatim hyperframes field name
+
+
+def test_colors_ranked_and_color_stats_default():
+    """Both new fields default to [] and legacy dicts (without them) validate."""
+    p = _base_profile()
+    d = p.model_dump()
+    assert d["colors_ranked"] == []
+    assert d["color_stats"] == []
+
+    from parsers.capture.profile import SiteProfile
+    legacy = {k: v for k, v in d.items()
+              if k not in ("colors_ranked", "color_stats")}
+    rt = SiteProfile.model_validate(legacy)
+    assert rt.colors_ranked == [] and rt.color_stats == []
+
+
 def test_new_token_fields_default_and_backward_compat():
     """Old profile dicts (without the new keys) still validate; new fields default."""
     p = _base_profile()

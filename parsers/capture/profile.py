@@ -139,6 +139,14 @@ class SiteProfile(BaseModel):
     # only set when capture_quality == "full". Small enough to inline in the profile.
     design_styles: dict | None = None
     colors: list[ColorToken] = Field(default_factory=list)
+    # Phase 2 — reference-shaped color parity (kept alongside the role-tagged
+    # `colors`): `colors_ranked` is the top-20 usage-ranked hex strings and
+    # `color_stats` the top-48 raw per-hex stat dicts (hyperframes DesignTokens
+    # `colorStats`: {hex,count,bgCount,interactiveBg,areaBg,textCount,maxArea}).
+    # Stored as raw dicts (like asset_catalog/videos) for verbatim output parity;
+    # both default to [] so older stored profiles still validate.
+    colors_ranked: list[str] = Field(default_factory=list)
+    color_stats: list[dict] = Field(default_factory=list)
     theme_color: str | None = None
     # Phase 1: hyperframes DesignTokens parity — :root custom properties,
     # heading typography, SVG (logo) metadata, and full-page/viewport geometry.
