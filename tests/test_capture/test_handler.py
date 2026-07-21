@@ -4,15 +4,34 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 def _eval_router(raw):
     """page.evaluate stub: media-catalog scripts return an empty list (so the
-    media path runs end-to-end without a real browser); every other script
+    media path runs end-to-end without a real browser); the Phase-6 animation
+    collector / shader read return empty structures; every other script
     (run_extract / design-styles / page.html) gets the canned ``raw`` dict."""
     async def _run(script, *args, **kwargs):
-        if "assetMap" in script:        # ASSET_CATALOG_JS
+        if "assetMap" in script:            # ASSET_CATALOG_JS
             return []
-        if "nearestCaption" in script:  # VIDEO_DESCRIPTORS_JS
+        if "nearestCaption" in script:      # VIDEO_DESCRIPTORS_JS
+            return []
+        if "getAnimations" in script:       # COLLECT_ANIMATIONS_JS
+            return {"webAnimations": [], "cssDeclarations": [],
+                    "scrollTargets": [], "canvasCount": 0}
+        if "__capturedShaders" in script:   # collect_shaders read
             return []
         return raw
     return _run
+
+
+def _wire_cdp(page):
+    """Give a fake page a Playwright-shaped CDP session (sync .on; async
+    .send/.detach) so start_cdp_animation_capture exercises without leaking an
+    un-awaited coroutine warning. Returns the page for chaining."""
+    session = MagicMock()
+    session.on = MagicMock()
+    session.send = AsyncMock()
+    session.detach = AsyncMock()
+    page.add_init_script = AsyncMock()
+    page.context.new_cdp_session = AsyncMock(return_value=session)
+    return page
 
 
 @pytest.mark.asyncio
@@ -47,7 +66,7 @@ async def test_handle_capture_happy_path():
     page.screenshot = AsyncMock(return_value=b"PNG")
     page.viewport_size = {"width": 1280, "height": 800}
     page.wait_for_timeout = AsyncMock()
-    ctx.new_page = AsyncMock(return_value=page)
+    ctx.new_page = AsyncMock(return_value=_wire_cdp(page))
 
     psession = MagicMock()
     psession.return_value.__aenter__ = AsyncMock(return_value=ctx)
@@ -112,7 +131,7 @@ async def test_handle_capture_no_screenshots_no_assets_image_status_none():
     page.goto = AsyncMock(); page.evaluate = _eval_router(raw)
     page.screenshot = AsyncMock(return_value=b""); page.wait_for_timeout = AsyncMock()
     page.viewport_size = {"width": 1280, "height": 800}
-    ctx.new_page = AsyncMock(return_value=page)
+    ctx.new_page = AsyncMock(return_value=_wire_cdp(page))
     psession = MagicMock()
     psession.return_value.__aenter__ = AsyncMock(return_value=ctx)
     psession.return_value.__aexit__ = AsyncMock(return_value=False)
@@ -170,7 +189,7 @@ async def test_handle_capture_nonraster_assets_skip_vision():
     page.goto = AsyncMock(); page.evaluate = _eval_router(raw)
     page.screenshot = AsyncMock(return_value=b"PNG"); page.wait_for_timeout = AsyncMock()
     page.viewport_size = {"width": 1280, "height": 800}
-    ctx.new_page = AsyncMock(return_value=page)
+    ctx.new_page = AsyncMock(return_value=_wire_cdp(page))
     psession = MagicMock()
     psession.return_value.__aenter__ = AsyncMock(return_value=ctx)
     psession.return_value.__aexit__ = AsyncMock(return_value=False)
@@ -282,7 +301,7 @@ async def test_handle_capture_fractional_section_gap_does_not_crash():
     page.goto = AsyncMock(); page.evaluate = _eval_router(raw)
     page.screenshot = AsyncMock(return_value=b"PNG"); page.wait_for_timeout = AsyncMock()
     page.viewport_size = {"width": 1280, "height": 800}
-    ctx.new_page = AsyncMock(return_value=page)
+    ctx.new_page = AsyncMock(return_value=_wire_cdp(page))
     psession = MagicMock()
     psession.return_value.__aenter__ = AsyncMock(return_value=ctx)
     psession.return_value.__aexit__ = AsyncMock(return_value=False)

@@ -119,6 +119,9 @@ async def run_capture(url: str, kb_id: str, doc_id: str, cfg, deps: CaptureDeps)
 
     Imports are function-local (matches the original _capture_core) so tests that
     patch parsers.capture._assets.fetch_asset_bytes keep biting at call time."""
+    from parsers.capture._animations import (
+        IO_CAPTURE_JS, SHADER_CAPTURE_JS, collect_animation_catalog,
+        collect_shaders, start_cdp_animation_capture)
     from parsers.capture._assets import (
         derive_asset_name, fetch_asset_bytes, image_ref_from_bytes)
     from parsers.capture._colors import dominant_screenshot_hex, process_colors
@@ -135,70 +138,107 @@ async def run_capture(url: str, kb_id: str, doc_id: str, cfg, deps: CaptureDeps)
         SectionInfo, Spacing, SvgInfo, TextInfo)
 
     async with deps.open_page() as page:
-        try:
-            await page.goto(url, wait_until="load",
-                            timeout=int(cfg.capture_render_timeout * 1000))
-        except Exception:
-            logger.info("capture goto timed out/failed, using rendered DOM: %s", url)
-        # Mainstream capture waits for networkidle, not just `load`. Do it as a
-        # best-effort wait on top of `load`, capped so long-polling sites don't
-        # burn the whole budget.
-        try:
-            await page.wait_for_load_state(
-                "networkidle", timeout=int(cfg.capture_networkidle_timeout * 1000))
-        except Exception:
-            pass
-        await page.wait_for_timeout(cfg.capture_settle_ms)
-        # Collapse animation/transition timing so scroll-reveal effects are
-        # captured at their final frame, not mid-fade.
-        try:
-            await page.add_style_tag(content=NEUTRALIZE_ANIMATION_CSS)
-        except Exception:
-            pass
-        # Ready the page (walk it to fire reveals + lazy loads, wait for fonts +
-        # images, hide sticky chrome) before extract + per-section screenshots.
-        await prepare_page(
-            page, step_frac=cfg.capture_scroll_step_frac,
-            step_ms=cfg.capture_scroll_step_ms, max_steps=cfg.capture_scroll_max_steps,
-            img_wait_ms=cfg.capture_img_wait_ms)
-        raw = await run_extract(page)
-        shots = await capture_screenshots(
-            page, raw.get("sections", []),
-            max_screenshots=cfg.capture_max_screenshots,
-            max_height=cfg.capture_max_screenshot_height,
-            section_settle_ms=cfg.capture_section_settle_ms)
-        # Classify capture quality (real content vs anti-bot challenge / thin SPA).
-        # High-fidelity artifacts (design-styles, page.html) are GATED on "full":
-        # rebuilding from a challenge/login page would reproduce the block page.
-        capture_quality, blocked_reason = assess_quality(raw)
-        if capture_quality != "full":
-            logger.warning("capture: quality=%s (%s) for %s — brand-only, no page.html/"
-                           "design-styles", capture_quality, blocked_reason, url)
-        # URL-only site media catalog (images/videos/backgrounds/icons/fonts),
-        # aligned with hyperframes' asset cataloger. Collected for ALL quality
-        # levels (even a partial page carries real media) and BEFORE the page.html
-        # pass mutates the DOM. Best-effort: a failure here never fails the capture.
-        asset_catalog: list = []
-        page_videos: list = []
-        try:
-            asset_catalog = await catalog_assets(page, cap=cfg.capture_asset_catalog_cap)
-        except Exception:
-            logger.info("capture: asset catalog failed for %s", url, exc_info=True)
-        try:
-            page_videos = await video_descriptors(page, cap=cfg.capture_video_cap)
-        except Exception:
-            logger.info("capture: video descriptors failed for %s", url, exc_info=True)
-        design_styles = None
-        page_html = None
-        if capture_quality == "full":
+        # Pre-nav hooks (must run BEFORE goto): capture WebGL shaders + record
+        # IntersectionObserver targets. add_init_script applies to the next
+        # navigation. Best-effort — a real failure degrades, never aborts.
+        for _script in (SHADER_CAPTURE_JS, IO_CAPTURE_JS):
             try:
-                design_styles = await extract_design_styles(page)  # non-mutating: before html
+                await page.add_init_script(_script)
             except Exception:
-                logger.info("capture: design-styles extract failed for %s", url, exc_info=True)
+                logger.info("capture: init-script injection failed for %s", url, exc_info=True)
+        # Best-effort CDP Animation-domain capture. Returns (None, []) when no
+        # real CDP is available (e.g. a fake page) — degrades to cdpAnimations: [].
+        cdp_session = None
+        cdp_entries: list = []
+        try:
+            cdp_session, cdp_entries = await start_cdp_animation_capture(page)
+        except Exception:
+            logger.info("capture: CDP animation start failed for %s", url, exc_info=True)
+        animation_catalog = None
+        shaders: list = []
+        try:
             try:
-                page_html = await extract_page_html(page)  # MUTATES DOM — must be last
+                await page.goto(url, wait_until="load",
+                                timeout=int(cfg.capture_render_timeout * 1000))
             except Exception:
-                logger.info("capture: page.html extract failed for %s", url, exc_info=True)
+                logger.info("capture goto timed out/failed, using rendered DOM: %s", url)
+            # Mainstream capture waits for networkidle, not just `load`. Do it as a
+            # best-effort wait on top of `load`, capped so long-polling sites don't
+            # burn the whole budget.
+            try:
+                await page.wait_for_load_state(
+                    "networkidle", timeout=int(cfg.capture_networkidle_timeout * 1000))
+            except Exception:
+                pass
+            await page.wait_for_timeout(cfg.capture_settle_ms)
+            # Collapse animation/transition timing so scroll-reveal effects are
+            # captured at their final frame, not mid-fade.
+            try:
+                await page.add_style_tag(content=NEUTRALIZE_ANIMATION_CSS)
+            except Exception:
+                pass
+            # Ready the page (walk it to fire reveals + lazy loads, wait for fonts +
+            # images, hide sticky chrome) before extract + per-section screenshots.
+            await prepare_page(
+                page, step_frac=cfg.capture_scroll_step_frac,
+                step_ms=cfg.capture_scroll_step_ms, max_steps=cfg.capture_scroll_max_steps,
+                img_wait_ms=cfg.capture_img_wait_ms)
+            raw = await run_extract(page)
+            shots = await capture_screenshots(
+                page, raw.get("sections", []),
+                max_screenshots=cfg.capture_max_screenshots,
+                max_height=cfg.capture_max_screenshot_height,
+                section_settle_ms=cfg.capture_section_settle_ms)
+            # Classify capture quality (real content vs anti-bot challenge / thin SPA).
+            # High-fidelity artifacts (design-styles, page.html) are GATED on "full":
+            # rebuilding from a challenge/login page would reproduce the block page.
+            capture_quality, blocked_reason = assess_quality(raw)
+            if capture_quality != "full":
+                logger.warning("capture: quality=%s (%s) for %s — brand-only, no page.html/"
+                               "design-styles", capture_quality, blocked_reason, url)
+            # URL-only site media catalog (images/videos/backgrounds/icons/fonts),
+            # aligned with hyperframes' asset cataloger. Collected for ALL quality
+            # levels (even a partial page carries real media) and BEFORE the page.html
+            # pass mutates the DOM. Best-effort: a failure here never fails the capture.
+            asset_catalog = []
+            page_videos = []
+            try:
+                asset_catalog = await catalog_assets(page, cap=cfg.capture_asset_catalog_cap)
+            except Exception:
+                logger.info("capture: asset catalog failed for %s", url, exc_info=True)
+            try:
+                page_videos = await video_descriptors(page, cap=cfg.capture_video_cap)
+            except Exception:
+                logger.info("capture: video descriptors failed for %s", url, exc_info=True)
+            design_styles = None
+            page_html = None
+            if capture_quality == "full":
+                # Animation catalog + captured shaders. Non-mutating, so BEFORE
+                # page.html. Best-effort: any failure degrades (None / []) and
+                # never aborts. CDP entries were accumulated live since goto.
+                try:
+                    animation_catalog = await collect_animation_catalog(page, cdp_entries)
+                except Exception:
+                    logger.info("capture: animation catalog failed for %s", url, exc_info=True)
+                try:
+                    shaders = await collect_shaders(page)
+                except Exception:
+                    logger.info("capture: shader collection failed for %s", url, exc_info=True)
+                try:
+                    design_styles = await extract_design_styles(page)  # non-mutating: before html
+                except Exception:
+                    logger.info("capture: design-styles extract failed for %s", url, exc_info=True)
+                try:
+                    page_html = await extract_page_html(page)  # MUTATES DOM — must be last
+                except Exception:
+                    logger.info("capture: page.html extract failed for %s", url, exc_info=True)
+        finally:
+            # Detach the CDP session (if any) regardless of what happened above.
+            if cdp_session is not None:
+                try:
+                    await cdp_session.detach()
+                except Exception:
+                    logger.info("capture: CDP detach failed for %s", url, exc_info=True)
 
     final_url = raw.get("final_url", url)
     vision_configured = bool(cfg.vision_base_url)
@@ -525,7 +565,8 @@ async def run_capture(url: str, kb_id: str, doc_id: str, cfg, deps: CaptureDeps)
                       ctas=t.get("ctas", []), full_text=t.get("full_text", "")),
         assets=profile_assets, screenshots=profile_shots,
         motion_hints=MotionHints(**raw.get("motion", {})),
-        asset_catalog=asset_catalog, videos=page_videos)
+        asset_catalog=asset_catalog, videos=page_videos,
+        animation_catalog=animation_catalog, shaders=shaders)
 
     return CaptureOutcome(
         profile=profile,

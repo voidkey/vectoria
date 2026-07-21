@@ -2,25 +2,55 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock
 
 
-def _eval_router(raw):
-    """page.evaluate stub: media-catalog scripts return []; everything else
+# Canned Phase-6 animation catalog (COLLECT_ANIMATIONS_JS) + shaders default.
+_CANNED_ANIM = {
+    "webAnimations": [{"type": "Animation", "playState": "running",
+                       "keyframes": [{"opacity": 0}, {"opacity": 1}]}],
+    "cssDeclarations": [{"selector": ".a",
+                         "animation": {"name": "fade", "duration": "1s", "easing": "ease"}}],
+    "scrollTargets": [{"selector": "#s", "rect": {"top": 0, "height": 10, "width": 20}}],
+    "canvasCount": 2,
+}
+_CANNED_SHADERS = [{"type": "vertex", "source": "uniform mat4 modelViewMatrix;"}]
+
+
+def _eval_router(raw, anim=None, shaders=None):
+    """page.evaluate stub: media-catalog scripts return []; the Phase-6 animation
+    collector / shader read return canned structures; everything else
     (run_extract / design-styles / page.html) returns the canned raw dict."""
     async def _run(script, *args, **kwargs):
-        if "assetMap" in script:        # ASSET_CATALOG_JS
+        if "assetMap" in script:            # ASSET_CATALOG_JS
             return []
-        if "nearestCaption" in script:  # VIDEO_DESCRIPTORS_JS
+        if "nearestCaption" in script:      # VIDEO_DESCRIPTORS_JS
             return []
+        if "getAnimations" in script:       # COLLECT_ANIMATIONS_JS
+            return anim if anim is not None else _CANNED_ANIM
+        if "__capturedShaders" in script:   # collect_shaders read
+            return shaders if shaders is not None else _CANNED_SHADERS
         return raw
     return _run
 
 
-def _fake_page(raw):
+def _fake_cdp_session():
+    """A fake CDP session mirroring Playwright's real shape: .on is SYNC event
+    registration; .send / .detach are async. Used by start_cdp_animation_capture."""
+    session = MagicMock()
+    session.on = MagicMock()
+    session.send = AsyncMock()
+    session.detach = AsyncMock()
+    return session
+
+
+def _fake_page(raw, anim=None, shaders=None):
     page = AsyncMock()
     page.goto = AsyncMock()
-    page.evaluate = _eval_router(raw)
+    page.add_init_script = AsyncMock()
+    page.evaluate = _eval_router(raw, anim=anim, shaders=shaders)
     page.screenshot = AsyncMock(return_value=b"PNG")
     page.viewport_size = {"width": 1280, "height": 800}
     page.wait_for_timeout = AsyncMock()
+    # Playwright: page.context.new_cdp_session(page) is async -> CDPSession.
+    page.context.new_cdp_session = AsyncMock(return_value=_fake_cdp_session())
     return page
 
 
@@ -482,6 +512,99 @@ async def test_run_capture_catalog_image_does_not_clobber_named_hero():
         catalog_img.storage_key)
     assert named_path == "capture/assets/hero.jpg"
     assert cat_path != named_path
+
+
+def _full_quality_raw():
+    """A raw dict that assess_quality classifies as 'full' (long text + sections
+    + color samples) so the Phase-6 animation/shader collection is gated ON."""
+    return {
+        "final_url": "https://x/final",
+        "colors": {"samples": [{"color": "#0b0b0f", "area": 400000, "text": False},
+                               {"color": "#ffffff", "area": 200000, "text": True}],
+                   "css_vars": {}, "theme_color": None},
+        "fonts": {"display": {"family": "Inter", "weight": 700, "selector": "h1"},
+                  "body": {"family": "Inter", "weight": 400, "selector": "p"},
+                  "face_srcs": {}},
+        "spacing": {"margins": [8, 16], "paddings": [16], "radii": [8],
+                    "container_max_width": 1200, "section_gaps": [96]},
+        "sections": [{"index": 0, "heading": "Hero", "classNames": [], "bg": "#0b0b0f",
+                      "rect": {"y": 0, "height": 600}}],
+        "text": {"headline": "Real content headline", "tagline": "world",
+                 "ctas": ["Start"], "full_text": "Real content. " * 40},
+        "assets": {"logo": None, "hero": None, "og_image": None, "favicon": None,
+                   "video": None, "lottie": None},
+        "motion": {"libraries": ["gsap"], "has_video_background": False,
+                   "has_canvas": True},
+    }
+
+
+@pytest.mark.asyncio
+async def test_run_capture_collects_animation_catalog_and_shaders_on_full():
+    raw = _full_quality_raw()
+    page = _fake_page(raw)   # default canned anim + shaders
+    deps = _FakeDeps(page, {})
+
+    from parsers.capture.orchestrator import run_capture
+    outcome = await run_capture("https://x", "kb", "d1", _settings(), deps)
+
+    prof = outcome.profile.model_dump()
+    assert prof["capture_quality"] == "full"
+    cat = prof["animation_catalog"]
+    assert cat is not None
+    assert cat["summary"]["webAnimations"] == 1
+    assert cat["summary"]["cssDeclarations"] == 1
+    assert cat["summary"]["scrollTargets"] == 1
+    assert cat["summary"]["canvases"] == 2
+    # Init scripts were injected (pre-nav) before goto.
+    assert page.add_init_script.await_count == 2
+    # Shaders were collected + deduped.
+    assert prof["shaders"] == _CANNED_SHADERS
+
+
+@pytest.mark.asyncio
+async def test_run_capture_cdp_failure_degrades_to_empty_cdp_animations():
+    """No real CDP (new_cdp_session raises) -> catalog is still built with
+    cdpAnimations: [] and the capture never aborts."""
+    raw = _full_quality_raw()
+    page = _fake_page(raw)
+    # Make the fake page's CDP unavailable, as a real degraded page would be.
+    page.context.new_cdp_session = AsyncMock(side_effect=RuntimeError("no cdp"))
+    deps = _FakeDeps(page, {})
+
+    from parsers.capture.orchestrator import run_capture
+    outcome = await run_capture("https://x", "kb", "d1", _settings(), deps)
+
+    prof = outcome.profile.model_dump()
+    assert prof["animation_catalog"] is not None
+    assert prof["animation_catalog"]["cdpAnimations"] == []
+    assert prof["animation_catalog"]["summary"]["cdpAnimations"] == 0
+
+
+@pytest.mark.asyncio
+async def test_run_capture_skips_animation_collection_when_not_full():
+    """Partial/blocked quality gates the animation + shader collection OFF."""
+    raw = _full_quality_raw()
+    raw["text"]["full_text"] = "tiny"   # -> partial/blocked
+    seen_scripts: list = []
+
+    page = _fake_page(raw)
+    orig = page.evaluate
+
+    async def _spy(script, *a, **k):
+        seen_scripts.append(script)
+        return await orig(script, *a, **k)
+    page.evaluate = _spy
+    deps = _FakeDeps(page, {})
+
+    from parsers.capture.orchestrator import run_capture
+    outcome = await run_capture("https://x", "kb", "d1", _settings(), deps)
+
+    prof = outcome.profile.model_dump()
+    assert prof["capture_quality"] != "full"
+    assert prof["animation_catalog"] is None
+    assert prof["shaders"] == []
+    # The animation collector JS was never evaluated (gated off).
+    assert not any("getAnimations" in s for s in seen_scripts)
 
 
 def test_is_latin_subset_hashed_and_named():

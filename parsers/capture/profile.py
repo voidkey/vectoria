@@ -172,3 +172,10 @@ class SiteProfile(BaseModel):
     # hyperframes-shaped dicts (CatalogedAsset / VideoDescriptor) for output parity.
     asset_catalog: list[dict] = Field(default_factory=list)
     videos: list[dict] = Field(default_factory=list)
+    # Phase 6: animation catalog + captured WebGL shaders (only collected when
+    # capture_quality == "full"). animation_catalog is the raw AnimationCatalog
+    # dict (types.ts verbatim: webAnimations/cssDeclarations/scrollTargets/
+    # cdpAnimations/summary); shaders is the deduped [{type, source}] list. Both
+    # default (None / []) so older stored profiles still validate + export.
+    animation_catalog: dict | None = None
+    shaders: list[dict] = Field(default_factory=list)
