@@ -1320,3 +1320,69 @@ async def test_run_capture_lottie_preview_skips_oversized(caplog):
     assert lm["meta"]["previews"] == 0
     assert [a for a in outcome.profile.assets if a.kind == "lottie_json"]  # JSON stored
     assert any("lottie preview render skipped" in r.message for r in caplog.records)
+
+
+# ── Phase 8: scroll + asset contact sheets (Pillow) ─────────────────────────
+def _real_png(w=40, h=30, color=(120, 60, 30)) -> bytes:
+    import io as _io
+    from PIL import Image
+    buf = _io.BytesIO()
+    Image.new("RGB", (w, h), color).save(buf, format="PNG")
+    return buf.getvalue()
+
+
+@pytest.mark.asyncio
+async def test_run_capture_builds_scroll_contact_sheet():
+    raw = _full_quality_raw()
+    page = _fake_page(raw)
+    page.screenshot = AsyncMock(return_value=_real_png())   # decodable shots
+    deps = _FakeDeps(page, {})
+
+    from parsers.capture.orchestrator import run_capture
+    outcome = await run_capture("https://x", "kb", "d1", _settings(), deps)
+
+    sheets = [a for a in outcome.profile.assets if a.kind == "contact_sheet"]
+    scroll = [a for a in sheets if "/screenshots/" in a.storage_key]
+    assert scroll, "expected a scroll contact sheet"
+    for a in scroll:
+        assert a.storage_key.endswith(".jpg")
+        assert "/screenshots/contact-sheet-" in a.storage_key
+
+
+@pytest.mark.asyncio
+async def test_run_capture_builds_asset_contact_sheet_from_catalog_images():
+    raw = _full_quality_raw()
+    page = _fake_page(raw)
+    page.screenshot = AsyncMock(return_value=_real_png())
+    # Two good-context catalog images so the asset sheet has content.
+    page.evaluate = _eval_router_with_catalog(raw, [
+        {"url": "https://x/a.png", "type": "Image", "contexts": ["img[src]"]},
+        {"url": "https://x/b.png", "type": "Image", "contexts": ["img[src]"]},
+    ])
+    deps = _FakeDeps(page, {})
+    cfg = _settings()
+    cfg.capture_min_image_bytes = 1     # tiny PNGs pass the size gate
+
+    async def _fake_fetch(url, *, max_bytes):
+        return _real_png(color=(9, 9, 9)), "image/png"
+
+    from unittest.mock import patch
+    with patch("parsers.capture._assets.fetch_asset_bytes", new=_fake_fetch):
+        from parsers.capture.orchestrator import run_capture
+        outcome = await run_capture("https://x", "kb", "d1", cfg, deps)
+
+    sheets = [a for a in outcome.profile.assets if a.kind == "contact_sheet"]
+    asset_sheets = [a for a in sheets
+                    if "/assets/contact-sheet-" in a.storage_key]
+    assert asset_sheets, "expected an asset contact sheet"
+
+
+def _eval_router_with_catalog(raw, catalog):
+    """Like the default router but ASSET_CATALOG_JS returns `catalog`."""
+    base = _eval_router(raw)
+
+    async def _run(script, *args, **kwargs):
+        if "assetMap" in script:
+            return catalog
+        return await base(script, *args, **kwargs)
+    return _run

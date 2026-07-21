@@ -603,3 +603,34 @@ async def test_build_zip_omits_lottie_manifest_when_absent():
         data = await build_hyperframes_zip(doc)
     names = set(zipfile.ZipFile(io.BytesIO(data)).namelist())
     assert "capture/extracted/lottie-manifest.json" not in names
+
+
+@pytest.mark.asyncio
+async def test_build_zip_routes_contact_sheets_by_subdir():
+    """Phase 8: contact_sheet AssetRefs route to reference paths by their storage_key
+    subdir — screenshots/, assets/, assets/svgs/."""
+    doc = type("D", (), {})()
+    doc.id, doc.kb_id = "d1", "kb"
+    doc.profile = {
+        "fonts": {}, "text": {"headline": "T"}, "screenshots": [], "spacing": {},
+        "assets": [
+            {"kind": "contact_sheet", "format": "jpg",
+             "storage_key": "captures/kb/d1/screenshots/contact-sheet-1.jpg"},
+            {"kind": "contact_sheet", "format": "jpg",
+             "storage_key": "captures/kb/d1/assets/contact-sheet-1.jpg"},
+            {"kind": "contact_sheet", "format": "jpg",
+             "storage_key": "captures/kb/d1/assets/svgs/contact-sheet-1.jpg"},
+        ],
+    }
+    storage = AsyncMock()
+    storage.get = AsyncMock(return_value=b"JPEG")
+    with (
+        patch("parsers.capture.export.get_storage", new=AsyncMock(return_value=storage)),
+        patch("parsers.capture.export._image_keys", new=AsyncMock(return_value={})),
+    ):
+        from parsers.capture.export import build_hyperframes_zip
+        data = await build_hyperframes_zip(doc)
+    names = set(zipfile.ZipFile(io.BytesIO(data)).namelist())
+    assert "capture/screenshots/contact-sheet-1.jpg" in names
+    assert "capture/assets/contact-sheet-1.jpg" in names
+    assert "capture/assets/svgs/contact-sheet-1.jpg" in names

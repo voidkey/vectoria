@@ -635,6 +635,9 @@ async def run_capture(url: str, kb_id: str, doc_id: str, cfg, deps: CaptureDeps)
     # seed a catalog "hero.jpg" would silently clobber the named hero.
     used_names: set[str] = {"logo", "hero", "og_image", "favicon",
                             "background_video", "lottie"}
+    # (bytes, filename) of downloaded RASTER catalog images, kept for the asset
+    # contact sheet (Pillow can't decode SVG markup, so those are excluded here).
+    asset_sheet_items: list[tuple[bytes, str]] = []
     good_catalog = []
     for cat in asset_catalog:
         c_url = cat.get("url", "")
@@ -679,6 +682,41 @@ async def run_capture(url: str, kb_id: str, doc_id: str, cfg, deps: CaptureDeps)
         profile_assets.append(AssetRef(
             kind="image", storage_key=key, url=c_url, format=ext.lstrip("."),
             description="", vision_status="skipped"))
+        if not is_svg:
+            asset_sheet_items.append((data, f"{name}{ext}"))
+
+    # ---- contact sheets: scroll (screenshots) + asset (catalog images), pure Pillow ----
+    # Port of contactSheet.ts createScrollContactSheet / createAssetContactSheet. Built
+    # from bytes already in hand (screenshot `shots` + downloaded raster catalog images),
+    # so no browser + no re-fetch. Scroll: 3 cols, 9/page, kind/section labels. Asset:
+    # 4 cols, 12/page, filename labels. Best-effort — a Pillow failure logs + skips,
+    # never aborts. Pages route to capture/screenshots/ and capture/assets/ at export.
+    from parsers.capture._contact_sheet import build_contact_sheet
+
+    async def _store_sheets(pages: list, prefix: str) -> None:
+        for n, page_bytes in enumerate(pages, 1):
+            skey = f"captures/{kb_id}/{doc_id}/{prefix}/contact-sheet-{n}.jpg"
+            try:
+                await storage.put(skey, page_bytes, content_type="image/jpeg")
+                profile_assets.append(AssetRef(
+                    kind="contact_sheet", storage_key=skey, format="jpg"))
+            except Exception:
+                logger.info("capture: contact sheet store failed for %s", skey, exc_info=True)
+
+    scroll_items = [(s["bytes"],
+                     (s["kind"] if s.get("section_index") is None
+                      else f"section-{s['section_index']:02d}"))
+                    for s in shots if s.get("bytes")]
+    try:
+        scroll_pages = build_contact_sheet(scroll_items, cols=3, per_page=9, thumb_w=600)
+        await _store_sheets(scroll_pages, "screenshots")
+    except Exception:
+        logger.info("capture: scroll contact sheet failed for %s", url, exc_info=True)
+    try:
+        asset_pages = build_contact_sheet(asset_sheet_items, cols=4, per_page=12, thumb_w=480)
+        await _store_sheets(asset_pages, "assets")
+    except Exception:
+        logger.info("capture: asset contact sheet failed for %s", url, exc_info=True)
 
     # ---- fonts (catalog match; download woff2 on miss + bounded site face set) ----
     from parsers.capture._font_metadata import font_file_metadata

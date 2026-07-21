@@ -202,6 +202,15 @@ def _asset_zip_path(a: dict, storage_key: str) -> str:
         return f"capture/assets/videos/{basename}"
     if a.get("kind") == "image":
         return f"capture/assets/{basename}"
+    # Phase 8 contact sheets: JPEG grid pages route to the reference paths by their
+    # storage_key subdir — screenshots/ (scroll sheet), assets/svgs/ (svg sheet), or
+    # assets/ (asset sheet). Keyed by the unique contact-sheet-N.jpg basename.
+    if a.get("kind") == "contact_sheet":
+        if "/screenshots/" in storage_key:
+            return f"capture/screenshots/{basename}"
+        if "/assets/svgs/" in storage_key:
+            return f"capture/assets/svgs/{basename}"
+        return f"capture/assets/{basename}"
     # Phase 8 lottie: the animation JSON (dotLottie-unzipped) + best-effort mid-frame
     # previews are keyed by their already-unique storage_key basename (animation-N.json
     # / animation-N-preview.png) under the lottie/ tree.
