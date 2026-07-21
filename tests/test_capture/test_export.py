@@ -1,4 +1,5 @@
 import io
+import json
 import zipfile
 
 import pytest
@@ -36,9 +37,15 @@ async def test_build_hyperframes_zip_layout():
     names = set(zf.namelist())
     assert "capture/extracted/tokens.json" in names
     assert "capture/extracted/fonts.json" in names
+    assert "capture/extracted/fonts-manifest.json" in names
     assert "capture/extracted/visible-text.txt" in names
-    assert "capture/asset-descriptions.md" in names
+    assert "capture/extracted/asset-descriptions.md" in names
     assert any(n.startswith("capture/assets/") for n in names)
     assert any(n.startswith("capture/screenshots/") for n in names)
-    assert b"background" in zf.read("capture/extracted/tokens.json")
-    assert b"a logo" in zf.read("capture/asset-descriptions.md")
+    # tokens.json is the official hyperframes shape: build-frame reads
+    # colors[].hex, the fonts[] array, and colorStats for brand-role detection.
+    tokens = json.loads(zf.read("capture/extracted/tokens.json"))
+    assert tokens["colors"][0]["hex"] == "#000"
+    assert tokens["fonts"][0]["family"] == "Inter"      # role-keyed Fonts flattened to array
+    assert tokens["colorStats"][0]["hex"] == "#000"     # projected from role/coverage
+    assert b"a logo" in zf.read("capture/extracted/asset-descriptions.md")

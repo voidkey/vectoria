@@ -21,3 +21,6 @@ test.md
 *.docx
 *.xls
 *.xlsx
+
+# macOS junk
+.DS_Store

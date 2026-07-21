@@ -95,6 +95,18 @@ class SiteProfile(BaseModel):
     url: str
     captured_at: str
     fetch_tier: str = "playwright"
+    # capture_quality gates high-fidelity artifacts + tells downstream how far to
+    # trust the capture: "full" (rich real content — page.html/design-styles emitted),
+    # "partial" (thin/likely-blocked body but head-level brand salvaged — brand only,
+    # NO structural rebuild), "blocked" (anti-bot challenge / near-empty).
+    capture_quality: str = "full"
+    blocked_reason: str | None = None
+    # page_html_key: S3 key of the self-contained page recreation (extracted/page.html);
+    # only set when capture_quality == "full". export.py fetches it into the zip.
+    page_html_key: str | None = None
+    # design_styles: computed design-system summary (typography/buttons/cards/shadows);
+    # only set when capture_quality == "full". Small enough to inline in the profile.
+    design_styles: dict | None = None
     colors: list[ColorToken] = Field(default_factory=list)
     theme_color: str | None = None
     fonts: Fonts
@@ -104,3 +116,9 @@ class SiteProfile(BaseModel):
     assets: list[AssetRef] = Field(default_factory=list)
     screenshots: list[ScreenshotRef] = Field(default_factory=list)
     motion_hints: MotionHints
+    # asset_catalog / videos: URL-only site media (images/videos/backgrounds/icons/
+    # fonts) discovered on the page, aligned with hyperframes' asset cataloger.
+    # Nothing is downloaded — downstream decides which URLs to fetch. Kept as raw
+    # hyperframes-shaped dicts (CatalogedAsset / VideoDescriptor) for output parity.
+    asset_catalog: list[dict] = Field(default_factory=list)
+    videos: list[dict] = Field(default_factory=list)

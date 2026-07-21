@@ -130,15 +130,40 @@ def dominant_screenshot_hex(png_bytes: bytes) -> str | None:
         return None
 
 
-class _Cluster:
-    __slots__ = ("rgb", "lab", "area", "text_area", "sources")
+# A color is a "primary/accent candidate" only if it's chromatic enough — below
+# this HLS saturation it's a neutral (gray/near-black/near-white), which should
+# never win the primary role on saturation alone. A strong explicit brand signal
+# (theme-color / --*primary var) still overrides this via _brand_prior.
+_CHROMATIC_SAT = 0.2
 
-    def __init__(self, rgb, lab, area, text):
+
+class _Cluster:
+    __slots__ = ("rgb", "lab", "area", "text_area", "bg_area", "interactive_area", "sources")
+
+    def __init__(self, rgb, lab, area, text, interactive):
         self.rgb = rgb
         self.lab = lab
         self.area = area
         self.text_area = area if text else 0.0
+        self.bg_area = 0.0 if text else area
+        # Fill area that landed on an interactive element (a/button/[role]/btn-cta
+        # class) — hyperframes' `interactiveBg`, the strongest usage signal that a
+        # color is the brand action color.
+        self.interactive_area = area if (interactive and not text) else 0.0
         self.sources = {"computed"}
+
+
+def _brand_prior(sources: set[str]) -> int:
+    """Declared-brand-color strength from the signals already captured in
+    ``sources``: a ``<meta theme-color>`` match or a CSS var whose NAME says
+    primary/brand/main is an authoritative "this is THE primary" signal (2);
+    an accent-named var is NOT rewarded for the primary role (0)."""
+    if "theme-color" in sources:
+        return 2
+    names = [s[len("css-var:"):].lower() for s in sources if s.startswith("css-var:")]
+    if any(re.search(r"primary|brand|main", n) for n in names):
+        return 2
+    return 0
 
 
 def process_colors(raw: dict, *, delta_e_threshold: float = 10.0,
@@ -152,14 +177,19 @@ def process_colors(raw: dict, *, delta_e_threshold: float = 10.0,
         lab = rgb_to_lab(rgb)
         area = float(s.get("area", 0) or 0)
         text = bool(s.get("text"))
+        interactive = bool(s.get("interactive"))
         for c in clusters:
             if delta_e(c.lab, lab) < delta_e_threshold:
                 c.area += area
                 if text:
                     c.text_area += area
+                else:
+                    c.bg_area += area
+                    if interactive:
+                        c.interactive_area += area
                 break
         else:
-            clusters.append(_Cluster(rgb, lab, area, text))
+            clusters.append(_Cluster(rgb, lab, area, text, interactive))
     if not clusters:
         return []
 
@@ -199,12 +229,43 @@ def process_colors(raw: dict, *, delta_e_threshold: float = 10.0,
         assigned[text_c] = "text"
 
     remaining = [c for c in clusters if c not in assigned]
-    # primary/accent = brand-sourced first, then most saturated, then area
-    remaining.sort(key=lambda c: (
-        1 if (c.sources - {"computed"}) else 0, _saturation(c.rgb), c.area,
-    ), reverse=True)
-    for i, c in enumerate(remaining[:3]):
-        assigned[c] = "primary" if i == 0 else ("accent" if i == 1 else "muted")
+
+    # Sequential role picks (mirrors hyperframes' pickAccent(exclude=...) chaining),
+    # replacing the old saturation-dominated sort that mislabeled a bright speck as
+    # primary over a muted, heavily-used brand color:
+    #   1. PRIMARY — strongest *declared* brand signal (theme-color / --*primary var)
+    #      first; ties broken by usage (chromatic → interactive fill → coverage),
+    #      with raw saturation demoted to the final tiebreaker.
+    #   2. ACCENT  — the best remaining *chromatic* color by usage (role diversity →
+    #      coverage → saturation); a neutral can't outrank a real chromatic accent.
+    #   3. MUTED   — most prominent leftover by area.
+    def _role_div(c: _Cluster) -> int:
+        return (c.interactive_area > 0) + (c.text_area > 0) + (c.bg_area > 0)
+
+    def _primary_key(c: _Cluster):
+        return (
+            _brand_prior(c.sources),
+            1 if _saturation(c.rgb) >= _CHROMATIC_SAT else 0,
+            c.interactive_area,
+            c.area,
+            _saturation(c.rgb),
+        )
+
+    def _accent_key(c: _Cluster):
+        return (
+            1 if _saturation(c.rgb) >= _CHROMATIC_SAT else 0,
+            _role_div(c),
+            c.area,
+            _saturation(c.rgb),
+        )
+
+    for role, key in (("primary", _primary_key), ("accent", _accent_key),
+                      ("muted", lambda c: c.area)):
+        if not remaining:
+            break
+        pick = max(remaining, key=key)
+        assigned[pick] = role
+        remaining.remove(pick)
 
     out: list[ColorToken] = []
     for c in clusters:

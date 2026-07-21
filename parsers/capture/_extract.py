@@ -14,8 +14,17 @@ EXTRACT_JS = r"""
     const cs = getComputedStyle(el);
     if (cs.display === 'none' || cs.visibility === 'hidden') continue;
     const bg = cs.backgroundColor;
-    if (bg && bg !== 'rgba(0, 0, 0, 0)' && bg !== 'transparent')
-      samples.push({color: bg, area: area, text: false});
+    if (bg && bg !== 'rgba(0, 0, 0, 0)' && bg !== 'transparent') {
+      // Mark fills on interactive elements (hyperframes' interactiveBg signal) so
+      // the brand action color wins the primary role by USAGE, not by saturation.
+      const tag = el.tagName.toLowerCase();
+      const role = (el.getAttribute('role') || '').toLowerCase();
+      const cls = (el.className && el.className.toString) ? el.className.toString() : '';
+      const interactive = tag === 'a' || tag === 'button' ||
+        role === 'button' || role === 'link' || role === 'menuitem' || role === 'tab' ||
+        /\b(btn|button|cta|primary|action)\b/i.test(cls);
+      samples.push({color: bg, area: area, text: false, interactive: interactive});
+    }
     const hasText = el.childNodes && Array.from(el.childNodes)
       .some(n => n.nodeType === 3 && n.textContent.trim().length > 0);
     if (hasText) {

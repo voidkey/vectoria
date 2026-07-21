@@ -281,6 +281,8 @@ class Settings(BaseSettings):
     capture_viewport_width: int = 1280
     capture_viewport_height: int = 800
     capture_max_asset_bytes: int = 25 * 1024 * 1024   # per non-image binary (video/lottie/woff2)
+    capture_asset_catalog_cap: int = 200          # max URL-only media catalog entries (after dedup)
+    capture_video_cap: int = 20                   # max DOM video descriptors
     capture_max_screenshot_height: int = 20000    # clamp full-page height (DoS guard)
     capture_color_delta_e: float = 10.0           # ΔE (CIE76) color-cluster merge threshold
     # Path to a deployment-provided JSON font catalog [{family,slug,css_url,weights}]
