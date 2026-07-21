@@ -70,6 +70,12 @@ dependencies = [
     # (e.g. baike.baidu.com).  Wraps libcurl-impersonate; sync API is used
     # via asyncio.to_thread in the URL parser layer.
     "curl_cffi>=0.7",
+    # Website-capture font metadata: reads OpenType ``name``/OS/2 tables of
+    # captured font files to build fonts-manifest.json (family / weight /
+    # variation axes / icon-font detection) — the fontkit equivalent.
+    # ``brotli`` is required to decompress ``.woff2`` faces.
+    "fonttools>=4.50",
+    "brotli>=1.1",
 ]
 
 [build-system]
