@@ -204,13 +204,18 @@ class GenericHandler:
         if needs_browser_fallback(result):
             html = await fetch_impersonated(url)
             if html is not None:
-                text = extract_with_trafilatura(html)
-                if text.strip():
-                    return ParseResult(
-                        content=text,
-                        title=extract_html_title(html, url),
-                        image_urls=extract_image_urls(html, url),
-                    )
+                candidate = ParseResult(
+                    content=extract_with_trafilatura(html),
+                    title=extract_html_title(html, url),
+                    image_urls=extract_image_urls(html, url),
+                )
+                # Only accept the curl_cffi result if it cleared the same
+                # thinness/JS-challenge bar as the httpx tier. A JS-only SPA
+                # leaks a tiny <noscript> scrap ("enable JavaScript") here —
+                # non-empty but useless — which must not short-circuit the
+                # playwright render that actually reifies the page.
+                if not needs_browser_fallback(candidate):
+                    return candidate
             return await self._parse_with_playwright(url)
         return result
 

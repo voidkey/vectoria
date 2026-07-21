@@ -883,3 +883,37 @@ async def test_generic_uses_curl_cffi_before_playwright(monkeypatch):
     r = await GenericHandler().parse("https://example.com/x")
     assert "真正文" in r.content
     assert pw_called["n"] == 0    # curl_cffi succeeded → playwright NOT called
+
+
+@pytest.mark.asyncio
+async def test_generic_thin_curl_cffi_still_falls_through_to_playwright(monkeypatch):
+    """A JS-only SPA leaks a tiny <noscript> scrap through the curl_cffi tier —
+    non-empty but far below the content threshold. It must NOT be accepted; the
+    handler must still render via playwright. Regression (cb40b89) accepted any
+    non-empty curl_cffi text and skipped the browser tier, so e.g. kingsoft.com
+    stored only its "enable JavaScript" notice instead of the rendered body."""
+    from parsers.url._generic import GenericHandler
+    import parsers.url._generic as g
+    from parsers.base import ParseResult
+
+    noscript = "We're sorry but this app doesn't work without JavaScript enabled."  # ~64 chars < 300
+
+    async def fake_httpx(self, url):
+        return ParseResult(content="", title="")          # httpx tier: nothing usable
+    async def fake_fetch(url, **kw):
+        return "<html><body><noscript>" + noscript + "</noscript></body></html>"
+    pw_called = {"n": 0}
+    async def fake_pw(self, url):
+        pw_called["n"] += 1
+        return ParseResult(content="Real rendered content " * 25, title="SPA")
+
+    monkeypatch.setattr(GenericHandler, "_parse_httpx", fake_httpx)
+    monkeypatch.setattr(g, "fetch_impersonated", fake_fetch)
+    monkeypatch.setattr(GenericHandler, "_parse_with_playwright", fake_pw)
+    monkeypatch.setattr("parsers.url._handlers.trafilatura.extract", lambda *a, **k: noscript)
+
+    r = await GenericHandler().parse("https://kingsoft.example/")
+
+    assert pw_called["n"] == 1                 # thin curl_cffi must NOT short-circuit playwright
+    assert "Real rendered content" in r.content
+    assert noscript not in r.content           # the JS-required scrap is not what we store
