@@ -607,6 +607,59 @@ async def test_run_capture_skips_animation_collection_when_not_full():
     assert not any("getAnimations" in s for s in seen_scripts)
 
 
+@pytest.mark.asyncio
+async def test_run_capture_upgrades_libraries_via_detect_libraries():
+    """Phase 6: motion_hints.libraries is built by detect_libraries — merging the
+    script-src sniff, DOM fingerprints, and (full quality) shader fingerprints —
+    not the raw script-src list. The extractor's `fingerprints` block is consumed
+    and NOT leaked onto MotionHints."""
+    raw = _full_quality_raw()
+    raw["motion"] = {
+        "libraries": ["gsap"],           # cheap script-src hit
+        "fingerprints": {"nextRoot": True, "svelte": True},
+        "has_video_background": False, "has_canvas": True,
+    }
+    # Shader source with BOTH three uniforms -> "Three.js (confirmed via shaders)".
+    shaders = [{"type": "vertex",
+                "source": "uniform mat4 modelViewMatrix; uniform mat4 projectionMatrix;"}]
+    page = _fake_page(raw, shaders=shaders)
+    deps = _FakeDeps(page, {})
+
+    from parsers.capture.orchestrator import run_capture
+    outcome = await run_capture("https://x", "kb", "d1", _settings(), deps)
+
+    prof = outcome.profile.model_dump()
+    libs = prof["motion_hints"]["libraries"]
+    assert "gsap" in libs                       # script-src hit preserved
+    assert "Next.js" in libs                     # #__next fingerprint
+    assert "Svelte" in libs                       # svelte class fingerprint
+    assert "WebGL" in libs                         # shader present
+    assert any("Three.js" in x for x in libs)      # shader-confirmed three
+    # fingerprints must not have leaked onto the persisted MotionHints.
+    assert "fingerprints" not in prof["motion_hints"]
+
+
+@pytest.mark.asyncio
+async def test_run_capture_partial_quality_passes_through_raw_libs():
+    """Below full quality, shaders aren't collected; libraries still merge the
+    script-src sniff + fingerprints (detect_libraries with shaders=[])."""
+    raw = _full_quality_raw()
+    raw["text"]["full_text"] = "tiny"   # -> partial/blocked
+    raw["motion"] = {"libraries": ["lottie"],
+                     "fingerprints": {"react": True},
+                     "has_video_background": False, "has_canvas": False}
+    page = _fake_page(raw)
+    deps = _FakeDeps(page, {})
+
+    from parsers.capture.orchestrator import run_capture
+    outcome = await run_capture("https://x", "kb", "d1", _settings(), deps)
+
+    libs = outcome.profile.model_dump()["motion_hints"]["libraries"]
+    assert "lottie" in libs
+    assert "React" in libs
+    assert "WebGL" not in libs   # no shaders collected at partial quality
+
+
 def test_is_latin_subset_hashed_and_named():
     from parsers.capture.orchestrator import _is_latin_subset
     # Hashed Next.js face (the -s suffix used to break the old .woff-anchored

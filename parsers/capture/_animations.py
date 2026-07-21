@@ -63,38 +63,45 @@ SHADER_CAPTURE_JS = r"""
 """
 
 # Monkey-patch IntersectionObserver to record observed targets (scroll triggers).
+# Uses a Proxy with only a `construct` trap so `instanceof IntersectionObserver`,
+# `.prototype`, `.constructor`, and static props all forward natively to the
+# original constructor — framework code that relies on the prototype chain is
+# unaffected. We only wrap each instance's `.observe` to record targets into
+# window.__hf_io_targets ({selector, rect:{top,height,width}} — the exact shape
+# COLLECT_ANIMATIONS_JS reads back).
 IO_CAPTURE_JS = r"""
 (() => {
   try {
     if (window.__hf_io_patched) return;
-    window.__hf_io_patched = true;
-    window.__hf_io_targets = [];
     var OrigIO = window.IntersectionObserver;
     if (!OrigIO) return;
-    window.IntersectionObserver = function(callback, options) {
-      var observer = new OrigIO(callback, options);
-      try {
-        var origObserve = observer.observe.bind(observer);
-        observer.observe = function(target) {
-          try {
-            var sel = target.id ? '#' + target.id : target.tagName.toLowerCase();
-            if (target.className && typeof target.className === 'string') {
-              var cls = Array.from(target.classList).slice(0, 2).join('.');
-              if (cls) sel += '.' + cls;
-            }
-            var rect = target.getBoundingClientRect();
-            window.__hf_io_targets.push({
-              selector: sel,
-              rect: { top: Math.round(rect.top + window.scrollY),
-                      height: Math.round(rect.height), width: Math.round(rect.width) }
-            });
-          } catch(e) {}
-          return origObserve(target);
-        };
-      } catch(e) {}
-      return observer;
-    };
-    window.IntersectionObserver.prototype = OrigIO.prototype;
+    window.__hf_io_patched = true;
+    window.__hf_io_targets = [];
+    window.IntersectionObserver = new Proxy(OrigIO, {
+      construct: function(Target, args) {
+        var observer = new Target(...args);
+        try {
+          var origObserve = observer.observe.bind(observer);
+          observer.observe = function(target) {
+            try {
+              var sel = target.id ? '#' + target.id : target.tagName.toLowerCase();
+              if (target.className && typeof target.className === 'string') {
+                var cls = Array.from(target.classList).slice(0, 2).join('.');
+                if (cls) sel += '.' + cls;
+              }
+              var rect = target.getBoundingClientRect();
+              window.__hf_io_targets.push({
+                selector: sel,
+                rect: { top: Math.round(rect.top + window.scrollY),
+                        height: Math.round(rect.height), width: Math.round(rect.width) }
+              });
+            } catch(e) {}
+            return origObserve(target);
+          };
+        } catch(e) {}
+        return observer;
+      }
+    });
   } catch(e) {}
 })();
 """
@@ -219,6 +226,8 @@ async def collect_shaders(page) -> list[dict]:
         if not isinstance(s, dict):
             continue
         src = s.get("source")
+        if not src:  # skip malformed/empty entries — don't dedup on a falsy key
+            continue
         if src in seen:
             continue
         seen.add(src)
@@ -283,6 +292,14 @@ def detect_libraries(raw_libs: list, shaders: list, dom_fingerprints: dict) -> l
         if name and name not in libs:
             libs.append(name)
 
+    def replace(old: str, new: str) -> None:
+        # Upgrade a plain label to a confirmed one without emitting both, so a
+        # library never appears twice under two labels.
+        if old in libs:
+            libs[libs.index(old)] = new
+        else:
+            add(new)
+
     # 1. Cheap script-src hits from the extractor, passed through verbatim.
     for lib in raw_libs or []:
         add(lib)
@@ -326,12 +343,12 @@ def detect_libraries(raw_libs: list, shaders: list, dom_fingerprints: dict) -> l
                                    if isinstance(s, dict))
             add("WebGL")
             if "modelViewMatrix" in all_source and "projectionMatrix" in all_source:
-                add("Three.js (confirmed via shaders)")
+                replace("Three.js", "Three.js (confirmed via shaders)")
             elif ("vTextureCoord" in all_source and "uSampler" in all_source
                   and "modelViewMatrix" not in all_source):
-                add("PixiJS (confirmed via shaders)")
+                replace("PixiJS", "PixiJS (confirmed via shaders)")
             elif "viewProjection" in all_source and "world" in all_source:
-                add("Babylon.js (confirmed via shaders)")
+                replace("Babylon.js", "Babylon.js (confirmed via shaders)")
     except Exception:
         logger.info("capture: shader fingerprinting failed", exc_info=True)
 

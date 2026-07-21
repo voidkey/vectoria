@@ -31,6 +31,15 @@ def test_extract_js_collects_phase2_colors():
         assert needle in EXTRACT_JS, needle
 
 
+def test_extract_js_collects_library_fingerprints():
+    # Phase 6: the motion block now carries a `fingerprints` object with the
+    # window-global + DOM probes detect_libraries maps to library names.
+    for needle in ("fingerprints", "__NEXT_DATA__", "#__next",
+                   "svelte-", "data-framer-component-type",
+                   "data-engine", "rive-canvas", "window.THREE"):
+        assert needle in EXTRACT_JS, needle
+
+
 @pytest.mark.asyncio
 async def test_run_extract_passes_through():
     page = AsyncMock()

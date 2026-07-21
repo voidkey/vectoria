@@ -82,6 +82,22 @@ def _is_latin_subset(url: str) -> bool:
     return bool(_HASHED_BASENAME_RE.search(stem))
 
 
+def _motion_hints(MotionHints, motion: dict, shaders: list):
+    """Build MotionHints from the raw motion dict, replacing the cheap script-src
+    `libraries` with the upgraded detect_libraries (script-src + DOM fingerprints
+    + shader fingerprints). The extractor's `fingerprints` block is consumed here
+    and NOT persisted on MotionHints (which only carries libraries + the two
+    boolean flags)."""
+    from parsers.capture._animations import detect_libraries
+    m = dict(motion or {})
+    fingerprints = m.pop("fingerprints", {}) or {}
+    raw_libs = m.pop("libraries", []) or []
+    libraries = detect_libraries(raw_libs, shaders or [], fingerprints)
+    return MotionHints(libraries=libraries,
+                       has_video_background=bool(m.get("has_video_background")),
+                       has_canvas=bool(m.get("has_canvas")))
+
+
 def _safe_hex(css: str) -> str:
     from parsers.capture._colors import _to_hex, parse_css_color
     rgb = parse_css_color(css or "")
@@ -121,7 +137,7 @@ async def run_capture(url: str, kb_id: str, doc_id: str, cfg, deps: CaptureDeps)
     patch parsers.capture._assets.fetch_asset_bytes keep biting at call time."""
     from parsers.capture._animations import (
         IO_CAPTURE_JS, SHADER_CAPTURE_JS, collect_animation_catalog,
-        collect_shaders, start_cdp_animation_capture)
+        collect_shaders, detect_libraries, start_cdp_animation_capture)
     from parsers.capture._assets import (
         derive_asset_name, fetch_asset_bytes, image_ref_from_bytes)
     from parsers.capture._colors import dominant_screenshot_hex, process_colors
@@ -564,7 +580,7 @@ async def run_capture(url: str, kb_id: str, doc_id: str, cfg, deps: CaptureDeps)
         text=TextInfo(headline=t.get("headline", ""), tagline=t.get("tagline", ""),
                       ctas=t.get("ctas", []), full_text=t.get("full_text", "")),
         assets=profile_assets, screenshots=profile_shots,
-        motion_hints=MotionHints(**raw.get("motion", {})),
+        motion_hints=_motion_hints(MotionHints, raw.get("motion", {}), shaders),
         asset_catalog=asset_catalog, videos=page_videos,
         animation_catalog=animation_catalog, shaders=shaders)
 

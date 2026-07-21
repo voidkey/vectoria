@@ -9,9 +9,12 @@ def test_js_constants_contain_expected_hooks():
     assert "__capturedShaders" in SHADER_CAPTURE_JS
     assert "getContext" in SHADER_CAPTURE_JS
     assert "shaderSource" in SHADER_CAPTURE_JS
-    # IO monkey-patch records observed targets.
+    # IO monkey-patch records observed targets via a Proxy construct trap so the
+    # native prototype chain / instanceof is preserved on real sites.
     assert "IntersectionObserver" in IO_CAPTURE_JS
     assert "__hf_io_targets" in IO_CAPTURE_JS
+    assert "new Proxy" in IO_CAPTURE_JS
+    assert "construct" in IO_CAPTURE_JS
     # Collector reads the Web Animations API + CSS scan + IO targets + canvases.
     assert "getAnimations" in COLLECT_ANIMATIONS_JS
     assert "__hf_io_targets" in COLLECT_ANIMATIONS_JS
@@ -43,6 +46,18 @@ def test_detect_libraries_three_from_shader_fingerprint():
     out = detect_libraries([], shaders, {})
     assert "WebGL" in out
     assert any("Three.js" in x for x in out)
+
+
+def test_detect_libraries_three_dom_plus_shader_single_label():
+    # DOM fingerprint emits "Three.js"; shaders confirm it. The confirmed label
+    # must REPLACE the plain one — the library appears exactly once, not twice.
+    from parsers.capture._animations import detect_libraries
+    shaders = [{"type": "vertex",
+                "source": "uniform mat4 modelViewMatrix; uniform mat4 projectionMatrix;"}]
+    out = detect_libraries([], shaders, {"three": True})
+    three_labels = [x for x in out if "Three.js" in x]
+    assert three_labels == ["Three.js (confirmed via shaders)"]
+    assert "Three.js" not in out  # plain label must be gone
 
 
 def test_detect_libraries_pixi_from_shader_fingerprint():
@@ -105,6 +120,21 @@ async def test_collect_shaders_dedups_by_source():
     ])
     out = await collect_shaders(page)
     assert [s["source"] for s in out] == ["A", "B"]
+
+
+@pytest.mark.asyncio
+async def test_collect_shaders_skips_entries_without_source():
+    # A malformed entry (missing/empty source) must be skipped, not folded into
+    # the dedup set as a None/"" key that would swallow later empty entries.
+    from parsers.capture._animations import collect_shaders
+    page = AsyncMock()
+    page.evaluate = AsyncMock(return_value=[
+        {"type": "vertex"},              # no source at all
+        {"type": "vertex", "source": ""},  # empty source
+        {"type": "fragment", "source": "B"},
+    ])
+    out = await collect_shaders(page)
+    assert [s["source"] for s in out] == ["B"]
 
 
 @pytest.mark.asyncio

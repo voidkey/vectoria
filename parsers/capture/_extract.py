@@ -186,8 +186,38 @@ EXTRACT_JS = r"""
   const libs = [];
   for (const [lib, pat] of [['gsap','gsap'],['lottie','lottie'],['framer-motion','framer'],['aos','aos.'],['three','three']])
     if (scriptsHref.includes(pat)) libs.push(lib);
+  // DOM + window-global fingerprints (ported from contentExtractor.ts::
+  // detectLibraries). Booleans only — Python's detect_libraries maps these to
+  // library names + merges with the script-src `libs` + shader fingerprints.
+  // Fully guarded: a probe throwing must not abort the extract.
+  let fingerprints = {};
+  try {
+    const q = (sel) => { try { return !!document.querySelector(sel); } catch(e){ return false; } };
+    fingerprints = {
+      // Window globals (CDN-loaded / non-bundled libs).
+      gsap: typeof window.gsap !== 'undefined' || typeof window.TweenMax !== 'undefined',
+      scrollTrigger: typeof window.ScrollTrigger !== 'undefined',
+      three: typeof window.THREE !== 'undefined' || q('canvas[data-engine*="three"]'),
+      pixi: typeof window.PIXI !== 'undefined',
+      babylon: typeof window.BABYLON !== 'undefined' || q('canvas[data-engine*="Babylon"]'),
+      lottie: typeof window.Lottie !== 'undefined' || typeof window.lottie !== 'undefined'
+              || q('dotlottie-wc, lottie-player, dotlottie-player'),
+      webflow: typeof window.Webflow !== 'undefined',
+      rive: q('canvas[class*="rive"], rive-canvas'),
+      // DOM fingerprints (survive bundling — most reliable for modern sites).
+      nextData: typeof window.__NEXT_DATA__ !== 'undefined',
+      nextRoot: q('#__next'),
+      nuxt: typeof window.__NUXT__ !== 'undefined',
+      nuxtRoot: q('#__nuxt'),
+      react: q('[data-reactroot], [data-react-helmet]'),
+      svelte: q('[class*="svelte-"]'),
+      tailwind: q('[class*="flex "], [class*="grid "], [class*="px-"], [class*="py-"]'),
+      framerMotion: q('[style*="--framer-"], [data-framer-component-type]'),
+    };
+  } catch(e) { fingerprints = {}; }
   const motion = {
     libraries: libs,
+    fingerprints: fingerprints,
     has_video_background: !!document.querySelector('video[autoplay]'),
     has_canvas: !!document.querySelector('canvas'),
   };
