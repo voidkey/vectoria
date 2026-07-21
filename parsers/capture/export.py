@@ -5,6 +5,7 @@ import asyncio
 import io
 import json
 import zipfile
+from urllib.parse import urlparse
 
 from sqlalchemy import select
 
@@ -221,6 +222,75 @@ def _asset_zip_path(a: dict, storage_key: str) -> str:
     return f"capture/assets/{a.get('kind')}.{a.get('format', 'bin')}"
 
 
+def infer_color_role(hex_str: str) -> str:
+    """Human-readable role hint from a hex color via luminance + saturation.
+    Ported verbatim (thresholds) from agentPromptGenerator.ts::inferColorRole —
+    just orients an agent scanning the brand summary; not a substitute for real
+    design analysis. Returns "color" for anything that can't be parsed as #RRGGBB."""
+    try:
+        r = int(hex_str[1:3], 16) / 255
+        g = int(hex_str[3:5], 16) / 255
+        b = int(hex_str[5:7], 16) / 255
+    except (ValueError, IndexError):
+        return "color"
+    mx, mn = max(r, g, b), min(r, g, b)
+    luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b
+    saturation = 0.0 if mx == 0 else (mx - mn) / mx
+    if luminance < 0.04:
+        return "bg-dark"
+    if luminance > 0.9:
+        return "bg-light"
+    if saturation > 0.4 and 0.05 < luminance < 0.7:
+        return "accent"
+    if luminance < 0.2:
+        return "surface-dark"
+    if luminance > 0.7:
+        return "surface-light"
+    return "neutral"
+
+
+def _hostname(url: str) -> str:
+    """Bare hostname (www. stripped), the reference's title/id fallback."""
+    try:
+        host = urlparse(url).hostname or ""
+    except ValueError:
+        host = ""
+    return host[4:] if host.startswith("www.") else host
+
+
+def _meta_json(profile: dict) -> dict:
+    """Project metadata (capture/meta.json). The reference scaffolding.ts writes a
+    minimal {id, name}; we keep those for parity and add the richer vectoria fields
+    (url/capturedAt/captureQuality/counts/generatedBy) the export surfaces. Counts
+    are derived from the assembled profile so downstream can size the capture at a
+    glance without unzipping every artifact."""
+    url = profile.get("url", "")
+    host = _hostname(url)
+    title = (profile.get("text", {}) or {}).get("headline", "") or host
+    video_manifest = profile.get("video_manifest") or {}
+    lottie_manifest = profile.get("lottie_manifest") or {}
+    ranked = profile.get("colors_ranked") or [
+        c["hex"] for c in (profile.get("colors") or []) if c.get("hex")]
+    counts = {
+        "screenshots": len(profile.get("screenshots") or []),
+        "assets": len(profile.get("assets") or []),
+        "fonts": len(_fonts_array(profile.get("fonts", {}) or {})),
+        "videos": len(video_manifest.get("videos") or []),
+        "lotties": len(lottie_manifest.get("lotties") or []),
+        "colors": len(ranked),
+    }
+    return {
+        "id": (host + "-video") if host else "capture-video",
+        "name": title,
+        "url": url,
+        "title": title,
+        "capturedAt": profile.get("captured_at", ""),
+        "captureQuality": profile.get("capture_quality", "full"),
+        "counts": counts,
+        "generatedBy": "vectoria",
+    }
+
+
 async def build_hyperframes_zip(doc) -> bytes:
     profile = doc.profile or {}
     storage = await get_storage()
@@ -336,9 +406,20 @@ async def build_hyperframes_zip(doc) -> bytes:
             members.append((f"capture/assets/fonts/{key.rsplit('/', 1)[-1]}", key))
 
         datas = await asyncio.gather(*(_safe_get(storage, k) for _, k in members))
+        written: set[str] = set()
         for (path, _key), data in zip(members, datas):
             if data is not None:
                 zf.writestr(path, data)
+                written.add(path)
+
+        # Phase 9 — agent scaffolding. Emit from the assembled profile + the set
+        # of capture/ paths ACTUALLY written above (so the data inventory reflects
+        # exactly what's in THIS zip: paginated contact sheets, present-vs-absent
+        # artifacts). Deliberately NO index.html (reference omits it to avoid a
+        # composition-discovery double-audio bug).
+        written |= {i.filename for i in zf.infolist()}
+        zf.writestr("capture/meta.json",
+                    json.dumps(_meta_json(profile), ensure_ascii=False, indent=2))
     return buf.getvalue()
 
 

@@ -634,3 +634,111 @@ async def test_build_zip_routes_contact_sheets_by_subdir():
     assert "capture/screenshots/contact-sheet-1.jpg" in names
     assert "capture/assets/contact-sheet-1.jpg" in names
     assert "capture/assets/svgs/contact-sheet-1.jpg" in names
+
+
+# ---------------------------------------------------------------------------
+# Phase 9 — agent scaffolding: meta.json + color-role inference
+# ---------------------------------------------------------------------------
+
+def test_infer_color_role_thresholds():
+    """Ported luminance/saturation heuristic from agentPromptGenerator.ts::
+    inferColorRole. Pure function, no I/O."""
+    from parsers.capture.export import infer_color_role
+    assert infer_color_role("#000000") == "bg-dark"       # luminance 0
+    assert infer_color_role("#FFFFFF") == "bg-light"      # luminance 1
+    assert infer_color_role("#FF3366") == "accent"        # saturated, mid luminance
+    assert infer_color_role("#1a1a1a") == "surface-dark"  # dark but not near-black
+    assert infer_color_role("#c0c0c0") == "surface-light" # light but not near-white (lum ~0.75)
+    assert infer_color_role("#888888") == "neutral"       # mid gray, low saturation
+    assert infer_color_role("bad") == "color"             # unparseable -> fallback
+    assert infer_color_role("#zzzzzz") == "color"         # non-hex digits -> fallback
+
+
+@pytest.mark.asyncio
+async def test_build_zip_emits_meta_json_with_counts():
+    """capture/meta.json carries the reference-shaped project metadata with
+    counts derived from the assembled profile."""
+    doc = type("D", (), {})()
+    doc.id, doc.kb_id = "d1", "kb"
+    doc.profile = {
+        "url": "https://www.acme.com/launch",
+        "captured_at": "2026-07-21T00:00:00+00:00",
+        "capture_quality": "full",
+        "colors_ranked": ["#0B0B0F", "#FFFFFF", "#FF3366"],
+        "fonts": {
+            "display": {"family": "Poppins", "catalog_match": {"matched": False},
+                        "files": [], "stack": "Poppins", "renderable": False,
+                        "sample_selector": "h1", "weights": [700]},
+            "body": {"family": "Inter", "catalog_match": {"matched": False},
+                     "files": [], "stack": "Inter", "renderable": False,
+                     "sample_selector": "p", "weights": [400]},
+        },
+        "text": {"headline": "Acme Launch", "tagline": "Ship faster"},
+        "spacing": {},
+        "assets": [
+            {"kind": "logo", "storage_key": "captures/kb/d1/assets/logo.svg",
+             "format": "svg"},
+            {"kind": "image", "storage_key": "captures/kb/d1/assets/hero.jpg",
+             "format": "jpg"},
+        ],
+        "screenshots": [{"kind": "above_fold", "image_id": "i1", "section_index": None},
+                        {"kind": "section", "image_id": "i2", "section_index": 0}],
+        "video_manifest": {"videos": [{"url": "https://x/a.mp4"}],
+                           "meta": {"discovered": 1}},
+        "lottie_manifest": {"lotties": [{"file": "assets/lottie/animation-0.json"},
+                                        {"file": "assets/lottie/animation-1.json"}],
+                            "meta": {"discovered": 2}},
+    }
+    storage = AsyncMock()
+    storage.get = AsyncMock(return_value=b"BYTES")
+    with (
+        patch("parsers.capture.export.get_storage", new=AsyncMock(return_value=storage)),
+        patch("parsers.capture.export._image_keys",
+              new=AsyncMock(return_value={"i1": "images/kb/d1/a.png",
+                                          "i2": "images/kb/d1/b.png"})),
+    ):
+        from parsers.capture.export import build_hyperframes_zip
+        data = await build_hyperframes_zip(doc)
+    zf = zipfile.ZipFile(io.BytesIO(data))
+    assert "capture/meta.json" in set(zf.namelist())
+    meta = json.loads(zf.read("capture/meta.json"))
+    assert meta["url"] == "https://www.acme.com/launch"
+    assert meta["title"] == "Acme Launch"
+    assert meta["capturedAt"] == "2026-07-21T00:00:00+00:00"
+    assert meta["captureQuality"] == "full"
+    assert meta["generatedBy"] == "vectoria"
+    counts = meta["counts"]
+    assert counts["screenshots"] == 2
+    assert counts["assets"] == 2
+    assert counts["fonts"] == 2       # display + body, deduped families
+    assert counts["videos"] == 1
+    assert counts["lotties"] == 2
+    assert counts["colors"] == 3
+    # No index.html is ever written (reference deliberately omits it).
+    assert "capture/index.html" not in set(zf.namelist())
+
+
+@pytest.mark.asyncio
+async def test_build_zip_meta_json_minimal_profile_backward_compat():
+    """A minimal/old profile (missing newer fields) still produces a valid
+    meta.json with zeroed counts and title falling back to the hostname."""
+    doc = type("D", (), {})()
+    doc.id, doc.kb_id = "d1", "kb"
+    doc.profile = {
+        "url": "https://www.example.com/",
+        "fonts": {}, "text": {}, "spacing": {}, "assets": [], "screenshots": [],
+    }
+    storage = AsyncMock()
+    storage.get = AsyncMock(return_value=b"BYTES")
+    with (
+        patch("parsers.capture.export.get_storage", new=AsyncMock(return_value=storage)),
+        patch("parsers.capture.export._image_keys", new=AsyncMock(return_value={})),
+    ):
+        from parsers.capture.export import build_hyperframes_zip
+        data = await build_hyperframes_zip(doc)
+    zf = zipfile.ZipFile(io.BytesIO(data))
+    meta = json.loads(zf.read("capture/meta.json"))
+    assert meta["title"] == "example.com"   # hostname fallback (www. stripped)
+    assert meta["captureQuality"] == "full"  # default
+    assert meta["counts"] == {"screenshots": 0, "assets": 0, "fonts": 0,
+                              "videos": 0, "lotties": 0, "colors": 0}
