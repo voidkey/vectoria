@@ -268,28 +268,34 @@ async def _fetch_named_assets(raw_assets: dict, cfg) -> tuple[list, list, dict, 
 
 
 async def _store_binaries(raw_assets: dict, kb_id: str, doc_id: str, cfg, storage) -> list:
-    """Fetch + store the non-image named binaries (background video, legacy lottie).
+    """Fetch + store the non-image named binary (background video).
 
-    Port of the original inline block: for ``video`` and ``lottie`` raw-asset URLs,
-    fetch (SSRF/size-capped) and store under ``assets/{kind}{ext}``. Returns the
-    stored AssetRefs in order. Note: unlike the best-effort helpers this preserves
-    the original's UNGUARDED storage.put (a store failure propagates)."""
+    Port of the original inline block: for the ``video`` raw-asset URL, fetch
+    (SSRF/size-capped) and store under ``assets/{kind}{ext}``. Returns the stored
+    AssetRefs. Best-effort per binary — a fetch/store failure logs + skips, matching
+    the other store helpers, so it can never abort an otherwise-degrading capture.
+    Note: the legacy single ``lottie`` raw asset is intentionally NOT handled here —
+    it is captured once by ``_save_lotties`` (validated JSON + manifest) via the
+    ``_legacy_lottie`` insert into the lottie list."""
     from parsers.capture._assets import fetch_asset_bytes
     from parsers.capture.profile import AssetRef
 
     refs: list = []
-    for kind, a_url in (("background_video", raw_assets.get("video")),
-                        ("lottie", raw_assets.get("lottie"))):
+    for kind, a_url in (("background_video", raw_assets.get("video")),):
         if not a_url:
             continue
-        got = await fetch_asset_bytes(a_url, max_bytes=cfg.capture_max_asset_bytes)
-        if got is None:
+        try:
+            got = await fetch_asset_bytes(a_url, max_bytes=cfg.capture_max_asset_bytes)
+            if got is None:
+                continue
+            data, ctype = got
+            ext = _BIN_EXT.get(ctype, ".bin")
+            key = f"captures/{kb_id}/{doc_id}/assets/{kind}{ext}"
+            await storage.put(key, data, content_type=ctype or "application/octet-stream")
+            refs.append(AssetRef(kind=kind, storage_key=key, format=ext.lstrip(".")))
+        except Exception:
+            logger.info("capture: binary store failed for %s", kind, exc_info=True)
             continue
-        data, ctype = got
-        ext = _BIN_EXT.get(ctype, ".bin")
-        key = f"captures/{kb_id}/{doc_id}/assets/{kind}{ext}"
-        await storage.put(key, data, content_type=ctype or "application/octet-stream")
-        refs.append(AssetRef(kind=kind, storage_key=key, format=ext.lstrip(".")))
     return refs
 
 

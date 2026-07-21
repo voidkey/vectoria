@@ -1223,6 +1223,46 @@ async def test_run_capture_lottie_includes_legacy_single_url():
 
     lm = outcome.profile.lottie_manifest
     assert lm is not None and lm["lotties"][0]["name"] == "Legacy"
+    # The legacy single lottie is captured ONCE, via the validated lottie_json path —
+    # _store_binaries no longer double-stores it as a raw kind="lottie" AssetRef.
+    assert [a for a in outcome.profile.assets if a.kind == "lottie_json"]
+    assert [a for a in outcome.profile.assets if a.kind == "lottie"] == []
+
+
+@pytest.mark.asyncio
+async def test_run_capture_binary_store_failure_does_not_abort(caplog):
+    """A storage.put failure while storing the background-video binary must NOT
+    abort the capture — it logs + degrades, and the profile still builds."""
+    import logging
+    raw = _full_quality_raw()
+    raw["assets"]["video"] = "https://x/bg.mp4"        # legacy single background video
+    page = _fake_page(raw)
+    deps = _FakeDeps(page, {})
+
+    async def _fake_fetch(url, *, max_bytes):
+        return b"VIDEOBYTES", "video/mp4"
+
+    real_put = deps.storage.put
+
+    async def _put(key, data, *args, **kwargs):
+        if "background_video" in key:
+            raise RuntimeError("s3 down")
+        return await real_put(key, data, *args, **kwargs)
+
+    deps.storage.put = AsyncMock(side_effect=_put)
+
+    from unittest.mock import patch
+    with patch("parsers.capture._assets.fetch_asset_bytes", new=_fake_fetch):
+        from parsers.capture.orchestrator import run_capture
+        with caplog.at_level(logging.INFO):
+            outcome = await run_capture("https://x", "kb", "d1", _settings(), deps)
+
+    # Capture still succeeded: a profile was built.
+    assert outcome.profile is not None
+    assert outcome.profile.capture_quality == "full"
+    # The background_video ref was dropped (store failed) — not aborted.
+    assert [a for a in outcome.profile.assets if a.kind == "background_video"] == []
+    assert any("binary store failed" in r.message for r in caplog.records)
 
 
 # ── Phase 8: lottie mid-frame previews (best-effort, fake page) ─────────────
