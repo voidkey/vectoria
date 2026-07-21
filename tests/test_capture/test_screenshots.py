@@ -2,7 +2,7 @@ import pytest
 from unittest.mock import AsyncMock
 
 from parsers.capture._screenshots import (
-    DISMISS_CONSENT_JS, capture_screenshots, prepare_page)
+    DISMISS_CONSENT_JS, _PREPARE_JS, capture_screenshots, prepare_page)
 
 
 @pytest.mark.asyncio
@@ -129,3 +129,28 @@ async def test_prepare_page_consent_failure_does_not_abort_walk():
     page.evaluate = _eval
     await prepare_page(page, step_frac=0.8, step_ms=0, max_steps=5, img_wait_ms=0)
     assert any("document.fonts" in s for s in calls)  # walk still ran
+
+
+# --- Task 2: overlay-hiding aligned to reference (z>100, bounded scan) -----
+
+def test_overlay_hiding_uses_bounded_treewalker():
+    """Reference heuristic: bounded TreeWalker scan (≤5000), not querySelectorAll('*')."""
+    js = _PREPARE_JS
+    assert "createTreeWalker" in js
+    assert "5000" in js
+
+
+def test_overlay_hiding_skips_header_and_nav():
+    js = _PREPARE_JS
+    assert "HEADER" in js and "NAV" in js
+    assert "closest('header')" in js and "closest('nav')" in js
+
+
+def test_overlay_hiding_only_zindex_over_100():
+    """Only fixed/sticky with z-index>100 are hidden (no blanket position:fixed)."""
+    js = _PREPARE_JS
+    assert "> 100" in js
+    assert "zIndex !== 'auto'" in js  # reference guard: skip auto z-index
+    # the old blanket "hide any fixed regardless of z-index" clause is gone:
+    # position:fixed only qualifies as part of the (fixed || sticky) && z>100 test
+    assert "|| cs.position === 'fixed'" not in js

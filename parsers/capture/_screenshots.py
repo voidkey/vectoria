@@ -106,17 +106,34 @@ async ({stepFrac, stepMs, maxSteps, imgWaitMs}) => {
       sleep(imgWaitMs),
     ]);
   }
+  // Hide fixed/sticky overlays (cookie bars, chat widgets) that aren't header/
+  // nav, matching hyperframes screenshotCapture.ts: a bounded TreeWalker
+  // (<=5000 nodes) with a cheap getBoundingClientRect size prefilter before the
+  // expensive getComputedStyle, hiding only z-index>100 fixed/sticky elements.
   try {
-    document.querySelectorAll('*').forEach((el) => {
-      const cs = getComputedStyle(el);
-      if (cs.position !== 'fixed' && cs.position !== 'sticky') return;
-      const tag = el.tagName;
-      if (tag === 'HEADER' || tag === 'NAV' || el.closest('header') || el.closest('nav')) return;
+    const SCAN_CAP = 5000;
+    const minWidth = (window.innerWidth || 1280) * 0.3;
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT);
+    let visited = 0;
+    let node = walker.nextNode();
+    while (node && visited < SCAN_CAP) {
+      visited++;
+      const el = node;
       const r = el.getBoundingClientRect();
-      if (r.height <= 80 || r.width <= 300) return;
-      const z = parseInt(cs.zIndex) || 0;
-      if (z > 100 || cs.position === 'fixed') el.style.setProperty('display', 'none', 'important');
-    });
+      // Cheap viewport-size filter first — skips tiny/hidden/off-screen elements
+      // without touching getComputedStyle.
+      if (r.height > 80 && r.width > minWidth) {
+        const tag = el.tagName;
+        if (tag !== 'HEADER' && tag !== 'NAV' && !el.closest('header') && !el.closest('nav')) {
+          const cs = getComputedStyle(el);
+          if ((cs.position === 'fixed' || cs.position === 'sticky') &&
+              cs.zIndex !== 'auto' && parseInt(cs.zIndex) > 100) {
+            el.style.setProperty('display', 'none', 'important');
+          }
+        }
+      }
+      node = walker.nextNode();
+    }
   } catch (e) {}
   window.scrollTo(0, 0);
   await sleep(stepMs);
