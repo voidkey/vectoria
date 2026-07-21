@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import re
 import zipfile
 from urllib.parse import urlparse
 
@@ -43,6 +44,14 @@ def _fonts_array(fonts: dict) -> list[dict]:
     return out
 
 
+def _ranked_colors(profile: dict) -> list[str]:
+    """The top-N usage-ranked hex list. Falls back to the role tokens' hexes for
+    profiles captured before the ranking pass (empty ``colors_ranked``) so
+    downstream never gets an empty color list."""
+    return profile.get("colors_ranked") or [
+        c["hex"] for c in (profile.get("colors") or []) if c.get("hex")]
+
+
 def _official_tokens(profile: dict) -> dict:
     """tokens.json in the official hyperframes shape build-frame.mjs reads:
     {title, description, colors, fonts[], colorStats, spacing}. `colors` is the
@@ -53,9 +62,7 @@ def _official_tokens(profile: dict) -> dict:
     ranking pass (empty colors_ranked), fall back to the role tokens' hexes so
     downstream never gets an empty `colors`; colorStats then falls back to []."""
     text = profile.get("text", {}) or {}
-    ranked = profile.get("colors_ranked") or []
-    if not ranked:
-        ranked = [c["hex"] for c in (profile.get("colors") or []) if c.get("hex")]
+    ranked = _ranked_colors(profile)
     out = {
         "title": text.get("headline", ""),
         "description": text.get("tagline", ""),
@@ -231,7 +238,9 @@ def infer_color_role(hex_str: str) -> str:
         r = int(hex_str[1:3], 16) / 255
         g = int(hex_str[3:5], 16) / 255
         b = int(hex_str[5:7], 16) / 255
-    except (ValueError, IndexError):
+    except (ValueError, IndexError, TypeError):
+        # TypeError guards non-str input (None / an int slipping through the
+        # ranked-color list) so one bad entry can't abort the whole export.
         return "color"
     mx, mn = max(r, g, b), min(r, g, b)
     luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b
@@ -269,8 +278,7 @@ def _meta_json(profile: dict) -> dict:
     title = (profile.get("text", {}) or {}).get("headline", "") or host
     video_manifest = profile.get("video_manifest") or {}
     lottie_manifest = profile.get("lottie_manifest") or {}
-    ranked = profile.get("colors_ranked") or [
-        c["hex"] for c in (profile.get("colors") or []) if c.get("hex")]
+    ranked = _ranked_colors(profile)
     counts = {
         "screenshots": len(profile.get("screenshots") or []),
         "assets": len(profile.get("assets") or []),
@@ -289,6 +297,137 @@ def _meta_json(profile: dict) -> dict:
         "counts": counts,
         "generatedBy": "vectoria",
     }
+
+
+# Contact-sheet rows: match `contact-sheet.jpg` + digit-suffixed paginated pages
+# (`contact-sheet-2.jpg`) under a dir, but NOT the `contact-sheet-svgs.jpg` fallback
+# sheet — the "-N" suffix is digits only (ported from agentPromptGenerator.ts).
+_PAGINATED_RE = re.compile(r"^contact-sheet(?:-(\d+))?\.jpg$")
+
+
+def _contact_sheet_rows(written: set[str], dir_: str, label: str) -> list[str]:
+    """Reference contactSheetRows port: enumerate the paginated contact-sheet pages
+    ACTUALLY present under capture/<dir>/, page-numbered so 10 sorts after 2."""
+    prefix = f"capture/{dir_}/"
+    pages: list[tuple[int, str]] = []
+    for path in written:
+        if not path.startswith(prefix):
+            continue
+        base = path[len(prefix):]
+        m = _PAGINATED_RE.match(base)
+        if m:
+            pages.append((int(m.group(1) or 0), base))
+    pages.sort()
+    if not pages:
+        return []
+    if len(pages) == 1:
+        return [f"| `{dir_}/{pages[0][1]}` | {label} |"]
+    n = len(pages)
+    return [f"| `{dir_}/{b}` | {label} — page {i + 1} of {n} |"
+            for i, (_p, b) in enumerate(pages)]
+
+
+def _agent_prompt(profile: dict, written: set[str]) -> str:
+    """Build the AGENTS.md / CLAUDE.md / .cursorrules body (identical content) from
+    the assembled profile + the set of capture/ paths ACTUALLY written to this zip.
+    Ported from agentPromptGenerator.ts::buildPrompt: a data-inventory table listing
+    only the artifacts present (incl. paginated contact sheets), a brand summary with
+    infer_color_role hints + fonts, and a pointer to the product-launch-video skill."""
+    url = profile.get("url", "")
+    text = profile.get("text", {}) or {}
+    title = text.get("headline", "") or _hostname(url)
+    ranked = _ranked_colors(profile)
+
+    color_summary = ", ".join(
+        f"{hex_} ({infer_color_role(hex_)})" for hex_ in ranked[:10])
+    fonts = profile.get("fonts", {}) or {}
+    font_parts: list[str] = []
+    seen_fam: set[str] = set()
+    for role in ("display", "body"):
+        fr = fonts.get(role) or {}
+        fam = (fr.get("family") or "").strip()
+        if not fam or fam.lower() in seen_fam:
+            continue
+        seen_fam.add(fam.lower())
+        weights = fr.get("weights") or []
+        font_parts.append(f"{fam} ({','.join(map(str, weights))})" if weights else fam)
+    font_summary = ", ".join(font_parts) or "none detected"
+
+    def present(path: str) -> bool:
+        return f"capture/{path}" in written
+
+    rows: list[str] = []
+    # Screenshots — contact sheet(s) first, then the individual frames.
+    ss_rows = _contact_sheet_rows(
+        written, "screenshots",
+        "**View this first.** All scroll screenshots in a labeled grid — see the "
+        "entire page at a glance")
+    if ss_rows:
+        rows += ss_rows
+    if any(p.startswith("capture/screenshots/") and p.endswith(".png") for p in written):
+        rows.append("| `screenshots/*.png` | Individual viewport screenshots for "
+                    "detail on a specific section. |")
+    # Core extracted artifacts — always present.
+    rows.append(
+        f"| `extracted/tokens.json` | Design tokens: {len(ranked)} colors, "
+        f"{len(_fonts_array(fonts))} fonts, {len(profile.get('headings') or [])} "
+        f"headings, {len(text.get('ctas') or [])} CTAs |")
+    rows.append("| `extracted/fonts.json` | Role-keyed display/body font families. |")
+    if present("extracted/fonts-manifest.json"):
+        rows.append("| `extracted/fonts-manifest.json` | Captured font faces "
+                    "(family/weights) from fonttools. |")
+    if present("extracted/design-styles.json"):
+        rows.append("| `extracted/design-styles.json` | Computed styles from the live "
+                    "DOM: typography, buttons/cards/nav, spacing, radii, shadows. "
+                    "Primary source for DESIGN.md. |")
+    rows.append("| `extracted/asset-descriptions.md` | One-line description of every "
+                "downloaded asset. Read before opening individual files. |")
+    rows.append("| `extracted/visible-text.txt` | Page text in DOM order. Use as "
+                "context — rephrase freely. |")
+    if present("extracted/page.html"):
+        rows.append("| `extracted/page.html` | Self-contained structural recreation "
+                    "of the page. |")
+    if present("extracted/animations.json"):
+        rows.append("| `extracted/animations.json` | Captured animation catalog "
+                    "(named CSS + representative keyframes). |")
+    if present("extracted/video-manifest.json"):
+        rows.append("| `extracted/video-manifest.json` | Discovered videos with local "
+                    "bodies at `assets/videos/` and previews at "
+                    "`assets/videos/previews/`. |")
+    if present("extracted/lottie-manifest.json"):
+        rows.append("| `extracted/lottie-manifest.json` | Lottie animations with "
+                    "previews at `assets/lottie/previews/`. |")
+    if present("extracted/shaders.json"):
+        rows.append("| `extracted/shaders.json` | WebGL shader source (GLSL). |")
+    # Asset + SVG contact sheets (paginated).
+    rows += _contact_sheet_rows(
+        written, "assets",
+        "Downloaded images in a labeled grid — view before opening individual files")
+    rows += _contact_sheet_rows(
+        written, "assets/svgs", "SVGs rendered as thumbnails in a labeled grid")
+    if any(p.startswith("capture/assets/fonts/") for p in written):
+        rows.append("| `assets/fonts/` | Captured woff2 faces + a `fonts.css` with "
+                    "local @font-face rules. |")
+    rows.append("| `assets/` | Individual downloaded images, SVGs, and font files. |")
+
+    brand = [f"- **Colors**: {color_summary or 'see tokens.json'}",
+             f"- **Fonts**: {font_summary}"]
+    if title:
+        brand.append(f"- **Title**: {title}")
+    if text.get("tagline"):
+        brand.append(f"- **Tagline**: {text['tagline']}")
+
+    table = "\n".join(rows)
+    brand_block = "\n".join(brand)
+    return (
+        f"# {title}\n\n"
+        f"Source: {url}\n\n"
+        "To create a video from this capture, use the `product-launch-video` skill.\n\n"
+        "## What's in This Capture\n\n"
+        "| File | Contents |\n|------|----------|\n"
+        f"{table}\n\n"
+        "## Brand Summary\n\n"
+        f"{brand_block}\n")
 
 
 async def build_hyperframes_zip(doc) -> bytes:
@@ -406,20 +545,26 @@ async def build_hyperframes_zip(doc) -> bytes:
             members.append((f"capture/assets/fonts/{key.rsplit('/', 1)[-1]}", key))
 
         datas = await asyncio.gather(*(_safe_get(storage, k) for _, k in members))
-        written: set[str] = set()
         for (path, _key), data in zip(members, datas):
             if data is not None:
                 zf.writestr(path, data)
-                written.add(path)
 
         # Phase 9 — agent scaffolding. Emit from the assembled profile + the set
         # of capture/ paths ACTUALLY written above (so the data inventory reflects
         # exactly what's in THIS zip: paginated contact sheets, present-vs-absent
         # artifacts). Deliberately NO index.html (reference omits it to avoid a
-        # composition-discovery double-audio bug).
-        written |= {i.filename for i in zf.infolist()}
+        # composition-discovery double-audio bug). `written` is assembled from the
+        # zip's members here — a single source of truth — BEFORE meta.json/AGENTS.md
+        # are written, so scaffolding sees every data artifact but not itself.
+        written = {i.filename for i in zf.infolist()}
         zf.writestr("capture/meta.json",
                     json.dumps(_meta_json(profile), ensure_ascii=False, indent=2))
+        # AGENTS.md / CLAUDE.md / .cursorrules — build the doc string ONCE from the
+        # written-member set + profile, write it verbatim to all three paths so any
+        # agent (Claude Code, Cursor, Codex, ...) auto-discovers identical guidance.
+        prompt = _agent_prompt(profile, written)
+        for name in ("capture/AGENTS.md", "capture/CLAUDE.md", "capture/.cursorrules"):
+            zf.writestr(name, prompt)
     return buf.getvalue()
 
 

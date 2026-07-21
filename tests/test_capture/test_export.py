@@ -654,6 +654,35 @@ def test_infer_color_role_thresholds():
     assert infer_color_role("#zzzzzz") == "color"         # non-hex digits -> fallback
 
 
+def test_infer_color_role_non_string_does_not_raise():
+    """Non-str input (None / an int slipping through the ranked-color list) must
+    return "color" via the TypeError guard, never raise — a raise here would abort
+    the whole build_hyperframes_zip export."""
+    from parsers.capture.export import infer_color_role
+    assert infer_color_role(None) == "color"
+    assert infer_color_role(123) == "color"
+
+
+def test_contact_sheet_rows_numeric_pagination_and_labels():
+    """_contact_sheet_rows sorts pages numerically (10 AFTER 2, not lexically) and
+    labels each `page N of M` in that numeric order. Pure function, no I/O."""
+    from parsers.capture.export import _contact_sheet_rows
+    written = {
+        "capture/screenshots/contact-sheet-2.jpg",
+        "capture/screenshots/contact-sheet-11.jpg",
+        "capture/screenshots/contact-sheet-1.jpg",
+        "capture/screenshots/contact-sheet-10.jpg",
+    }
+    rows = _contact_sheet_rows(written, "screenshots", "Scroll grid")
+    # Numeric order: 1, 2, 10, 11 (NOT lexical 1, 10, 11, 2).
+    assert rows == [
+        "| `screenshots/contact-sheet-1.jpg` | Scroll grid — page 1 of 4 |",
+        "| `screenshots/contact-sheet-2.jpg` | Scroll grid — page 2 of 4 |",
+        "| `screenshots/contact-sheet-10.jpg` | Scroll grid — page 3 of 4 |",
+        "| `screenshots/contact-sheet-11.jpg` | Scroll grid — page 4 of 4 |",
+    ]
+
+
 @pytest.mark.asyncio
 async def test_build_zip_emits_meta_json_with_counts():
     """capture/meta.json carries the reference-shaped project metadata with
@@ -742,3 +771,132 @@ async def test_build_zip_meta_json_minimal_profile_backward_compat():
     assert meta["captureQuality"] == "full"  # default
     assert meta["counts"] == {"screenshots": 0, "assets": 0, "fonts": 0,
                               "videos": 0, "lotties": 0, "colors": 0}
+
+
+# ---------------------------------------------------------------------------
+# Phase 9 — agent scaffolding: AGENTS.md / CLAUDE.md / .cursorrules
+# ---------------------------------------------------------------------------
+
+def _full_scaffold_profile():
+    return {
+        "url": "https://www.acme.com/launch",
+        "captured_at": "2026-07-21T00:00:00+00:00",
+        "capture_quality": "full",
+        "colors_ranked": ["#0B0B0F", "#FFFFFF", "#FF3366"],
+        "fonts": {
+            "display": {"family": "Poppins", "catalog_match": {"matched": False},
+                        "files": [], "stack": "Poppins", "renderable": False,
+                        "sample_selector": "h1", "weights": [700]},
+            "body": {"family": "Inter", "catalog_match": {"matched": False},
+                     "files": [], "stack": "Inter", "renderable": False,
+                     "sample_selector": "p", "weights": [400]},
+        },
+        "text": {"headline": "Acme Launch", "tagline": "Ship faster", "full_text": "b"},
+        "spacing": {},
+        "design_styles": {"typography": {}},
+        "page_html_key": "captures/kb/d1/page.html",
+        "shaders": [{"type": "fragment", "source": "void main(){}"}],
+        "assets": [
+            {"kind": "logo", "storage_key": "captures/kb/d1/assets/logo.svg",
+             "format": "svg", "description": "a logo"},
+            {"kind": "contact_sheet", "format": "jpg",
+             "storage_key": "captures/kb/d1/screenshots/contact-sheet-1.jpg"},
+            {"kind": "contact_sheet", "format": "jpg",
+             "storage_key": "captures/kb/d1/screenshots/contact-sheet-2.jpg"},
+            {"kind": "contact_sheet", "format": "jpg",
+             "storage_key": "captures/kb/d1/assets/contact-sheet-1.jpg"},
+        ],
+        "screenshots": [{"kind": "above_fold", "image_id": "i1", "section_index": None}],
+    }
+
+
+@pytest.mark.asyncio
+async def test_build_zip_emits_identical_agent_scaffolding():
+    """All three agent files are written with IDENTICAL content, driven off the
+    artifacts ACTUALLY present in this zip (incl. paginated contact-sheet pages),
+    with a brand summary (color + inferred role, display font) and a pointer to
+    the product-launch-video skill."""
+    doc = type("D", (), {})()
+    doc.id, doc.kb_id = "d1", "kb"
+    doc.profile = _full_scaffold_profile()
+    storage = AsyncMock()
+    storage.get = AsyncMock(return_value=b"BYTES")
+    with (
+        patch("parsers.capture.export.get_storage", new=AsyncMock(return_value=storage)),
+        patch("parsers.capture.export._image_keys",
+              new=AsyncMock(return_value={"i1": "images/kb/d1/a.png"})),
+    ):
+        from parsers.capture.export import build_hyperframes_zip
+        data = await build_hyperframes_zip(doc)
+    zf = zipfile.ZipFile(io.BytesIO(data))
+    names = set(zf.namelist())
+    assert "capture/AGENTS.md" in names
+    assert "capture/CLAUDE.md" in names
+    assert "capture/.cursorrules" in names
+    # No index.html (reference deliberately omits it).
+    assert "capture/index.html" not in names
+    agents = zf.read("capture/AGENTS.md").decode()
+    # Identical content across all three.
+    assert agents == zf.read("capture/CLAUDE.md").decode()
+    assert agents == zf.read("capture/.cursorrules").decode()
+
+    # Title + source + skill pointer.
+    assert "Acme Launch" in agents
+    assert "https://www.acme.com/launch" in agents
+    assert "product-launch-video" in agents
+
+    # Data-inventory table lists PRESENT artifacts.
+    assert "extracted/tokens.json" in agents
+    assert "extracted/design-styles.json" in agents      # present (quality full)
+    assert "extracted/shaders.json" in agents             # present
+    assert "extracted/page.html" in agents                # present (quality full)
+    # Paginated screenshot contact sheets both listed.
+    assert "screenshots/contact-sheet-1.jpg" in agents
+    assert "screenshots/contact-sheet-2.jpg" in agents
+    assert "assets/contact-sheet-1.jpg" in agents
+
+    # Brand summary: a top color with its inferred role + the display font.
+    assert "#0B0B0F" in agents
+    from parsers.capture.export import infer_color_role
+    assert infer_color_role("#0B0B0F") in agents          # role hint present
+    assert "Poppins" in agents
+
+
+@pytest.mark.asyncio
+async def test_agent_scaffolding_omits_absent_artifacts():
+    """A partial-quality profile without page.html / design-styles / shaders does
+    NOT list those artifacts (table is driven off the actual written members)."""
+    doc = type("D", (), {})()
+    doc.id, doc.kb_id = "d1", "kb"
+    doc.profile = {
+        "url": "https://acme.com/",
+        "capture_quality": "partial",
+        "colors_ranked": ["#112233"],
+        "fonts": {"display": {"family": "Inter", "files": [], "weights": [],
+                              "catalog_match": {"matched": False}, "stack": "Inter",
+                              "renderable": False, "sample_selector": "h1"},
+                  "body": {"family": "Inter", "files": [], "weights": [],
+                           "catalog_match": {"matched": False}, "stack": "Inter",
+                           "renderable": False, "sample_selector": "p"}},
+        "text": {"headline": "Acme"}, "spacing": {},
+        "assets": [], "screenshots": [],
+        # no design_styles / page_html_key / shaders
+    }
+    storage = AsyncMock()
+    storage.get = AsyncMock(return_value=b"BYTES")
+    with (
+        patch("parsers.capture.export.get_storage", new=AsyncMock(return_value=storage)),
+        patch("parsers.capture.export._image_keys", new=AsyncMock(return_value={})),
+    ):
+        from parsers.capture.export import build_hyperframes_zip
+        data = await build_hyperframes_zip(doc)
+    zf = zipfile.ZipFile(io.BytesIO(data))
+    agents = zf.read("capture/AGENTS.md").decode()
+    assert "extracted/tokens.json" in agents          # always present
+    assert "extracted/design-styles.json" not in agents
+    assert "extracted/page.html" not in agents
+    assert "extracted/shaders.json" not in agents
+    # Still identical across the three files + carries the skill pointer.
+    assert agents == zf.read("capture/CLAUDE.md").decode()
+    assert agents == zf.read("capture/.cursorrules").decode()
+    assert "product-launch-video" in agents
