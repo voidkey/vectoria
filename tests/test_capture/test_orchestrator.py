@@ -246,6 +246,122 @@ async def test_run_capture_downloads_svgs_to_assets_svgs_with_content_hash():
     assert len(put_keys) == 2
 
 
+@pytest.mark.asyncio
+async def test_run_capture_downloads_good_context_catalog_images():
+    """Only good-context, large-enough, non-junk catalog images are stored, with
+    a derived slug name; tracking pixels / tiny images are dropped; catalog
+    images are vision_status=skipped (vision scoped to named assets)."""
+    big = b"J" * 20000       # over capture_min_image_bytes
+    tiny = b"t" * 100        # under -> dropped
+    catalog = [
+        {"url": "https://x/img/hero-shot.jpg", "type": "Image", "aboveFold": True,
+         "contexts": ["img[src]"], "description": "Hero Product"},
+        {"url": "https://x/pixel/track.gif", "type": "Image",
+         "contexts": ["img[src]"]},  # junk (pixel) -> skipped
+        {"url": "https://x/img/spacer.png", "type": "Image",
+         "contexts": ["img[src]"]},  # too small -> skipped
+        {"url": "https://x/font.woff2", "type": "Font",
+         "contexts": ["css url()"]},  # wrong type -> skipped
+        {"url": "https://x/nav/menu.png", "type": "Image",
+         "contexts": ["onclick"]},   # no good context -> skipped
+    ]
+    raw = {
+        "final_url": "https://x/final",
+        "colors": {"samples": [{"color": "#0b0b0f", "area": 400000, "text": False}],
+                   "css_vars": {}, "theme_color": None},
+        "fonts": {"display": {"family": "Inter", "weight": 700, "selector": "h1"},
+                  "body": {"family": "Inter", "weight": 400, "selector": "p"},
+                  "face_srcs": {}},
+        "spacing": {"margins": [8], "paddings": [16], "radii": [8],
+                    "container_max_width": 1200, "section_gaps": []},
+        "sections": [], "text": {"headline": "Hi", "tagline": "", "ctas": [],
+                                 "full_text": ""},
+        "assets": {"logo": None, "hero": None, "og_image": None, "favicon": None,
+                   "video": None, "lottie": None},
+        "motion": {"libraries": [], "has_video_background": False, "has_canvas": False},
+    }
+    page = _fake_page(raw)
+
+    async def _catalog_eval(script, *a, **k):
+        if "assetMap" in script:
+            return list(catalog)
+        if "nearestCaption" in script:
+            return []
+        return raw
+    page.evaluate = _catalog_eval
+    deps = _FakeDeps(page, {})
+    cfg = _settings()
+
+    async def _fake_fetch(url, *, max_bytes):
+        if "hero-shot" in url:
+            return big, "image/jpeg"
+        if "spacer" in url:
+            return tiny, "image/png"
+        return None
+
+    from unittest.mock import patch
+    with patch("parsers.capture._assets.fetch_asset_bytes", new=_fake_fetch):
+        from parsers.capture.orchestrator import run_capture
+        outcome = await run_capture("https://x", "kb", "d1", cfg, deps)
+
+    img_refs = [a for a in outcome.profile.assets if a.kind == "image"]
+    assert len(img_refs) == 1
+    ref = img_refs[0]
+    assert ref.storage_key == "captures/kb/d1/assets/hero-product.jpg"
+    assert ref.url == "https://x/img/hero-shot.jpg"
+    assert ref.vision_status == "skipped"   # non-goal: no vision for bulk catalog images
+    put_keys = [c.args[0] for c in deps.storage.put.call_args_list]
+    assert "captures/kb/d1/assets/hero-product.jpg" in put_keys
+
+
+@pytest.mark.asyncio
+async def test_run_capture_catalog_image_cap_logs_truncation(caplog):
+    import logging as _logging
+    imgs = [{"url": f"https://x/img/pic{i}.png", "type": "Image",
+             "contexts": ["img[src]"]} for i in range(5)]
+    raw = {
+        "final_url": "https://x/final",
+        "colors": {"samples": [{"color": "#0b0b0f", "area": 400000, "text": False}],
+                   "css_vars": {}, "theme_color": None},
+        "fonts": {"display": {"family": "Inter", "weight": 700, "selector": "h1"},
+                  "body": {"family": "Inter", "weight": 400, "selector": "p"},
+                  "face_srcs": {}},
+        "spacing": {"margins": [8], "paddings": [16], "radii": [8],
+                    "container_max_width": 1200, "section_gaps": []},
+        "sections": [], "text": {"headline": "Hi", "tagline": "", "ctas": [],
+                                 "full_text": ""},
+        "assets": {"logo": None, "hero": None, "og_image": None, "favicon": None,
+                   "video": None, "lottie": None},
+        "motion": {"libraries": [], "has_video_background": False, "has_canvas": False},
+    }
+    page = _fake_page(raw)
+
+    async def _catalog_eval(script, *a, **k):
+        if "assetMap" in script:
+            return list(imgs)
+        if "nearestCaption" in script:
+            return []
+        return raw
+    page.evaluate = _catalog_eval
+    deps = _FakeDeps(page, {})
+    cfg = _settings()
+    cfg.capture_max_catalog_images = 2
+
+    async def _fake_fetch(url, *, max_bytes):
+        return b"J" * 20000, "image/png"
+
+    from unittest.mock import patch
+    with caplog.at_level(_logging.INFO, logger="parsers.capture.orchestrator"):
+        with patch("parsers.capture._assets.fetch_asset_bytes", new=_fake_fetch):
+            from parsers.capture.orchestrator import run_capture
+            outcome = await run_capture("https://x", "kb", "d1", cfg, deps)
+
+    img_refs = [a for a in outcome.profile.assets if a.kind == "image"]
+    assert len(img_refs) == 2   # capped
+    assert any("catalog image" in r.message.lower() and "3" in r.message
+               for r in caplog.records)
+
+
 def json_dumps(obj):
     import json
     return json.dumps(obj)

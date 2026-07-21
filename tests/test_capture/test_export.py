@@ -127,6 +127,35 @@ async def test_build_zip_routes_downloaded_svgs_by_basename():
     assert "capture/assets/svg.svg" not in names
 
 
+@pytest.mark.asyncio
+async def test_build_zip_routes_catalog_images_by_basename():
+    """kind==image AssetRefs (bulk catalog images) route to
+    capture/assets/<basename-of-storage_key> (derived slug), not image.<fmt>."""
+    doc = type("D", (), {})()
+    doc.id, doc.kb_id = "d1", "kb"
+    doc.profile = {
+        "fonts": {}, "text": {"headline": "T"}, "screenshots": [], "spacing": {},
+        "assets": [
+            {"kind": "image", "storage_key": "captures/kb/d1/assets/hero-product.jpg",
+             "format": "jpg", "url": "https://x/a.jpg", "vision_status": "skipped"},
+            {"kind": "image", "storage_key": "captures/kb/d1/assets/pricing-table.png",
+             "format": "png", "url": "https://x/b.png", "vision_status": "skipped"},
+        ],
+    }
+    storage = AsyncMock()
+    storage.get = AsyncMock(return_value=b"BYTES")
+    with (
+        patch("parsers.capture.export.get_storage", new=AsyncMock(return_value=storage)),
+        patch("parsers.capture.export._image_keys", new=AsyncMock(return_value={})),
+    ):
+        from parsers.capture.export import build_hyperframes_zip
+        data = await build_hyperframes_zip(doc)
+    names = set(zipfile.ZipFile(io.BytesIO(data)).namelist())
+    assert "capture/assets/hero-product.jpg" in names
+    assert "capture/assets/pricing-table.png" in names
+    assert "capture/assets/image.jpg" not in names  # not collapsed
+
+
 def test_official_tokens_colors_fallback_when_ranked_empty():
     """Legacy/partial profiles without colors_ranked fall back to the role
     tokens' hexes so downstream never gets an empty `colors`; colorStats -> []."""

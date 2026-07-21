@@ -29,6 +29,22 @@ _IMG_EXT = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp",
             "image/svg+xml": ".svg", "image/gif": ".gif",
             "image/x-icon": ".ico", "image/vnd.microsoft.icon": ".ico"}
 _BIN_EXT = {"video/mp4": ".mp4", "video/webm": ".webm", "application/json": ".json"}
+# Catalog-image download gate (ported from hyperframes assetDownloader.ts): only
+# real content images (Image/Background) reached through a standard image context,
+# minus obvious tracking/junk URLs and favicons (handled separately above).
+_CATALOG_IMAGE_TYPES = ("Image", "Background")
+_CATALOG_GOOD_CONTEXTS = frozenset(
+    ("img[src]", "img[srcset]", "video[poster]", "source[srcset]", "data-src", "css url()"))
+_CATALOG_JUNK_SUBSTR = ("pixel", "beacon", "analytics")
+
+
+def _catalog_image_ext(url: str) -> str:
+    """Extension from the URL path (``.jpg`` fallback), matching the reference's
+    ``pathExt && pathExt.length <= 5 ? pathExt : ".jpg"``."""
+    from urllib.parse import urlsplit
+    tail = urlsplit(url).path.rsplit("/", 1)[-1]
+    ext = ("." + tail.rsplit(".", 1)[-1]) if "." in tail else ""
+    return ext if 0 < len(ext) <= 5 else ".jpg"
 
 
 def _asset_gets_vision(kind: str, fname: str) -> bool:
@@ -74,7 +90,8 @@ async def run_capture(url: str, kb_id: str, doc_id: str, cfg, deps: CaptureDeps)
 
     Imports are function-local (matches the original _capture_core) so tests that
     patch parsers.capture._assets.fetch_asset_bytes keep biting at call time."""
-    from parsers.capture._assets import fetch_asset_bytes, image_ref_from_bytes
+    from parsers.capture._assets import (
+        derive_asset_name, fetch_asset_bytes, image_ref_from_bytes)
     from parsers.capture._colors import dominant_screenshot_hex, process_colors
     from parsers.capture._design_styles import extract_design_styles
     from parsers.capture._extract import run_extract
@@ -263,6 +280,61 @@ async def run_capture(url: str, kb_id: str, doc_id: str, cfg, deps: CaptureDeps)
         key = f"captures/{kb_id}/{doc_id}/assets/{kind}{ext}"
         await storage.put(key, data, content_type=ctype or "application/octet-stream")
         profile_assets.append(AssetRef(kind=kind, storage_key=key, format=ext.lstrip(".")))
+
+    # ---- good-context catalog images (beyond the 4 named kinds) ----
+    # Port of hyperframes assetDownloader.ts's catalog-image pass: keep only real
+    # content images reached through a standard image context, drop tracking/junk
+    # + favicons, fetch (SSRF+size-capped) and gate on a min-size threshold, then
+    # name by page context (derive_asset_name). Dedup by URL; skip URLs already
+    # pulled as a named asset. Best-effort per image — one failure never aborts.
+    #
+    # NON-GOAL (explicit): these bulk catalog images get NO vision description —
+    # vision_status="skipped". Vision stays scoped to the named logo/hero/og assets
+    # above (which flow through DocumentImage rows the analyze_images task backfills);
+    # these are plain S3 puts with no ImageRef, so there's nothing for vision to key on.
+    used_names: set[str] = set()
+    good_catalog = []
+    for cat in asset_catalog:
+        c_url = cat.get("url", "")
+        if not c_url.startswith("http") or c_url in seen_urls:
+            continue
+        if cat.get("type") not in _CATALOG_IMAGE_TYPES:
+            continue
+        lurl = c_url.lower()
+        if any(j in lurl for j in _CATALOG_JUNK_SUBSTR) or "/favicon" in lurl:
+            continue
+        if not (_CATALOG_GOOD_CONTEXTS & set(cat.get("contexts") or [])):
+            continue
+        good_catalog.append(cat)
+    capped = good_catalog[: cfg.capture_max_catalog_images]
+    if len(good_catalog) > len(capped):
+        logger.info("capture: catalog image cap dropped %d of %d good-context images",
+                    len(good_catalog) - len(capped), len(good_catalog))
+    for cat in capped:
+        c_url = cat["url"]
+        if c_url in seen_urls:
+            continue
+        seen_urls.add(c_url)
+        got = await fetch_asset_bytes(c_url, max_bytes=cfg.capture_max_asset_bytes)
+        if got is None:
+            continue
+        data, ctype = got
+        ext = _catalog_image_ext(c_url)
+        is_svg = ext == ".svg" or ".svg" in c_url.lower()
+        min_size = cfg.capture_min_svg_bytes if is_svg else cfg.capture_min_image_bytes
+        if len(data) < min_size:
+            continue
+        name = derive_asset_name(cat, used_names)
+        used_names.add(name)
+        key = f"captures/{kb_id}/{doc_id}/assets/{name}{ext}"
+        try:
+            await storage.put(key, data, content_type=ctype or "application/octet-stream")
+        except Exception:
+            logger.info("capture: catalog image store failed for %s", key, exc_info=True)
+            continue
+        profile_assets.append(AssetRef(
+            kind="image", storage_key=key, url=c_url, format=ext.lstrip("."),
+            description="", vision_status="skipped"))
 
     # ---- fonts (catalog match; download woff2 on miss) ----
     face_srcs = raw.get("fonts", {}).get("face_srcs", {})
