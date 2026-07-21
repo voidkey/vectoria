@@ -404,3 +404,75 @@ def test_official_tokens_no_synthetic_color_stats_helper():
     """The synthetic _color_stats projection is gone."""
     import parsers.capture.export as export_mod
     assert not hasattr(export_mod, "_color_stats")
+
+
+@pytest.mark.asyncio
+async def test_build_zip_emits_animations_and_shaders_lean():
+    """A profile with an animation_catalog + shaders emits the LEAN
+    animations.json (summary + named + <=10 keyframed) and shaders.json."""
+    catalog = {
+        "webAnimations": [
+            {"type": "Animation", "playState": "running",
+             "keyframes": [{"opacity": 0}, {"opacity": 1}]},
+            {"type": "Animation", "playState": "idle"},  # no keyframes -> dropped
+        ],
+        "cssDeclarations": [
+            {"selector": ".a", "animation": {"name": "fade", "duration": "1s",
+                                             "easing": "ease"}},
+            {"selector": ".b", "animation": {"name": "fade"}},   # dup name
+            {"selector": ".c", "transition": {"property": "opacity", "duration": "1s"}},
+        ],
+        "scrollTargets": [{"selector": "#s", "rect": {"top": 0, "height": 1, "width": 1}},
+                          {"selector": "#t", "rect": {"top": 5, "height": 1, "width": 1}}],
+        "cdpAnimations": [{"id": "1", "name": "n", "type": "CSSTransition"}],
+        "summary": {"webAnimations": 2, "cssDeclarations": 3, "scrollTargets": 2,
+                    "cdpAnimations": 1, "canvases": 4},
+    }
+    shaders = [{"type": "vertex", "source": "uniform mat4 modelViewMatrix;"},
+               {"type": "fragment", "source": "void main(){}"}]
+    doc = type("D", (), {})()
+    doc.id, doc.kb_id = "d1", "kb"
+    doc.profile = {
+        "fonts": {}, "text": {"headline": "T"}, "screenshots": [], "spacing": {},
+        "assets": [], "animation_catalog": catalog, "shaders": shaders,
+    }
+    storage = AsyncMock()
+    storage.get = AsyncMock(return_value=b"BYTES")
+    with (
+        patch("parsers.capture.export.get_storage", new=AsyncMock(return_value=storage)),
+        patch("parsers.capture.export._image_keys", new=AsyncMock(return_value={})),
+    ):
+        from parsers.capture.export import build_hyperframes_zip
+        data = await build_hyperframes_zip(doc)
+    zf = zipfile.ZipFile(io.BytesIO(data))
+    names = set(zf.namelist())
+    assert "capture/extracted/animations.json" in names
+    assert "capture/extracted/shaders.json" in names
+    anims = json.loads(zf.read("capture/extracted/animations.json"))
+    assert anims["summary"] == catalog["summary"]
+    assert anims["namedAnimations"] == ["fade"]            # deduped
+    assert anims["scrollTriggeredElements"] == 2
+    assert len(anims["representativeAnimations"]) == 1     # only keyframed kept
+    assert json.loads(zf.read("capture/extracted/shaders.json")) == shaders
+
+
+@pytest.mark.asyncio
+async def test_build_zip_omits_animations_and_shaders_when_absent():
+    """Old profiles (no animation_catalog / empty shaders) omit both files."""
+    doc = type("D", (), {})()
+    doc.id, doc.kb_id = "d1", "kb"
+    doc.profile = {
+        "fonts": {}, "text": {"headline": "T"}, "screenshots": [], "spacing": {},
+        "assets": [],  # no animation_catalog / shaders keys at all
+    }
+    storage = AsyncMock()
+    storage.get = AsyncMock(return_value=b"BYTES")
+    with (
+        patch("parsers.capture.export.get_storage", new=AsyncMock(return_value=storage)),
+        patch("parsers.capture.export._image_keys", new=AsyncMock(return_value={})),
+    ):
+        from parsers.capture.export import build_hyperframes_zip
+        data = await build_hyperframes_zip(doc)
+    names = set(zipfile.ZipFile(io.BytesIO(data)).namelist())
+    assert "capture/extracted/animations.json" not in names
+    assert "capture/extracted/shaders.json" not in names

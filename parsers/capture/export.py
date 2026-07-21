@@ -107,6 +107,26 @@ def _sections_out(sections: list[dict]) -> list[dict]:
             for s in sections]
 
 
+def _lean_animations(catalog: dict) -> dict:
+    """Project the raw AnimationCatalog into the LEAN animations.json shape the
+    agent reads (ported from index.ts): summary + the unique named CSS animations
+    + a scroll-trigger count + ≤10 keyframed Web Animations (the entries most
+    useful for recreation). Avoids dumping hundreds of raw CSS declarations."""
+    named: list[str] = []
+    for d in catalog.get("cssDeclarations") or []:
+        name = ((d.get("animation") or {}).get("name") or "").strip()
+        if name and name not in named:
+            named.append(name)
+    representative = [a for a in (catalog.get("webAnimations") or [])
+                      if a.get("keyframes")][:10]
+    return {
+        "summary": catalog.get("summary", {}),
+        "namedAnimations": named,
+        "scrollTriggeredElements": len(catalog.get("scrollTargets") or []),
+        "representativeAnimations": representative,
+    }
+
+
 # Cap on synthesized @font-face rules (mirrors hyperframes MAX_TOTAL_FONTS).
 _MAX_TOTAL_FONTS = 30
 
@@ -220,6 +240,19 @@ async def build_hyperframes_zip(doc) -> bytes:
         if profile.get("design_styles"):
             zf.writestr("capture/extracted/design-styles.json",
                         json.dumps(profile["design_styles"], ensure_ascii=False, indent=2))
+        # extracted/animations.json — LEAN animation catalog (summary + named +
+        # ≤10 keyframed Web Animations). Only when a catalog was collected
+        # (capture_quality == full); absent -> file omitted.
+        anim_catalog = profile.get("animation_catalog")
+        if anim_catalog:
+            zf.writestr("capture/extracted/animations.json",
+                        json.dumps(_lean_animations(anim_catalog),
+                                   ensure_ascii=False, indent=2))
+        # extracted/shaders.json — the deduped captured GLSL. Omitted when empty.
+        shaders = profile.get("shaders") or []
+        if shaders:
+            zf.writestr("capture/extracted/shaders.json",
+                        json.dumps(shaders, ensure_ascii=False, indent=2))
 
         # assets/fonts/fonts.css — synthesized @font-face stylesheet pointing at
         # the captured woff2 files (staged alongside at capture/assets/fonts/), so
