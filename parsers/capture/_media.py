@@ -453,10 +453,13 @@ def merge_video_manifest(network_urls: set, dom_videos: list, cap: int) -> list[
     lands once as the richer DOM entry. Deduped by URL, then capped (DOM entries
     first so the cap never drops a rich entry in favour of a thin one).
 
-    Each entry has the verbatim key set ``{url, source, width, height, poster,
-    download, preview}``: ``source`` is "dom" or "network"; ``download`` marks a
-    direct-ext body the orchestrator may fetch (False for HLS/DASH/blob/data);
-    ``preview`` starts None and is filled by the orchestrator's screenshot pass.
+    Each entry leaves this function with the key set ``{url, source, width,
+    height, poster, download, preview}``: ``source`` is "dom" or "network";
+    ``download`` marks a direct-ext body the orchestrator may fetch (False for
+    HLS/DASH/blob/data); ``preview`` starts None and is filled by the
+    orchestrator's screenshot pass. The orchestrator ALSO annotates each entry it
+    downloads in place with ``local_key`` and ``downloaded`` (both serialized into
+    video-manifest.json) — those two keys are added downstream, not here.
     Pure — no I/O."""
     by_url: dict[str, dict] = {}
     for d in dom_videos or []:

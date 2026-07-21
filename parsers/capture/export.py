@@ -193,6 +193,13 @@ def _asset_zip_path(a: dict, storage_key: str) -> str:
     basename = storage_key.rsplit("/", 1)[-1]
     if "/assets/svgs/" in storage_key:
         return f"capture/assets/svgs/{basename}"
+    # Phase 7 video manifest: downloaded bodies + preview frames are keyed by their
+    # already-unique storage_key basename (video-N.ext / video-N-preview.png) under
+    # the videos/ tree — many of them can't collapse on {kind}.{format}.
+    if a.get("kind") == "video_preview" or "/assets/videos/previews/" in storage_key:
+        return f"capture/assets/videos/previews/{basename}"
+    if a.get("kind") == "video" or "/assets/videos/" in storage_key:
+        return f"capture/assets/videos/{basename}"
     if a.get("kind") == "image":
         return f"capture/assets/{basename}"
     return f"capture/assets/{a.get('kind')}.{a.get('format', 'bin')}"
@@ -253,6 +260,14 @@ async def build_hyperframes_zip(doc) -> bytes:
         if shaders:
             zf.writestr("capture/extracted/shaders.json",
                         json.dumps(shaders, ensure_ascii=False, indent=2))
+        # extracted/video-manifest.json — two-layer (network + DOM) video manifest
+        # (Phase 7). Carries per-video metadata + preview/local-body paths; the
+        # binaries themselves are routed below (kind=="video"/"video_preview").
+        # Omitted for old profiles / pages with no discovered videos.
+        video_manifest = profile.get("video_manifest")
+        if video_manifest:
+            zf.writestr("capture/extracted/video-manifest.json",
+                        json.dumps(video_manifest, ensure_ascii=False, indent=2))
 
         # assets/fonts/fonts.css — synthesized @font-face stylesheet pointing at
         # the captured woff2 files (staged alongside at capture/assets/fonts/), so

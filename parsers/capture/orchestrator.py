@@ -476,6 +476,11 @@ async def run_capture(url: str, kb_id: str, doc_id: str, cfg, deps: CaptureDeps)
         if got is None:
             continue
         data, ctype = got
+        # Ext from content-type, else from the URL. Reusing the image-ext helper is
+        # safe here: we only reach this block when entry["download"] is True, which
+        # means is_downloadable_video_url() already confirmed the URL path ends in a
+        # direct video ext (.mp4/.webm/.mov/.m4v), so the helper's .jpg fallback is
+        # unreachable and it always returns the real video ext.
         ext = _VIDEO_CT_EXT.get((ctype or "").lower()) or _catalog_image_ext(v_url)
         vkey = f"captures/{kb_id}/{doc_id}/assets/videos/video-{idx}{ext}"
         try:

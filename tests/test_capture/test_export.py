@@ -476,3 +476,71 @@ async def test_build_zip_omits_animations_and_shaders_when_absent():
     names = set(zipfile.ZipFile(io.BytesIO(data)).namelist())
     assert "capture/extracted/animations.json" not in names
     assert "capture/extracted/shaders.json" not in names
+
+
+@pytest.mark.asyncio
+async def test_build_zip_emits_video_manifest_and_routes_video_assets():
+    """A profile with a video_manifest emits capture/extracted/video-manifest.json;
+    kind==video bodies route to capture/assets/videos/<basename> and kind==
+    video_preview frames to capture/assets/videos/previews/<basename>."""
+    doc = type("D", (), {})()
+    doc.id, doc.kb_id = "d1", "kb"
+    doc.profile = {
+        "fonts": {}, "text": {"headline": "T"}, "screenshots": [], "spacing": {},
+        "video_manifest": {
+            "videos": [{"url": "https://x/hero.mp4", "source": "dom", "width": 1280,
+                        "height": 720, "poster": "", "download": True,
+                        "preview": "assets/videos/previews/video-0-preview.png",
+                        "local_key": "captures/kb/d1/assets/videos/video-0.mp4",
+                        "downloaded": True}],
+            "meta": {"discovered": 1, "downloaded": 1, "previews": 1},
+        },
+        "assets": [
+            {"kind": "video", "storage_key": "captures/kb/d1/assets/videos/video-0.mp4",
+             "format": "mp4", "url": "https://x/hero.mp4"},
+            {"kind": "video_preview",
+             "storage_key": "captures/kb/d1/assets/videos/previews/video-0-preview.png",
+             "format": "png", "url": "https://x/hero.mp4"},
+        ],
+    }
+    storage = AsyncMock()
+    storage.get = AsyncMock(return_value=b"BYTES")
+    with (
+        patch("parsers.capture.export.get_storage", new=AsyncMock(return_value=storage)),
+        patch("parsers.capture.export._image_keys", new=AsyncMock(return_value={})),
+    ):
+        from parsers.capture.export import build_hyperframes_zip
+        data = await build_hyperframes_zip(doc)
+    zf = zipfile.ZipFile(io.BytesIO(data))
+    names = set(zf.namelist())
+    assert "capture/extracted/video-manifest.json" in names
+    manifest = json.loads(zf.read("capture/extracted/video-manifest.json"))
+    assert manifest["videos"][0]["url"] == "https://x/hero.mp4"
+    assert manifest["meta"]["downloaded"] == 1
+    # video body + preview routed to the videos/ tree by basename.
+    assert "capture/assets/videos/video-0.mp4" in names
+    assert "capture/assets/videos/previews/video-0-preview.png" in names
+    # not collapsed to {kind}.{format}
+    assert "capture/assets/video.mp4" not in names
+    assert "capture/assets/video_preview.png" not in names
+
+
+@pytest.mark.asyncio
+async def test_build_zip_omits_video_manifest_when_absent():
+    """Old profiles (no video_manifest) omit the JSON file."""
+    doc = type("D", (), {})()
+    doc.id, doc.kb_id = "d1", "kb"
+    doc.profile = {
+        "fonts": {}, "text": {"headline": "T"}, "screenshots": [], "spacing": {},
+        "assets": [],
+    }
+    storage = AsyncMock()
+    storage.get = AsyncMock(return_value=b"BYTES")
+    with (
+        patch("parsers.capture.export.get_storage", new=AsyncMock(return_value=storage)),
+        patch("parsers.capture.export._image_keys", new=AsyncMock(return_value={})),
+    ):
+        from parsers.capture.export import build_hyperframes_zip
+        data = await build_hyperframes_zip(doc)
+    names = set(zipfile.ZipFile(io.BytesIO(data)).namelist())
+    assert "capture/extracted/video-manifest.json" not in names

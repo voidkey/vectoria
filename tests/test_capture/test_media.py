@@ -4,6 +4,7 @@ from parsers.capture._media import (
     cap_items,
     catalog_assets,
     dedupe_srcset_variants,
+    make_video_response_handler,
     merge_video_manifest,
     video_descriptors,
 )
@@ -191,3 +192,107 @@ def test_merge_video_manifest_caps_total():
 
 def test_merge_video_manifest_empty():
     assert merge_video_manifest(set(), [], cap=6) == []
+
+
+# ---- make_video_response_handler / _looks_like_video_response ----
+#
+# The response handler is the hottest, trickiest code in the phase: it decides
+# which network responses count as downloadable videos, entirely from a URL +
+# headers pair, and MUST NOT raise into Playwright's event loop. The integration
+# harness only ever emits well-formed video/* responses, so these direct unit
+# tests drive each discrimination branch with a hand-built fake response.
+
+
+class _FakeResponse:
+    """Minimal stand-in for a Playwright Response: exposes ``.url`` and ``.headers``
+    (a plain dict). ``raise_on_headers`` makes ``.headers`` access blow up, to prove
+    the handler swallows a malformed response object."""
+
+    def __init__(self, url, headers=None, *, raise_on_headers=False):
+        self.url = url
+        self._headers = headers or {}
+        self._raise_on_headers = raise_on_headers
+
+    @property
+    def headers(self):
+        if self._raise_on_headers:
+            raise RuntimeError("boom: headers unavailable")
+        return self._headers
+
+
+def test_handler_adds_direct_mp4_with_large_content_length():
+    discovered: set = set()
+    handler = make_video_response_handler(discovered)
+    handler(_FakeResponse(
+        "https://x.com/hero.mp4",
+        {"content-type": "video/mp4", "content-length": "5000000"}))
+    assert discovered == {"https://x.com/hero.mp4"}
+
+
+def test_handler_adds_direct_mp4_with_unknown_content_length():
+    # No content-length header at all → clen defaults to 0 → not treated as tiny.
+    discovered: set = set()
+    handler = make_video_response_handler(discovered)
+    handler(_FakeResponse("https://x.com/hero.mp4", {"content-type": "video/mp4"}))
+    assert discovered == {"https://x.com/hero.mp4"}
+
+
+def test_handler_adds_video_content_type_on_extensionless_url():
+    discovered: set = set()
+    handler = make_video_response_handler(discovered)
+    handler(_FakeResponse(
+        "https://x.com/stream/segment",
+        {"content-type": "video/webm", "content-length": "900000"}))
+    assert discovered == {"https://x.com/stream/segment"}
+
+
+def test_handler_skips_non_video_content_type():
+    discovered: set = set()
+    handler = make_video_response_handler(discovered)
+    handler(_FakeResponse("https://x.com/pic", {"content-type": "image/png",
+                                                "content-length": "9000"}))
+    handler(_FakeResponse("https://x.com/page", {"content-type": "text/html",
+                                                 "content-length": "9000"}))
+    assert discovered == set()
+
+
+def test_handler_skips_tiny_body():
+    # 0 < content-length < 100 → likely error page / tracking beacon, skip.
+    discovered: set = set()
+    handler = make_video_response_handler(discovered)
+    handler(_FakeResponse(
+        "https://x.com/tiny.mp4",
+        {"content-type": "video/mp4", "content-length": "42"}))
+    assert discovered == set()
+
+
+def test_handler_skips_non_http_url():
+    discovered: set = set()
+    handler = make_video_response_handler(discovered)
+    handler(_FakeResponse("blob:https://x.com/abc",
+                          {"content-type": "video/mp4", "content-length": "5000000"}))
+    handler(_FakeResponse("data:video/mp4;base64,AAAA",
+                          {"content-type": "video/mp4"}))
+    assert discovered == set()
+
+
+def test_handler_swallows_headers_access_raising():
+    discovered: set = set()
+    handler = make_video_response_handler(discovered)
+    # A response whose .headers raises must not bubble out; when the content-type
+    # is thus unknown, the URL ext still classifies it — .mp4 → added; note the
+    # handler itself must never raise.
+    resp = _FakeResponse("https://x.com/clip.mp4", raise_on_headers=True)
+    handler(resp)  # must not raise
+    # Ext-based classification still fires (headers unreadable → treated as {}),
+    # and with no readable content-length the tiny-body skip never triggers.
+    assert discovered == {"https://x.com/clip.mp4"}
+
+
+def test_handler_swallows_headers_raising_leaves_set_unchanged_for_non_video():
+    # Same raising-headers case, but an extensionless URL → nothing to classify on
+    # → set stays unchanged, and still no exception escapes.
+    discovered: set = set()
+    handler = make_video_response_handler(discovered)
+    handler(_FakeResponse("https://x.com/opaque", raise_on_headers=True))
+    assert discovered == set()
