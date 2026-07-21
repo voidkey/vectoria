@@ -1386,3 +1386,77 @@ def _eval_router_with_catalog(raw, catalog):
             return catalog
         return await base(script, *args, **kwargs)
     return _run
+
+
+# ── Phase 8: SVG contact sheet (best-effort browser raster) ─────────────────
+def _svg_png_b64(color=(2, 3, 4)) -> str:
+    import base64, io as _io
+    from PIL import Image
+    buf = _io.BytesIO()
+    Image.new("RGB", (20, 20), color).save(buf, format="PNG")
+    return base64.b64encode(buf.getvalue()).decode()
+
+
+def _raw_with_svgs():
+    raw = _full_quality_raw()
+    raw["svgs"] = [{"outerHTML": "<svg width='40'/>", "label": "logo", "isLogo": True,
+                    "viewBox": "", "width": 40, "height": 40},
+                   {"outerHTML": "<svg width='40'/>", "label": "menu", "isLogo": False,
+                    "viewBox": "", "width": 40, "height": 40}]
+    return raw
+
+
+def _eval_router_svg(raw, raster):
+    """Default router + SVG raster branch (_SVG_RASTER_JS -> `raster`, a value or
+    a callable that may raise)."""
+    base = _eval_router(raw)
+
+    async def _run(script, *args, **kwargs):
+        if "createObjectURL" in script:        # _SVG_RASTER_JS
+            if callable(raster):
+                return raster()
+            return raster
+        return await base(script, *args, **kwargs)
+    return _run
+
+
+@pytest.mark.asyncio
+async def test_run_capture_builds_svg_contact_sheet_when_page_rasters():
+    raw = _raw_with_svgs()
+    page = _fake_page(raw)
+    page.screenshot = AsyncMock(return_value=_real_png())
+    page.evaluate = _eval_router_svg(raw, _svg_png_b64())
+    deps = _FakeDeps(page, {})
+
+    from parsers.capture.orchestrator import run_capture
+    outcome = await run_capture("https://x", "kb", "d1", _settings(), deps)
+
+    svg_sheets = [a for a in outcome.profile.assets
+                  if a.kind == "contact_sheet" and "/assets/svgs/contact-sheet-" in a.storage_key]
+    assert svg_sheets, "expected an SVG contact sheet"
+
+
+@pytest.mark.asyncio
+async def test_run_capture_svg_sheet_degrades_when_raster_unavailable(caplog):
+    raw = _raw_with_svgs()
+    page = _fake_page(raw)
+    page.screenshot = AsyncMock(return_value=_real_png())
+
+    def _boom():
+        raise RuntimeError("no canvas in this env")
+    page.evaluate = _eval_router_svg(raw, _boom)
+    deps = _FakeDeps(page, {})
+
+    import logging
+    from parsers.capture.orchestrator import run_capture
+    with caplog.at_level(logging.INFO):
+        outcome = await run_capture("https://x", "kb", "d1", _settings(), deps)
+
+    # No SVG sheet; scroll sheet (pure Pillow) still built; degradation logged.
+    svg_sheets = [a for a in outcome.profile.assets
+                  if a.kind == "contact_sheet" and "/assets/svgs/" in a.storage_key]
+    assert svg_sheets == []
+    assert any("svg contact sheet skipped" in r.message for r in caplog.records)
+    scroll = [a for a in outcome.profile.assets
+              if a.kind == "contact_sheet" and "/screenshots/" in a.storage_key]
+    assert scroll, "scroll sheet must still build even when SVG raster degrades"

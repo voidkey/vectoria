@@ -164,7 +164,8 @@ async def _save_lotties(urls: list, kb_id: str, doc_id: str, cfg, storage) -> tu
             continue
         data, _ctype = got
         try:
-            result = lottie_json_from_bytes(u, data)
+            result = lottie_json_from_bytes(
+                u, data, max_uncompressed=cfg.capture_max_lottie_bytes)
         except Exception:
             logger.info("capture: lottie parse failed for %s", u, exc_info=True)
             continue
@@ -243,7 +244,7 @@ async def run_capture(url: str, kb_id: str, doc_id: str, cfg, deps: CaptureDeps)
     from parsers.capture._html import extract_page_html
     from parsers.capture._media import (
         catalog_assets, make_video_response_handler, merge_video_manifest,
-        render_lottie_previews, video_descriptors)
+        rasterize_svgs, render_lottie_previews, video_descriptors)
     from parsers.capture._quality import assess_quality
     from parsers.capture._screenshots import (
         NEUTRALIZE_ANIMATION_CSS, capture_screenshots, prepare_page)
@@ -286,6 +287,7 @@ async def run_capture(url: str, kb_id: str, doc_id: str, cfg, deps: CaptureDeps)
         lottie_refs: list = []            # kind="lottie_json" AssetRefs
         lottie_entries: list = []         # lottie-manifest entries (+ transient _parsed)
         lottie_preview_pngs: dict = {}    # entry basename -> preview PNG bytes
+        svg_raster_items: list = []       # [(png_bytes, basename)] for the SVG sheet
         try:
             try:
                 await page.goto(url, wait_until="load",
@@ -374,6 +376,17 @@ async def run_capture(url: str, kb_id: str, doc_id: str, cfg, deps: CaptureDeps)
                     page_html = await extract_page_html(page)  # MUTATES DOM — must be last
                 except Exception:
                     logger.info("capture: page.html extract failed for %s", url, exc_info=True)
+            # SVG contact-sheet rasterization: draw each captured SVG's markup to a
+            # 200px PNG via the live page (best-effort — Pillow has no SVG rasterizer;
+            # we add no cairosvg). page.evaluate only (no set_content), so it does NOT
+            # mutate the visible DOM, but it MUST precede the lottie preview's
+            # set_content below (which wipes the page). Any failure LOGS + yields []
+            # (no SVG sheet), never aborts.
+            try:
+                svg_raster_items = await rasterize_svgs(
+                    page, raw.get("svgs") or [], cap=cfg.capture_max_svg_sheet)
+            except Exception:
+                logger.info("svg contact sheet skipped: %s", url, exc_info=True)
             # Lotties: multi-source discovery (extractor: raw["assets"]["lotties"] +
             # legacy single `lottie`) -> download + dotLottie unzip + validate + store
             # the animation JSON, then a BEST-EFFORT in-page mid-frame preview render
@@ -717,6 +730,13 @@ async def run_capture(url: str, kb_id: str, doc_id: str, cfg, deps: CaptureDeps)
         await _store_sheets(asset_pages, "assets")
     except Exception:
         logger.info("capture: asset contact sheet failed for %s", url, exc_info=True)
+    # SVG contact sheet (5 cols, 15/page, basename labels) from the best-effort
+    # in-page rasters captured above. Empty when rasterization degraded (logged).
+    try:
+        svg_pages = build_contact_sheet(svg_raster_items, cols=5, per_page=15, thumb_w=200)
+        await _store_sheets(svg_pages, "assets/svgs")
+    except Exception:
+        logger.info("capture: svg contact sheet failed for %s", url, exc_info=True)
 
     # ---- fonts (catalog match; download woff2 on miss + bounded site face set) ----
     from parsers.capture._font_metadata import font_file_metadata

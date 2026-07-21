@@ -12,6 +12,7 @@ from parsers.capture._media import (
     lottie_manifest_entry,
     make_video_response_handler,
     merge_video_manifest,
+    rasterize_svgs,
     render_lottie_previews,
     video_descriptors,
 )
@@ -72,6 +73,30 @@ def test_lottie_json_dotlottie_without_animation_json_returns_none():
     with zipfile.ZipFile(buf, "w") as zf:
         zf.writestr("manifest.json", "{}")
     assert lottie_json_from_bytes("https://x/a.lottie", buf.getvalue()) is None
+
+
+def test_lottie_json_rejects_zip_bomb_member_over_uncompressed_cap():
+    # A crafted dotLottie whose animation member decompresses far past the cap must
+    # be skipped BEFORE zf.read() (guarding a zip-decompression bomb): the compressed
+    # body is small, but ZipInfo.file_size (central directory) exceeds max_uncompressed.
+    big_anim = _lottie(layers=[{"ty": 4, "pad": "x" * 200_000}])  # highly compressible
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("manifest.json", json.dumps({"animations": [{"id": "data"}]}))
+        zf.writestr("animations/data.json", json.dumps(big_anim))
+    zip_bytes = buf.getvalue()
+    # Compressed body is tiny, but the member's declared uncompressed size is huge.
+    assert len(zip_bytes) < 4096
+    with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+        assert zf.getinfo("animations/data.json").file_size > 4096
+    # Cap set below the member's uncompressed size -> rejected (no member valid),
+    # and the guard fires from ZipInfo.file_size without decompressing.
+    assert lottie_json_from_bytes(
+        "https://x/a.lottie", zip_bytes, max_uncompressed=4096) is None
+    # A normal small lottie still parses with the same tiny cap.
+    small = _dotlottie(_lottie(nm="Small"), path="animations/data.json")
+    out = lottie_json_from_bytes("https://x/a.lottie", small, max_uncompressed=4096)
+    assert out is not None and out[1]["nm"] == "Small"
 
 
 def test_lottie_manifest_entry_shape():
@@ -444,3 +469,74 @@ async def test_render_lottie_previews_skips_oversized():
 async def test_render_lottie_previews_empty_input_returns_empty():
     out = await render_lottie_previews(_FakeRenderPage(), [], max_bytes=2_000_000)
     assert out == {}
+
+
+# ── Phase 8: rasterize_svgs (fake page, best-effort browser raster) ─────────
+def _png_b64(color=(1, 2, 3)) -> str:
+    import base64
+    from PIL import Image
+    buf = io.BytesIO()
+    Image.new("RGB", (20, 20), color).save(buf, format="PNG")
+    return base64.b64encode(buf.getvalue()).decode()
+
+
+class _FakeRasterPage:
+    def __init__(self, results):
+        # results: a list returned per successive evaluate call, or an Exception
+        # instance to raise on the first call.
+        self._results = results
+        self.calls = 0
+
+    async def evaluate(self, script, *args):
+        if isinstance(self._results, Exception):
+            raise self._results
+        r = self._results[self.calls] if self.calls < len(self._results) else ""
+        self.calls += 1
+        return r
+
+
+@pytest.mark.asyncio
+async def test_rasterize_svgs_returns_png_items():
+    svgs = [{"outerHTML": "<svg/>", "label": "logo", "isLogo": True},
+            {"outerHTML": "<svg/>", "label": "menu"}]
+    page = _FakeRasterPage([_png_b64(), _png_b64((9, 9, 9))])
+    out = await rasterize_svgs(page, svgs, cap=10)
+    assert [name for _b, name in out] == ["logo", "menu"]
+    assert all(isinstance(b, bytes) and b for b, _n in out)
+
+
+@pytest.mark.asyncio
+async def test_rasterize_svgs_dedups_by_basename():
+    svgs = [{"outerHTML": "<svg/>", "label": "logo"},
+            {"outerHTML": "<svg/>", "label": "logo"}]   # same basename
+    page = _FakeRasterPage([_png_b64(), _png_b64()])
+    out = await rasterize_svgs(page, svgs, cap=10)
+    assert len(out) == 1
+
+
+@pytest.mark.asyncio
+async def test_rasterize_svgs_degrades_when_page_cannot_raster(caplog):
+    import logging
+    svgs = [{"outerHTML": "<svg/>", "label": "logo"}]
+    page = _FakeRasterPage(RuntimeError("no canvas"))
+    with caplog.at_level(logging.INFO):
+        out = await rasterize_svgs(page, svgs, cap=10)
+    assert out == []
+    assert any("svg contact sheet skipped" in r.message for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_rasterize_svgs_skips_empty_result_but_keeps_others():
+    svgs = [{"outerHTML": "<svg/>", "label": "a"},
+            {"outerHTML": "<svg/>", "label": "b"}]
+    page = _FakeRasterPage(["", _png_b64()])   # first raster failed -> skipped
+    out = await rasterize_svgs(page, svgs, cap=10)
+    assert [n for _b, n in out] == ["b"]
+
+
+@pytest.mark.asyncio
+async def test_rasterize_svgs_respects_cap():
+    svgs = [{"outerHTML": "<svg/>", "label": f"s{i}"} for i in range(5)]
+    page = _FakeRasterPage([_png_b64() for _ in range(5)])
+    out = await rasterize_svgs(page, svgs, cap=2)
+    assert len(out) == 2

@@ -27,20 +27,43 @@ _ZIP_MAGIC = b"PK\x03\x04"
 # core set so a random JSON download isn't mistaken for an animation.
 _LOTTIE_KEYS = ("v", "ip", "op", "layers", "w", "h", "fr")
 
+# Default per-member uncompressed cap for a single dotLottie animation JSON, used
+# when the caller doesn't thread one in. Matches capture_max_lottie_bytes (2MB) —
+# a generous bound for one lottie JSON. Guards a zip-decompression bomb: the
+# COMPRESSED body is already capped upstream (fetch_asset_bytes), but a crafted
+# archive could inflate a ≤25MB body to gigabytes at zf.read() time.
+_DEFAULT_MAX_LOTTIE_UNCOMPRESSED = 2 * 1024 * 1024
 
-def _extract_dotlottie_json(data: bytes) -> bytes | None:
+
+def _extract_dotlottie_json(
+    data: bytes, *, max_uncompressed: int = _DEFAULT_MAX_LOTTIE_UNCOMPRESSED
+) -> bytes | None:
     """Return the first animation JSON out of a dotLottie ZIP, or None.
 
     dotLottie is a ZIP; the animation JSON lives under ``animations/`` (v1) or
-    ``a/`` (v2). Stdlib ``zipfile`` only — no adm-zip / third-party dep. Pure."""
+    ``a/`` (v2). Stdlib ``zipfile`` only — no adm-zip / third-party dep. Pure.
+
+    Guards against a zip-decompression bomb: each candidate member's declared
+    uncompressed size (``ZipInfo.file_size``, read from the central directory
+    without decompressing) is checked against ``max_uncompressed`` and SKIPPED
+    when it exceeds the cap — so a ≤25MB fetched body can't inflate to gigabytes
+    at ``zf.read()`` time. Returns None if no member is both valid and within the
+    cap (existing skip behavior)."""
     try:
         with zipfile.ZipFile(io.BytesIO(data)) as zf:
-            names = [n for n in zf.namelist()
-                     if (n.startswith("animations/") or n.startswith("a/"))
-                     and n.endswith(".json")]
-            for n in sorted(names):
+            infos = [i for i in zf.infolist()
+                     if (i.filename.startswith("animations/")
+                         or i.filename.startswith("a/"))
+                     and i.filename.endswith(".json")]
+            for info in sorted(infos, key=lambda i: i.filename):
+                if info.file_size > max_uncompressed:
+                    logger.info(
+                        "capture: dotlottie member %s over uncompressed cap "
+                        "(%d > %d), skipped", info.filename, info.file_size,
+                        max_uncompressed)
+                    continue
                 try:
-                    return zf.read(n)
+                    return zf.read(info)
                 except Exception:
                     continue
     except Exception:
@@ -62,15 +85,20 @@ def _valid_lottie(data: bytes) -> dict | None:
     return parsed
 
 
-def lottie_json_from_bytes(url: str, data: bytes) -> tuple[bytes, dict] | None:
+def lottie_json_from_bytes(
+    url: str, data: bytes, *,
+    max_uncompressed: int = _DEFAULT_MAX_LOTTIE_UNCOMPRESSED,
+) -> tuple[bytes, dict] | None:
     """Turn a fetched lottie body into (json_bytes, parsed_dict).
 
     Unzips a dotLottie ZIP (magic ``PK\\x03\\x04`` or a ``.lottie`` URL) to its
     animation JSON first, then validates lottie structure. Returns None when the
-    body isn't a valid lottie. Pure (no I/O — the fetch happens upstream)."""
+    body isn't a valid lottie. ``max_uncompressed`` bounds a dotLottie member's
+    decompressed size (zip-bomb guard; see ``_extract_dotlottie_json``). Pure (no
+    I/O — the fetch happens upstream)."""
     body = data
     if data[:4] == _ZIP_MAGIC or (url or "").lower().endswith(".lottie"):
-        extracted = _extract_dotlottie_json(data)
+        extracted = _extract_dotlottie_json(data, max_uncompressed=max_uncompressed)
         if extracted is None:
             return None
         body = extracted
@@ -435,6 +463,78 @@ async def render_lottie_previews(page, entries: list, *, max_bytes: int) -> dict
             continue
         if png:
             out[name] = png
+    return out
+
+
+# In-page SVG rasterizer: inject the markup, wait for an <img> load, read a
+# 200×200 PNG data-URL off a canvas. String expression (no arrow __name injection).
+# Returns the base64 PNG (sans data-URL prefix) or "" on any failure. Runs entirely
+# in-page so a tainted-canvas / load failure degrades to "" rather than throwing.
+_SVG_RASTER_JS = """async (args) => {
+  var markup = args[0], size = args[1];
+  try {
+    var blob = new Blob([markup], {type: 'image/svg+xml'});
+    var url = URL.createObjectURL(blob);
+    var img = new Image();
+    var loaded = new Promise(function(res) {
+      img.onload = function(){ res(true); };
+      img.onerror = function(){ res(false); };
+    });
+    img.src = url;
+    var ok = await Promise.race([loaded,
+      new Promise(function(r){ setTimeout(function(){ r(false); }, 3000); })]);
+    if (!ok) { URL.revokeObjectURL(url); return ''; }
+    var cvs = document.createElement('canvas');
+    cvs.width = size; cvs.height = size;
+    var ctx = cvs.getContext('2d');
+    ctx.fillStyle = '#f5f5f5';
+    ctx.fillRect(0, 0, size, size);
+    var iw = img.naturalWidth || img.width || size;
+    var ih = img.naturalHeight || img.height || size;
+    var scale = Math.min(size / iw, size / ih);
+    var dw = Math.max(1, iw * scale), dh = Math.max(1, ih * scale);
+    ctx.drawImage(img, (size - dw) / 2, (size - dh) / 2, dw, dh);
+    URL.revokeObjectURL(url);
+    return cvs.toDataURL('image/png').split(',')[1] || '';
+  } catch(e) { return ''; }
+}"""
+
+
+async def rasterize_svgs(page, svgs: list, *, cap: int, thumb: int = 200) -> list:
+    """Best-effort rasterize captured SVG markup to PNG thumbnails via the browser.
+
+    Port of contactSheet.ts createSvgContactSheet's per-SVG raster step, done in the
+    live page (Pillow has no SVG rasterizer + we add no cairosvg): each ``svgs[i]``
+    (an extractor SVG dict with ``outerHTML``) is drawn onto a ``thumb``×``thumb``
+    canvas and read back as a PNG. Deduped by a basename derived from the SVG's label/
+    logo flag/index. Returns ``[(png_bytes, basename)]`` for the sheet builder. The
+    WHOLE pass is guarded so a blocked/tainted-canvas raster LOGS ("svg contact sheet
+    skipped: …") and returns [] — never aborts. Bounded by ``cap``."""
+    import base64
+
+    out: list = []
+    seen: set[str] = set()
+    for i, svg in enumerate((svgs or [])[:cap]):
+        markup = (svg or {}).get("outerHTML") or ""
+        if not markup:
+            continue
+        label = (svg.get("label") or "").strip()
+        stem = label or (f"logo-{i}" if svg.get("isLogo") else f"svg-{i}")
+        base = "".join(c if c.isalnum() or c in "-_" else "-" for c in stem)[:40] or f"svg-{i}"
+        if base in seen:
+            continue
+        seen.add(base)
+        try:
+            b64 = await page.evaluate(_SVG_RASTER_JS, [markup, thumb])
+        except Exception:
+            logger.info("svg contact sheet skipped: raster unavailable", exc_info=True)
+            return []          # page can't rasterize at all — omit the whole sheet
+        if not b64:
+            continue
+        try:
+            out.append((base64.b64decode(b64), base))
+        except Exception:
+            continue
     return out
 
 
