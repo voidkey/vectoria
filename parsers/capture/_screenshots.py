@@ -25,6 +25,61 @@ NEUTRALIZE_ANIMATION_CSS = (
     "scroll-behavior:auto!important}"
 )
 
+# Runs in-page: dismiss cookie/consent/GDPR banners before we screenshot, so a
+# consent modal can't block the shot. Scoped to cookie/consent/gdpr *containers*
+# (ported from hyperframes screenshotCapture.ts) and only clicks a VISIBLE
+# accept/agree button inside such a container — never reject/manage/random
+# buttons elsewhere on the page. Accept-text set = the reference English terms
+# plus common zh terms (同意 / 接受 / 同意并继续) as a documented vectoria
+# extension. Best-effort: everything is guarded so a JS error can't abort the
+# capture (this runs inside a bare page.evaluate the caller does not wrap).
+DISMISS_CONSENT_JS = r"""
+() => {
+  try {
+    // Cookie/consent/gdpr container selectors (scope so we never touch an
+    // unrelated "Accept invitation"/"Accept terms" button on the page).
+    const containerSel = [
+      '[id*="cookie" i]', '[class*="cookie" i]',
+      '[id*="consent" i]', '[class*="consent" i]',
+      '[id*="gdpr" i]', '[class*="gdpr" i]',
+      '[aria-label*="cookie" i]', '[aria-label*="consent" i]',
+    ].join(',');
+    // Accept-text: reference English set + zh extension (同意/接受/同意并继续).
+    const acceptRe = /accept|agree|got it|allow|consent|同意|接受|同意并继续/i;
+    // Never click these even if the text also matches.
+    const rejectRe = /reject|decline|manage|settings|preference/i;
+    const isVisible = (el) => {
+      try {
+        const cs = getComputedStyle(el);
+        if (cs.display === 'none' || cs.visibility === 'hidden') return false;
+        if (parseFloat(cs.opacity || '1') === 0) return false;
+        const r = el.getBoundingClientRect();
+        return r.width > 0 && r.height > 0;
+      } catch (e) { return false; }
+    };
+    const containers = Array.from(document.querySelectorAll(containerSel)).slice(0, 50);
+    for (const container of containers) {
+      let clicked = false;
+      const btns = container.querySelectorAll('button,[role="button"],a');
+      for (const btn of btns) {
+        try {
+          const txt = (btn.textContent || '').trim();
+          if (!txt || txt.length > 40) continue;
+          if (rejectRe.test(txt)) continue;
+          if (!acceptRe.test(txt)) continue;
+          if (!isVisible(btn)) continue;
+          btn.click();
+          clicked = true;
+          break;
+        } catch (e) { /* ignore this button */ }
+      }
+      if (clicked) break;  // one accept per pass is enough
+    }
+  } catch (e) { /* best-effort: never throw */ }
+}
+"""
+
+
 # Runs in-page: walk to fire reveals + lazy loads, await fonts, wait for images
 # (capped), then hide sticky/fixed chrome that would otherwise repeat across the
 # per-section shots. Real <header>/<nav> is preserved. All best-effort.
@@ -78,6 +133,13 @@ async def prepare_page(page, *, step_frac: float, step_ms: int, max_steps: int,
     """
     if max_steps <= 0:
         return
+    # Best-effort consent dismissal first, before the scroll-walk, so a cookie /
+    # GDPR modal can't block the shots. Isolated try/except so a failure here
+    # never aborts the walk (or the capture).
+    try:
+        await page.evaluate(DISMISS_CONSENT_JS)
+    except Exception:
+        pass
     try:
         await page.evaluate(_PREPARE_JS, {"stepFrac": step_frac, "stepMs": step_ms,
                                           "maxSteps": max_steps, "imgWaitMs": img_wait_ms})

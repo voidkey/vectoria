@@ -1,7 +1,8 @@
 import pytest
 from unittest.mock import AsyncMock
 
-from parsers.capture._screenshots import capture_screenshots, prepare_page
+from parsers.capture._screenshots import (
+    DISMISS_CONSENT_JS, capture_screenshots, prepare_page)
 
 
 @pytest.mark.asyncio
@@ -37,8 +38,10 @@ async def test_prepare_page_runs_walk_when_enabled():
     page = AsyncMock()
     page.viewport_size = {"width": 1280, "height": 800}
     await prepare_page(page, step_frac=0.8, step_ms=0, max_steps=60, img_wait_ms=0)
-    page.evaluate.assert_awaited_once()
-    js, arg = page.evaluate.await_args.args
+    # find the walk call (consent dismissal also runs an evaluate now)
+    walk_call = next(c for c in page.evaluate.await_args_list
+                     if c.args and "document.fonts" in c.args[0])
+    js, arg = walk_call.args
     assert "scrollTo" in js and "document.fonts" in js   # walk + font wait in one pass
     assert arg["maxSteps"] == 60
 
@@ -55,3 +58,74 @@ async def test_prepare_page_swallows_errors():
     page = AsyncMock()
     page.evaluate = AsyncMock(side_effect=RuntimeError("navigated away"))
     await prepare_page(page, step_frac=0.8, step_ms=0, max_steps=5, img_wait_ms=0)  # no raise
+
+
+# --- Task 1: cookie/consent dismissal -------------------------------------
+
+def test_dismiss_consent_js_targets_consent_containers():
+    """Dismissal is scoped to cookie/consent/gdpr containers (not the whole page)."""
+    js = DISMISS_CONSENT_JS
+    assert "cookie" in js
+    assert "consent" in js
+    assert "gdpr" in js
+
+
+def test_dismiss_consent_js_matches_accept_text():
+    """Accept-button text set = reference English terms + documented zh extension."""
+    js = DISMISS_CONSENT_JS
+    for term in ("accept", "agree", "got it", "allow", "consent"):
+        assert term in js
+    for zh in ("同意", "接受", "同意并继续"):
+        assert zh in js
+
+
+def test_dismiss_consent_js_is_best_effort_guarded():
+    """The whole pass is wrapped so a JS error can never abort the capture."""
+    js = DISMISS_CONSENT_JS
+    assert "try" in js and "catch" in js
+
+
+def test_dismiss_consent_js_does_not_click_reject_or_manage():
+    """Reject/decline/manage/settings/preference terms appear ONLY in a guard
+    that excludes them — never as clickable accept targets."""
+    js = DISMISS_CONSENT_JS
+    # the reject guard regex is present and excludes these
+    assert "rejectRe" in js
+    assert "reject" in js and "decline" in js and "manage" in js
+    assert "settings" in js and "preference" in js
+    # the accept regex must NOT contain any reject/manage term
+    accept_line = next(ln for ln in js.splitlines() if "acceptRe" in ln and "=" in ln)
+    for bad in ("reject", "decline", "manage", "settings", "preference"):
+        assert bad not in accept_line
+
+
+@pytest.mark.asyncio
+async def test_prepare_page_dismisses_consent_before_walk():
+    """prepare_page runs the consent dismissal, then the scroll-walk."""
+    page = AsyncMock()
+    page.viewport_size = {"width": 1280, "height": 800}
+    await prepare_page(page, step_frac=0.8, step_ms=0, max_steps=60, img_wait_ms=0)
+    scripts = [c.args[0] for c in page.evaluate.await_args_list if c.args]
+    # consent dismissal ran, and it ran before the walk script
+    assert any(s is DISMISS_CONSENT_JS for s in scripts)
+    consent_i = next(i for i, s in enumerate(scripts) if s is DISMISS_CONSENT_JS)
+    walk_i = next(i for i, s in enumerate(scripts) if "document.fonts" in s)
+    assert consent_i < walk_i
+
+
+@pytest.mark.asyncio
+async def test_prepare_page_consent_failure_does_not_abort_walk():
+    """A consent-dismissal error is swallowed; the walk still runs."""
+    calls = []
+
+    async def _eval(script, *args, **kwargs):
+        calls.append(script)
+        if script is DISMISS_CONSENT_JS:
+            raise RuntimeError("boom")
+        return None
+
+    page = AsyncMock()
+    page.viewport_size = {"width": 1280, "height": 800}
+    page.evaluate = _eval
+    await prepare_page(page, step_frac=0.8, step_ms=0, max_steps=5, img_wait_ms=0)
+    assert any("document.fonts" in s for s in calls)  # walk still ran
