@@ -31,6 +31,10 @@ def _wire_cdp(page):
     session.detach = AsyncMock()
     page.add_init_script = AsyncMock()
     page.context.new_cdp_session = AsyncMock(return_value=session)
+    # page.on is SYNC in Playwright (video response listener registration); no DOM
+    # <video> elements -> the preview pass finds nothing.
+    page.on = MagicMock()
+    page.query_selector_all = AsyncMock(return_value=[])
     return page
 
 
@@ -80,7 +84,10 @@ async def test_handle_capture_happy_path():
                          capture_img_wait_ms=0, capture_section_settle_ms=0,
                          capture_max_asset_bytes=1000, capture_max_screenshot_height=20000,
                          capture_color_delta_e=10.0,
-                         capture_asset_catalog_cap=200, capture_video_cap=20)
+                         capture_asset_catalog_cap=200, capture_video_cap=20,
+                         capture_max_videos=6, capture_max_video_downloads=3,
+                         capture_max_video_bytes=75 * 1024 * 1024,
+                         capture_video_download_budget_s=180.0)
 
     with (
         patch("worker.handlers.update_doc", new=fake_update),
@@ -143,7 +150,10 @@ async def test_handle_capture_no_screenshots_no_assets_image_status_none():
                          capture_img_wait_ms=0, capture_section_settle_ms=0,
                          capture_max_asset_bytes=1000, capture_max_screenshot_height=20000,
                          capture_color_delta_e=10.0,
-                         capture_asset_catalog_cap=200, capture_video_cap=20)
+                         capture_asset_catalog_cap=200, capture_video_cap=20,
+                         capture_max_videos=6, capture_max_video_downloads=3,
+                         capture_max_video_bytes=75 * 1024 * 1024,
+                         capture_video_download_budget_s=180.0)
     with (
         patch("worker.handlers.update_doc", new=fake_update),
         patch("worker.handlers.reresolve_and_check_ssrf", new=AsyncMock()),
@@ -201,7 +211,10 @@ async def test_handle_capture_nonraster_assets_skip_vision():
                          capture_img_wait_ms=0, capture_section_settle_ms=0,
                          capture_max_asset_bytes=1000, capture_max_screenshot_height=20000,
                          capture_color_delta_e=10.0,
-                         capture_asset_catalog_cap=200, capture_video_cap=20)
+                         capture_asset_catalog_cap=200, capture_video_cap=20,
+                         capture_max_videos=6, capture_max_video_downloads=3,
+                         capture_max_video_bytes=75 * 1024 * 1024,
+                         capture_video_download_budget_s=180.0)
     with (
         patch("worker.handlers.update_doc", new=AsyncMock()),
         patch("worker.handlers.reresolve_and_check_ssrf", new=AsyncMock()),
@@ -313,7 +326,10 @@ async def test_handle_capture_fractional_section_gap_does_not_crash():
                          capture_img_wait_ms=0, capture_section_settle_ms=0,
                          capture_max_asset_bytes=1000, capture_max_screenshot_height=20000,
                          capture_color_delta_e=10.0,
-                         capture_asset_catalog_cap=200, capture_video_cap=20)
+                         capture_asset_catalog_cap=200, capture_video_cap=20,
+                         capture_max_videos=6, capture_max_video_downloads=3,
+                         capture_max_video_bytes=75 * 1024 * 1024,
+                         capture_video_download_budget_s=180.0)
     with (
         patch("worker.handlers.update_doc", new=fake_update),
         patch("worker.handlers.reresolve_and_check_ssrf", new=AsyncMock()),

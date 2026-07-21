@@ -49,9 +49,31 @@ def _fake_page(raw, anim=None, shaders=None):
     page.screenshot = AsyncMock(return_value=b"PNG")
     page.viewport_size = {"width": 1280, "height": 800}
     page.wait_for_timeout = AsyncMock()
+    # page.on is SYNC event registration in real Playwright (a MagicMock here).
+    # Record the registered response handler so tests can drive it directly.
+    page._response_handlers = []
+
+    def _on(event, handler):
+        if event == "response":
+            page._response_handlers.append(handler)
+    page.on = MagicMock(side_effect=_on)
+    # No DOM video elements by default -> preview pass finds nothing.
+    page.query_selector_all = AsyncMock(return_value=[])
     # Playwright: page.context.new_cdp_session(page) is async -> CDPSession.
     page.context.new_cdp_session = AsyncMock(return_value=_fake_cdp_session())
     return page
+
+
+def _emit_response(page, url, content_type="video/mp4", content_length=None):
+    """Drive every registered response handler with a fake response object."""
+    headers = {"content-type": content_type}
+    if content_length is not None:
+        headers["content-length"] = str(content_length)
+    resp = MagicMock()
+    resp.url = url
+    resp.headers = headers
+    for h in page._response_handlers:
+        h(resp)
 
 
 class _FakeDeps:
@@ -90,7 +112,10 @@ def _settings():
         capture_max_screenshot_height=20000, capture_color_delta_e=10.0,
         capture_asset_catalog_cap=200, capture_video_cap=20,
         capture_max_svgs=30, capture_min_svg_bytes=200,
-        capture_max_catalog_images=40, capture_min_image_bytes=10000)
+        capture_max_catalog_images=40, capture_min_image_bytes=10000,
+        capture_max_videos=6, capture_max_video_downloads=3,
+        capture_max_video_bytes=75 * 1024 * 1024,
+        capture_video_download_budget_s=180.0)
 
 
 @pytest.mark.asyncio
@@ -839,6 +864,221 @@ async def test_run_capture_dedups_faces_by_content_hash():
     put_font_keys = [c.args[0] for c in deps.storage.put.call_args_list
                      if "/assets/fonts/" in c.args[0]]
     assert len(put_font_keys) == 1
+
+
+# ---- Phase 7: video manifest (network discovery + previews + bounded download) ----
+
+def _dom_video_eval(raw, dom_videos):
+    """evaluate router variant that returns canned DOM video descriptors for
+    VIDEO_DESCRIPTORS_JS; delegates the rest to the standard router."""
+    base = _eval_router(raw)
+
+    async def _run(script, *args, **kwargs):
+        if "nearestCaption" in script:      # VIDEO_DESCRIPTORS_JS
+            return list(dom_videos)
+        return await base(script, *args, **kwargs)
+    return _run
+
+
+@pytest.mark.asyncio
+async def test_run_capture_builds_video_manifest_from_network_and_dom():
+    """A direct-ext network URL (driven through the registered response handler
+    during goto) + a DOM video merge into video_manifest; the direct-ext body is
+    downloaded to assets/videos/ and an HLS master is discovered but NOT downloaded."""
+    raw = _full_quality_raw()
+    dom_videos = [{"src": "https://x/dom-hero.mp4", "width": 1280, "height": 720,
+                   "poster": "https://x/poster.jpg", "top": 0, "filename": "dom-hero.mp4"}]
+    page = _fake_page(raw)
+    page.evaluate = _dom_video_eval(raw, dom_videos)
+
+    # Emit network responses during navigation (handler already registered pre-goto).
+    async def _goto(*a, **k):
+        _emit_response(page, "https://x/net-clip.webm", "video/webm")
+        _emit_response(page, "https://x/live/master.m3u8", "application/vnd.apple.mpegurl")
+    page.goto = AsyncMock(side_effect=_goto)
+
+    deps = _FakeDeps(page, {})
+    cfg = _settings()
+
+    async def _fake_fetch(url, *, max_bytes):
+        # Only direct-ext bodies are ever fetched.
+        return b"V" * 2048, "video/mp4"
+
+    from unittest.mock import patch
+    with patch("parsers.capture._assets.fetch_asset_bytes", new=_fake_fetch):
+        from parsers.capture.orchestrator import run_capture
+        outcome = await run_capture("https://x", "kb", "d1", cfg, deps)
+
+    vm = outcome.profile.video_manifest
+    assert vm is not None
+    urls = {v["url"] for v in vm["videos"]}
+    assert "https://x/dom-hero.mp4" in urls
+    assert "https://x/net-clip.webm" in urls
+    assert "https://x/live/master.m3u8" in urls
+    hls = next(v for v in vm["videos"] if v["url"].endswith(".m3u8"))
+    assert hls["download"] is False
+
+    # Downloaded video bodies land as kind="video" AssetRefs under assets/videos/.
+    video_refs = [a for a in outcome.profile.assets if a.kind == "video"]
+    assert video_refs, "expected at least one downloaded video body"
+    for a in video_refs:
+        assert a.storage_key.startswith("captures/kb/d1/assets/videos/")
+    # The HLS master was never fetched/stored.
+    put_keys = [c.args[0] for c in deps.storage.put.call_args_list]
+    assert not any("master" in k for k in put_keys)
+
+
+@pytest.mark.asyncio
+async def test_run_capture_video_manifest_no_download_when_not_full():
+    """Discovery + manifest happen at all quality levels, but bodies are only
+    downloaded when capture_quality == 'full' (don't pull MBs off a challenge page)."""
+    # Thin content -> not full quality (design-styles/page.html gated off).
+    raw = {
+        "final_url": "https://x/final",
+        "colors": {"samples": [{"color": "#0b0b0f", "area": 400000, "text": False}],
+                   "css_vars": {}, "theme_color": None},
+        "fonts": {"display": {"family": "Inter", "weight": 700, "selector": "h1"},
+                  "body": {"family": "Inter", "weight": 400, "selector": "p"},
+                  "face_srcs": {}},
+        "spacing": {"margins": [8], "paddings": [16], "radii": [8],
+                    "container_max_width": 1200, "section_gaps": []},
+        "sections": [], "text": {"headline": "Hi", "tagline": "", "ctas": [],
+                                 "full_text": ""},
+        "assets": {"logo": None, "hero": None, "og_image": None, "favicon": None,
+                   "video": None, "lottie": None},
+        "motion": {"libraries": [], "has_video_background": False, "has_canvas": False},
+    }
+    dom_videos = [{"src": "https://x/dom.mp4", "width": 640, "height": 360,
+                   "filename": "dom.mp4"}]
+    page = _fake_page(raw)
+    page.evaluate = _dom_video_eval(raw, dom_videos)
+
+    async def _goto(*a, **k):
+        _emit_response(page, "https://x/net.mp4", "video/mp4")
+    page.goto = AsyncMock(side_effect=_goto)
+    deps = _FakeDeps(page, {})
+
+    fetched = []
+
+    async def _fake_fetch(url, *, max_bytes):
+        fetched.append(url)
+        return b"V" * 2048, "video/mp4"
+
+    from unittest.mock import patch
+    with patch("parsers.capture._assets.fetch_asset_bytes", new=_fake_fetch):
+        from parsers.capture.orchestrator import run_capture
+        outcome = await run_capture("https://x", "kb", "d1", _settings(), deps)
+
+    prof = outcome.profile
+    assert prof.capture_quality != "full"
+    # Manifest still built from discovery.
+    assert prof.video_manifest is not None
+    assert {v["url"] for v in prof.video_manifest["videos"]} >= {
+        "https://x/dom.mp4", "https://x/net.mp4"}
+    # But nothing was downloaded.
+    assert fetched == []
+    assert [a for a in prof.assets if a.kind == "video"] == []
+
+
+@pytest.mark.asyncio
+async def test_run_capture_video_download_count_cap_logs_truncation(caplog):
+    """capture_max_video_downloads bounds how many bodies are fetched; the
+    truncation is logged (no silent cap)."""
+    import logging as _logging
+    raw = _full_quality_raw()
+    page = _fake_page(raw)
+    page.evaluate = _dom_video_eval(raw, [])
+
+    async def _goto(*a, **k):
+        for i in range(5):
+            _emit_response(page, f"https://x/clip{i}.mp4", "video/mp4")
+    page.goto = AsyncMock(side_effect=_goto)
+    deps = _FakeDeps(page, {})
+
+    cfg = _settings()
+    cfg.capture_max_video_downloads = 2
+
+    fetched = []
+
+    async def _fake_fetch(url, *, max_bytes):
+        fetched.append(url)
+        return b"V" * 2048, "video/mp4"
+
+    from unittest.mock import patch
+    with patch("parsers.capture._assets.fetch_asset_bytes", new=_fake_fetch):
+        with caplog.at_level(_logging.INFO):
+            from parsers.capture.orchestrator import run_capture
+            await run_capture("https://x", "kb", "d1", cfg, deps)
+
+    assert len(fetched) == 2   # capped at capture_max_video_downloads
+    assert any("video download" in r.message.lower() and "cap" in r.message.lower()
+               for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_run_capture_video_download_time_budget_logs_truncation(caplog):
+    """A cumulative wall-clock budget stops STARTING new downloads once exceeded;
+    the budget truncation is logged. The clock is injected (no real sleeps)."""
+    import logging as _logging
+    raw = _full_quality_raw()
+    page = _fake_page(raw)
+    page.evaluate = _dom_video_eval(raw, [])
+
+    async def _goto(*a, **k):
+        for i in range(4):
+            _emit_response(page, f"https://x/clip{i}.mp4", "video/mp4")
+    page.goto = AsyncMock(side_effect=_goto)
+    deps = _FakeDeps(page, {})
+
+    cfg = _settings()
+    cfg.capture_max_video_downloads = 10        # count cap won't bite
+    cfg.capture_video_download_budget_s = 5.0
+
+    fetched = []
+
+    async def _fake_fetch(url, *, max_bytes):
+        fetched.append(url)
+        return b"V" * 2048, "video/mp4"
+
+    # Deterministic monotonic clock: 0, then jumps past the 5s budget so the
+    # SECOND download's pre-check trips the budget (first download still runs).
+    ticks = iter([0.0, 0.0, 100.0, 100.0, 100.0, 100.0])
+
+    from unittest.mock import patch
+    with patch("parsers.capture._assets.fetch_asset_bytes", new=_fake_fetch), \
+         patch("parsers.capture.orchestrator._monotonic",
+               new=lambda: next(ticks, 100.0)):
+        with caplog.at_level(_logging.INFO):
+            from parsers.capture.orchestrator import run_capture
+            await run_capture("https://x", "kb", "d1", cfg, deps)
+
+    assert len(fetched) == 1   # only the first download started before the budget blew
+    assert any("budget" in r.message.lower() for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_run_capture_degrades_when_page_lacks_on_support():
+    """A page whose .on raises (CDP-style / unsupported) must not break capture —
+    network discovery is simply skipped; DOM discovery + manifest still work."""
+    raw = _full_quality_raw()
+    dom_videos = [{"src": "https://x/dom.mp4", "width": 640, "height": 360,
+                   "filename": "dom.mp4"}]
+    page = _fake_page(raw)
+    page.evaluate = _dom_video_eval(raw, dom_videos)
+    page.on = MagicMock(side_effect=RuntimeError("on not supported"))
+    deps = _FakeDeps(page, {})
+
+    from unittest.mock import patch
+    async def _fake_fetch(url, *, max_bytes):
+        return b"V" * 2048, "video/mp4"
+    with patch("parsers.capture._assets.fetch_asset_bytes", new=_fake_fetch):
+        from parsers.capture.orchestrator import run_capture
+        outcome = await run_capture("https://x", "kb", "d1", _settings(), deps)
+
+    # Capture completed; DOM discovery still populated the manifest.
+    vm = outcome.profile.video_manifest
+    assert vm is not None
+    assert {v["url"] for v in vm["videos"]} == {"https://x/dom.mp4"}
 
 
 def json_dumps(obj):

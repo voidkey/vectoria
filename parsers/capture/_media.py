@@ -364,6 +364,11 @@ async def video_descriptors(page, *, cap: int = 20) -> list[dict]:
 # (HLS .m3u8 / DASH .mpd) and blob:/data: pseudo-URLs are NEVER downloaded — they
 # aren't a single fetchable body (mirrors mediaCapture.ts DOWNLOADABLE_VIDEO_EXTS).
 DOWNLOADABLE_VIDEO_EXTS = (".mp4", ".webm", ".mov", ".m4v")
+# Streaming-manifest extensions: DISCOVERED (recorded in the manifest so downstream
+# knows the site streams video) but flagged download=False — not a fetchable body.
+STREAMING_VIDEO_EXTS = (".m3u8", ".mpd")
+# All video-ish exts we surface in the manifest (direct + streaming).
+_DISCOVERABLE_VIDEO_EXTS = DOWNLOADABLE_VIDEO_EXTS + STREAMING_VIDEO_EXTS
 
 
 def is_downloadable_video_url(url: str) -> bool:
@@ -378,6 +383,65 @@ def is_downloadable_video_url(url: str) -> bool:
     except (ValueError, TypeError):
         return False
     return path.endswith(DOWNLOADABLE_VIDEO_EXTS)
+
+
+# HLS/DASH manifest content-types — surfaced in the manifest (download=False),
+# never fetched. The ``video/`` prefix wouldn't match these on its own.
+_STREAMING_CONTENT_TYPES = ("application/vnd.apple.mpegurl", "application/x-mpegurl",
+                            "application/dash+xml")
+
+
+def _looks_like_video_response(url: str, content_type: str) -> bool:
+    """Layer-1 filter: a network response is video-ish when its URL path ends in a
+    direct OR streaming-manifest video ext, its Content-Type is ``video/*``, or its
+    Content-Type is an HLS/DASH manifest type. Streaming manifests are recorded so
+    they surface in the manifest (flagged download=False downstream); direct bodies
+    are the download candidates. Pure + cheap."""
+    ct = (content_type or "").lower()
+    if ct.startswith("video/") or any(ct.startswith(s) for s in _STREAMING_CONTENT_TYPES):
+        return True
+    if not url:
+        return False
+    try:
+        return urlsplit(url).path.lower().endswith(_DISCOVERABLE_VIDEO_EXTS)
+    except (ValueError, TypeError):
+        return False
+
+
+def make_video_response_handler(discovered: set):
+    """Build a ``page.on("response")`` handler that records direct-video URLs into
+    ``discovered`` (a live set the merge step reads AFTER the page settles).
+
+    The handler is SYNC (Playwright fires response listeners synchronously),
+    exception-safe (a malformed response object can never bubble into the page's
+    event loop), and cheap (header read + string checks, no body fetch). A tiny
+    response (<100 bytes when the length is known) is skipped as a likely error/
+    tracking blob. Mirrors mediaCapture.ts's network-URL Set."""
+    def _handler(response) -> None:
+        try:
+            url = getattr(response, "url", "") or ""
+            if not url.startswith("http"):
+                return
+            headers = {}
+            try:
+                headers = response.headers or {}
+            except Exception:
+                headers = {}
+            ct = (headers.get("content-type") or headers.get("Content-Type") or "")
+            if not _looks_like_video_response(url, ct):
+                return
+            # Skip a known-tiny body (error page / tracking beacon mislabeled).
+            try:
+                clen = int(headers.get("content-length") or headers.get("Content-Length") or 0)
+            except (ValueError, TypeError):
+                clen = 0
+            if 0 < clen < 100:
+                return
+            discovered.add(url)
+        except Exception:
+            # Never let a listener exception escape into the page event loop.
+            pass
+    return _handler
 
 
 def merge_video_manifest(network_urls: set, dom_videos: list, cap: int) -> list[dict]:

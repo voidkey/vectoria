@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
+import time
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -18,6 +19,14 @@ from typing import Any, Protocol
 from parsers.capture.profile import SiteProfile
 
 logger = logging.getLogger(__name__)
+
+# Monotonic clock for the video-download wall-clock budget. Module-level so tests
+# can patch it deterministically (no real sleeps); production uses time.monotonic.
+_monotonic = time.monotonic
+
+# Content-type -> ext for a downloaded direct video body (falls back to the URL ext).
+_VIDEO_CT_EXT = {"video/mp4": ".mp4", "video/webm": ".webm",
+                 "video/quicktime": ".mov", "video/x-m4v": ".m4v"}
 
 # Only these image-asset kinds are worth a vision description — AND only when
 # the bytes are a raster format the vision model can actually decode. A logo/
@@ -98,6 +107,37 @@ def _motion_hints(MotionHints, motion: dict, shaders: list):
                        has_canvas=bool(m.get("has_canvas")))
 
 
+async def _capture_video_previews(page, entries: list, out: dict) -> None:
+    """Best-effort per-DOM-video preview frame -> ``out[url] = png_bytes``.
+
+    Screenshots each on-page <video> element (element_handle.screenshot()) and maps
+    it back to its manifest entry by src. A network-only entry has no element, so it
+    gets no preview; an unscreenshotable video is simply omitted. One failure never
+    aborts — mirrors mediaCapture.ts's per-video preview guard. Non-mutating (runs
+    before the DOM-mutating page.html pass)."""
+    by_url = {e["url"]: e for e in entries if e.get("source") == "dom"}
+    if not by_url:
+        return
+    try:
+        handles = await page.query_selector_all("video")
+    except Exception:
+        return
+    for h in handles or []:
+        try:
+            src = await h.evaluate("v => v.src || v.currentSrc || "
+                                   "(v.querySelector('source') ? v.querySelector('source').src : '')")
+        except Exception:
+            continue
+        if not src or src not in by_url or src in out:
+            continue
+        try:
+            data = await h.screenshot()
+        except Exception:
+            continue
+        if data:                       # skip empty (unscreenshotable) frames
+            out[src] = data
+
+
 def _safe_hex(css: str) -> str:
     from parsers.capture._colors import _to_hex, parse_css_color
     rgb = parse_css_color(css or "")
@@ -145,7 +185,9 @@ async def run_capture(url: str, kb_id: str, doc_id: str, cfg, deps: CaptureDeps)
     from parsers.capture._extract import run_extract
     from parsers.capture._fonts import build_font_role, cluster_spacing, section_type
     from parsers.capture._html import extract_page_html
-    from parsers.capture._media import catalog_assets, video_descriptors
+    from parsers.capture._media import (
+        catalog_assets, make_video_response_handler, merge_video_manifest,
+        video_descriptors)
     from parsers.capture._quality import assess_quality
     from parsers.capture._screenshots import (
         NEUTRALIZE_ANIMATION_CSS, capture_screenshots, prepare_page)
@@ -162,6 +204,17 @@ async def run_capture(url: str, kb_id: str, doc_id: str, cfg, deps: CaptureDeps)
                 await page.add_init_script(_script)
             except Exception:
                 logger.info("capture: init-script injection failed for %s", url, exc_info=True)
+        # Layer-1 video discovery: a pre-nav response listener records every
+        # direct-video URL the page fetches (load / scroll / carousel rotation),
+        # independent of DOM presence, into a live set read after the page settles.
+        # GUARDED — a page whose .on is unsupported (CDP-style) or a fake test page
+        # degrades to DOM-only discovery, never aborts. Handler is sync + exception-safe.
+        discovered_videos: set[str] = set()
+        try:
+            page.on("response", make_video_response_handler(discovered_videos))
+        except Exception:
+            logger.info("capture: video response listener unavailable for %s", url,
+                        exc_info=True)
         # Best-effort CDP Animation-domain capture. Returns (None, []) when no
         # real CDP is available (e.g. a fake page) — degrades to cdpAnimations: [].
         cdp_session = None
@@ -172,6 +225,8 @@ async def run_capture(url: str, kb_id: str, doc_id: str, cfg, deps: CaptureDeps)
             logger.info("capture: CDP animation start failed for %s", url, exc_info=True)
         animation_catalog = None
         shaders: list = []
+        video_entries: list = []          # merged video manifest entries
+        video_previews: dict = {}         # url -> preview PNG bytes (DOM videos)
         try:
             try:
                 await page.goto(url, wait_until="load",
@@ -226,6 +281,18 @@ async def run_capture(url: str, kb_id: str, doc_id: str, cfg, deps: CaptureDeps)
                 page_videos = await video_descriptors(page, cap=cfg.capture_video_cap)
             except Exception:
                 logger.info("capture: video descriptors failed for %s", url, exc_info=True)
+            # Two-layer video manifest: merge the pre-nav network URLs (Layer 1) with
+            # the DOM descriptors (Layer 2), deduped + capped. Built for ALL quality
+            # levels (media exists even on a partial page). Preview frames are captured
+            # here (non-mutating, before page.html) as PNG bytes; downloads happen after
+            # the page closes (need storage). Best-effort — never aborts the capture.
+            video_entries = merge_video_manifest(
+                discovered_videos, page_videos, cap=cfg.capture_max_videos)
+            if video_entries:
+                try:
+                    await _capture_video_previews(page, video_entries, video_previews)
+                except Exception:
+                    logger.info("capture: video previews failed for %s", url, exc_info=True)
             design_styles = None
             page_html = None
             if capture_quality == "full":
@@ -365,6 +432,73 @@ async def run_capture(url: str, kb_id: str, doc_id: str, cfg, deps: CaptureDeps)
         key = f"captures/{kb_id}/{doc_id}/assets/{kind}{ext}"
         await storage.put(key, data, content_type=ctype or "application/octet-stream")
         profile_assets.append(AssetRef(kind=kind, storage_key=key, format=ext.lstrip(".")))
+
+    # ---- video manifest: preview frames + bounded/budgeted direct-ext downloads ----
+    # Two-layer discovery already merged into video_entries. Store per-video preview
+    # frames (captured while the page was open) as kind="video_preview" AssetRefs, and
+    # DOWNLOAD direct-ext bodies (skip HLS/DASH/blob/data — download=False) only when
+    # capture_quality == "full" (don't pull MBs off a challenge/partial page), bounded
+    # by capture_max_video_downloads AND a cumulative wall-clock budget. Best-effort per
+    # video; each entry's `preview`/`local_key`/`downloaded` is annotated in place.
+    video_dl_count = 0
+    video_dl_start = _monotonic()
+    video_budget_hit = False
+    allow_download = capture_quality == "full"
+    for idx, entry in enumerate(video_entries):
+        v_url = entry["url"]
+        # Preview frame (DOM videos only) -> assets/videos/previews/.
+        png = video_previews.get(v_url)
+        if png:
+            pkey = f"captures/{kb_id}/{doc_id}/assets/videos/previews/video-{idx}-preview.png"
+            try:
+                await storage.put(pkey, png, content_type="image/png")
+                entry["preview"] = f"assets/videos/previews/video-{idx}-preview.png"
+                profile_assets.append(AssetRef(
+                    kind="video_preview", storage_key=pkey, url=v_url, format="png"))
+            except Exception:
+                logger.info("capture: video preview store failed for %s", pkey, exc_info=True)
+        # Direct-ext body download (guarded, bounded, budgeted).
+        if not (allow_download and entry.get("download")):
+            continue
+        if video_dl_count >= cfg.capture_max_video_downloads:
+            logger.info("capture: video download cap (%d) reached — %s not fetched",
+                        cfg.capture_max_video_downloads, v_url)
+            continue
+        # Cumulative wall-clock budget: stop STARTING new downloads once exceeded.
+        if _monotonic() - video_dl_start >= cfg.capture_video_download_budget_s:
+            if not video_budget_hit:
+                logger.info("capture: video download budget (%.0fs) exceeded — "
+                            "remaining bodies not fetched",
+                            cfg.capture_video_download_budget_s)
+                video_budget_hit = True
+            continue
+        got = await fetch_asset_bytes(v_url, max_bytes=cfg.capture_max_video_bytes)
+        if got is None:
+            continue
+        data, ctype = got
+        ext = _VIDEO_CT_EXT.get((ctype or "").lower()) or _catalog_image_ext(v_url)
+        vkey = f"captures/{kb_id}/{doc_id}/assets/videos/video-{idx}{ext}"
+        try:
+            await storage.put(vkey, data, content_type=ctype or "application/octet-stream")
+        except Exception:
+            logger.info("capture: video body store failed for %s", vkey, exc_info=True)
+            continue
+        video_dl_count += 1
+        entry["local_key"] = vkey
+        entry["downloaded"] = True
+        profile_assets.append(AssetRef(
+            kind="video", storage_key=vkey, url=v_url, format=ext.lstrip(".")))
+
+    video_manifest = None
+    if video_entries:
+        video_manifest = {
+            "videos": video_entries,
+            "meta": {
+                "discovered": len(video_entries),
+                "downloaded": video_dl_count,
+                "previews": sum(1 for e in video_entries if e.get("preview")),
+            },
+        }
 
     # ---- good-context catalog images (beyond the 4 named kinds) ----
     # Port of hyperframes assetDownloader.ts's catalog-image pass: keep only real
@@ -582,7 +716,8 @@ async def run_capture(url: str, kb_id: str, doc_id: str, cfg, deps: CaptureDeps)
         assets=profile_assets, screenshots=profile_shots,
         motion_hints=_motion_hints(MotionHints, raw.get("motion", {}), shaders),
         asset_catalog=asset_catalog, videos=page_videos,
-        animation_catalog=animation_catalog, shaders=shaders)
+        animation_catalog=animation_catalog, shaders=shaders,
+        video_manifest=video_manifest)
 
     return CaptureOutcome(
         profile=profile,
