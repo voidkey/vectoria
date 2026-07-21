@@ -294,6 +294,16 @@ class Settings(BaseSettings):
     capture_video_download_budget_s: float = 180.0  # cumulative download wall-clock cap (s)
     # Phase 3 asset-download parity. SVGs come from the already-extracted markup
     # (no fetch); catalog images are fetched via SSRF-checked fetch_asset_bytes.
+    # Phase 8 lottie (ported from hyperframes mediaCapture.ts saveLottieAnimations /
+    # renderLottiePreviews): discover multiple lottie sources (DOM + .lottie/.json
+    # links), download + dotLottie-unzip up to capture_max_lotties, dedup by content
+    # hash, emit lottie-manifest.json, and render best-effort mid-frame previews (skip
+    # a lottie larger than capture_max_lottie_bytes for preview — CDP message limit).
+    capture_max_lotties: int = 10
+    capture_max_lottie_bytes: int = 2 * 1024 * 1024
+    # Phase 8 SVG contact sheet: cap on captured SVGs rasterized (best-effort) into
+    # the SVG contact sheet via the live browser page.
+    capture_max_svg_sheet: int = 60
     capture_max_svgs: int = 30                    # max page SVGs stored to assets/svgs/
     capture_max_catalog_images: int = 40          # logged safety cap; context filters do the real gating
     capture_min_image_bytes: int = 10000          # min-size gate for raster catalog images (junk/spacer filter)

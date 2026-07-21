@@ -202,6 +202,13 @@ def _asset_zip_path(a: dict, storage_key: str) -> str:
         return f"capture/assets/videos/{basename}"
     if a.get("kind") == "image":
         return f"capture/assets/{basename}"
+    # Phase 8 lottie: the animation JSON (dotLottie-unzipped) + best-effort mid-frame
+    # previews are keyed by their already-unique storage_key basename (animation-N.json
+    # / animation-N-preview.png) under the lottie/ tree.
+    if a.get("kind") == "lottie_preview" or "/assets/lottie/previews/" in storage_key:
+        return f"capture/assets/lottie/previews/{basename}"
+    if a.get("kind") == "lottie_json" or "/assets/lottie/" in storage_key:
+        return f"capture/assets/lottie/{basename}"
     return f"capture/assets/{a.get('kind')}.{a.get('format', 'bin')}"
 
 
@@ -268,6 +275,15 @@ async def build_hyperframes_zip(doc) -> bytes:
         if video_manifest:
             zf.writestr("capture/extracted/video-manifest.json",
                         json.dumps(video_manifest, ensure_ascii=False, indent=2))
+        # extracted/lottie-manifest.json — Phase 8 lottie manifest. Written as the
+        # bare `lotties` array (mediaCapture.ts renderLottiePreviews parity: file/url/
+        # name/width/height/duration/frameRate/layers/preview?). The animation JSON +
+        # preview binaries are routed below (kind=="lottie_json"/"lottie_preview").
+        # Omitted for old profiles / pages with no discovered lotties.
+        lottie_manifest = profile.get("lottie_manifest")
+        if lottie_manifest and lottie_manifest.get("lotties"):
+            zf.writestr("capture/extracted/lottie-manifest.json",
+                        json.dumps(lottie_manifest["lotties"], ensure_ascii=False, indent=2))
 
         # assets/fonts/fonts.css — synthesized @font-face stylesheet pointing at
         # the captured woff2 files (staged alongside at capture/assets/fonts/), so

@@ -12,10 +12,96 @@ tracking-pixel filtering, dedup and srcset-variant collapse match hyperframes ex
 """
 from __future__ import annotations
 
+import hashlib
+import io
+import json
 import logging
+import zipfile
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 logger = logging.getLogger(__name__)
+
+# A dotLottie file is a ZIP archive — same local-file-header magic bytes.
+_ZIP_MAGIC = b"PK\x03\x04"
+# Lottie JSON structure keys (mediaCapture.ts validates by these). We require the
+# core set so a random JSON download isn't mistaken for an animation.
+_LOTTIE_KEYS = ("v", "ip", "op", "layers", "w", "h", "fr")
+
+
+def _extract_dotlottie_json(data: bytes) -> bytes | None:
+    """Return the first animation JSON out of a dotLottie ZIP, or None.
+
+    dotLottie is a ZIP; the animation JSON lives under ``animations/`` (v1) or
+    ``a/`` (v2). Stdlib ``zipfile`` only — no adm-zip / third-party dep. Pure."""
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as zf:
+            names = [n for n in zf.namelist()
+                     if (n.startswith("animations/") or n.startswith("a/"))
+                     and n.endswith(".json")]
+            for n in sorted(names):
+                try:
+                    return zf.read(n)
+                except Exception:
+                    continue
+    except Exception:
+        return None
+    return None
+
+
+def _valid_lottie(data: bytes) -> dict | None:
+    """Parse ``data`` as JSON and return it only when it has the core lottie keys
+    (v/ip/op/layers/w/h/fr). Returns the parsed dict, or None. Pure."""
+    try:
+        parsed = json.loads(data)
+    except Exception:
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    if not all(k in parsed for k in _LOTTIE_KEYS):
+        return None
+    return parsed
+
+
+def lottie_json_from_bytes(url: str, data: bytes) -> tuple[bytes, dict] | None:
+    """Turn a fetched lottie body into (json_bytes, parsed_dict).
+
+    Unzips a dotLottie ZIP (magic ``PK\\x03\\x04`` or a ``.lottie`` URL) to its
+    animation JSON first, then validates lottie structure. Returns None when the
+    body isn't a valid lottie. Pure (no I/O — the fetch happens upstream)."""
+    body = data
+    if data[:4] == _ZIP_MAGIC or (url or "").lower().endswith(".lottie"):
+        extracted = _extract_dotlottie_json(data)
+        if extracted is None:
+            return None
+        body = extracted
+    parsed = _valid_lottie(body)
+    if parsed is None:
+        return None
+    return body, parsed
+
+
+def lottie_manifest_entry(name: str, url: str, parsed: dict) -> dict:
+    """Build one lottie-manifest entry from a parsed lottie dict.
+
+    Mirrors renderLottiePreviews' manifest shape: file/url/name/width/height/
+    duration/frameRate/layers. ``preview`` is added later by the preview pass. Pure."""
+    fr = parsed.get("fr") or 30
+    ip = parsed.get("ip") or 0
+    op = parsed.get("op") or 0
+    try:
+        duration = round(((op - ip) / fr) * 10) / 10 if fr else 0
+    except Exception:
+        duration = 0
+    return {
+        "file": f"assets/lottie/{name}",
+        "url": url,
+        "name": parsed.get("nm") or name,
+        "width": parsed.get("w") or 0,
+        "height": parsed.get("h") or 0,
+        "duration": duration,
+        "frameRate": fr,
+        "layers": len(parsed.get("layers") or []),
+    }
 
 
 # Real browser JS (an IIFE returning CatalogedAsset[]). Ported verbatim from

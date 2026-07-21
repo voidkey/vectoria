@@ -186,3 +186,9 @@ class SiteProfile(BaseModel):
     # per-video metadata. Kept alongside the URL-only `videos` descriptor catalog.
     # Defaults to None so older stored profiles still validate + export (file omitted).
     video_manifest: dict | None = None
+    # Phase 8: lottie manifest — {lotties:[{file, url, name, width, height, duration,
+    # frameRate, layers, preview?}], meta:{discovered, previews}}. The animation JSON
+    # (dotLottie unzipped) lands as AssetRefs (kind="lottie_json") + best-effort
+    # mid-frame previews (kind="lottie_preview"); this carries the discovery record.
+    # Defaults to None so older stored profiles still validate + export (file omitted).
+    lottie_manifest: dict | None = None

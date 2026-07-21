@@ -1,13 +1,88 @@
+import io
+import json
+import zipfile
+
 import pytest
 
 from parsers.capture._media import (
     cap_items,
     catalog_assets,
     dedupe_srcset_variants,
+    lottie_json_from_bytes,
+    lottie_manifest_entry,
     make_video_response_handler,
     merge_video_manifest,
     video_descriptors,
 )
+
+
+# ── Phase 8 lottie helpers ──────────────────────────────────────────────────
+def _lottie(nm="Anim", w=200, h=100, fr=30, ip=0, op=60, layers=None):
+    return {"v": "5.7.4", "ip": ip, "op": op, "w": w, "h": h, "fr": fr, "nm": nm,
+            "layers": layers if layers is not None else [{"ty": 4}, {"ty": 4}]}
+
+
+def _dotlottie(anim: dict, path="animations/data.json") -> bytes:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("manifest.json", json.dumps({"animations": [{"id": "data"}]}))
+        zf.writestr(path, json.dumps(anim))
+    return buf.getvalue()
+
+
+def test_lottie_json_from_plain_json():
+    anim = _lottie()
+    data = json.dumps(anim).encode()
+    out = lottie_json_from_bytes("https://x/a.json", data)
+    assert out is not None
+    body, parsed = out
+    assert parsed["nm"] == "Anim"
+    assert json.loads(body)["w"] == 200
+
+
+def test_lottie_json_from_dotlottie_zip_v1():
+    zip_bytes = _dotlottie(_lottie(nm="Zipped"), path="animations/data.json")
+    assert zip_bytes[:4] == b"PK\x03\x04"
+    out = lottie_json_from_bytes("https://x/a.lottie", zip_bytes)
+    assert out is not None
+    _body, parsed = out
+    assert parsed["nm"] == "Zipped"
+
+
+def test_lottie_json_from_dotlottie_zip_v2_a_path():
+    zip_bytes = _dotlottie(_lottie(nm="V2"), path="a/data.json")
+    out = lottie_json_from_bytes("https://x/a.lottie", zip_bytes)
+    assert out is not None
+    assert out[1]["nm"] == "V2"
+
+
+def test_lottie_json_rejects_invalid_structure():
+    # Missing the core lottie keys (v/ip/op/layers/w/h/fr) → not a lottie.
+    data = json.dumps({"hello": "world", "layers": []}).encode()
+    assert lottie_json_from_bytes("https://x/a.json", data) is None
+
+
+def test_lottie_json_rejects_non_json():
+    assert lottie_json_from_bytes("https://x/a.json", b"not json at all") is None
+
+
+def test_lottie_json_dotlottie_without_animation_json_returns_none():
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("manifest.json", "{}")
+    assert lottie_json_from_bytes("https://x/a.lottie", buf.getvalue()) is None
+
+
+def test_lottie_manifest_entry_shape():
+    entry = lottie_manifest_entry("animation-0.json", "https://x/a.json",
+                                  _lottie(nm="Hero", w=400, h=300, fr=30, ip=0, op=60))
+    assert entry["file"] == "assets/lottie/animation-0.json"
+    assert entry["url"] == "https://x/a.json"
+    assert entry["name"] == "Hero"
+    assert entry["width"] == 400 and entry["height"] == 300
+    assert entry["frameRate"] == 30
+    assert entry["duration"] == 2.0     # (60-0)/30
+    assert entry["layers"] == 2
 
 
 def test_dedupe_keeps_highest_width_variant():

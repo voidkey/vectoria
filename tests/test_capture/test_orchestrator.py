@@ -115,7 +115,9 @@ def _settings():
         capture_max_catalog_images=40, capture_min_image_bytes=10000,
         capture_max_videos=6, capture_max_video_downloads=3,
         capture_max_video_bytes=75 * 1024 * 1024,
-        capture_video_download_budget_s=180.0)
+        capture_video_download_budget_s=180.0,
+        capture_max_lotties=10, capture_max_lottie_bytes=2 * 1024 * 1024,
+        capture_max_svg_sheet=60)
 
 
 @pytest.mark.asyncio
@@ -1084,3 +1086,140 @@ async def test_run_capture_degrades_when_page_lacks_on_support():
 def json_dumps(obj):
     import json
     return json.dumps(obj)
+
+
+# ── Phase 8: lottie discovery + download + manifest ─────────────────────────
+def _lottie_json(nm="Anim", w=200, h=100, fr=30, ip=0, op=60, layers=2):
+    import json
+    return json.dumps({"v": "5.7", "ip": ip, "op": op, "w": w, "h": h, "fr": fr,
+                       "nm": nm, "layers": [{"ty": 4}] * layers}).encode()
+
+
+def _dotlottie_bytes(nm="Zipped"):
+    import io as _io, json as _json, zipfile as _zip
+    buf = _io.BytesIO()
+    with _zip.ZipFile(buf, "w") as zf:
+        zf.writestr("manifest.json", "{}")
+        zf.writestr("animations/data.json",
+                    _json.dumps({"v": "5.7", "ip": 0, "op": 30, "w": 100, "h": 100,
+                                 "fr": 30, "nm": nm, "layers": [{"ty": 4}]}))
+    return buf.getvalue()
+
+
+@pytest.mark.asyncio
+async def test_run_capture_downloads_lotties_and_builds_manifest():
+    raw = _full_quality_raw()
+    raw["assets"]["lotties"] = ["https://x/a.json", "https://x/b.lottie"]
+    page = _fake_page(raw)
+    deps = _FakeDeps(page, {})
+    cfg = _settings()
+
+    async def _fake_fetch(url, *, max_bytes):
+        if url.endswith(".lottie"):
+            return _dotlottie_bytes("FromZip"), "application/octet-stream"
+        return _lottie_json("FromJson"), "application/json"
+
+    from unittest.mock import patch
+    with patch("parsers.capture._assets.fetch_asset_bytes", new=_fake_fetch):
+        from parsers.capture.orchestrator import run_capture
+        outcome = await run_capture("https://x", "kb", "d1", cfg, deps)
+
+    lm = outcome.profile.lottie_manifest
+    assert lm is not None
+    names = {e["name"] for e in lm["lotties"]}
+    assert names == {"FromJson", "FromZip"}
+    assert lm["meta"]["discovered"] == 2
+    # No transient parsed dict leaks into the persisted manifest.
+    assert all("_parsed" not in e for e in lm["lotties"])
+    # Animation JSON stored + routed as kind="lottie_json" under assets/lottie/.
+    refs = [a for a in outcome.profile.assets if a.kind == "lottie_json"]
+    assert len(refs) == 2
+    for a in refs:
+        assert a.storage_key.startswith("captures/kb/d1/assets/lottie/animation-")
+
+
+@pytest.mark.asyncio
+async def test_run_capture_lottie_dedups_by_content_hash():
+    raw = _full_quality_raw()
+    raw["assets"]["lotties"] = ["https://x/a.json", "https://x/dup.json"]
+    page = _fake_page(raw)
+    deps = _FakeDeps(page, {})
+
+    async def _fake_fetch(url, *, max_bytes):
+        return _lottie_json("Same"), "application/json"  # identical content
+
+    from unittest.mock import patch
+    with patch("parsers.capture._assets.fetch_asset_bytes", new=_fake_fetch):
+        from parsers.capture.orchestrator import run_capture
+        outcome = await run_capture("https://x", "kb", "d1", _settings(), deps)
+
+    lm = outcome.profile.lottie_manifest
+    assert len(lm["lotties"]) == 1     # deduped
+    refs = [a for a in outcome.profile.assets if a.kind == "lottie_json"]
+    assert len(refs) == 1
+
+
+@pytest.mark.asyncio
+async def test_run_capture_lottie_rejects_invalid_and_omits_manifest():
+    raw = _full_quality_raw()
+    raw["assets"]["lotties"] = ["https://x/notlottie.json"]
+    page = _fake_page(raw)
+    deps = _FakeDeps(page, {})
+
+    async def _fake_fetch(url, *, max_bytes):
+        import json
+        return json.dumps({"hello": "world"}).encode(), "application/json"
+
+    from unittest.mock import patch
+    with patch("parsers.capture._assets.fetch_asset_bytes", new=_fake_fetch):
+        from parsers.capture.orchestrator import run_capture
+        outcome = await run_capture("https://x", "kb", "d1", _settings(), deps)
+
+    assert outcome.profile.lottie_manifest is None
+    assert not [a for a in outcome.profile.assets if a.kind == "lottie_json"]
+
+
+@pytest.mark.asyncio
+async def test_run_capture_lottie_cap_logs_truncation(caplog):
+    raw = _full_quality_raw()
+    raw["assets"]["lotties"] = [f"https://x/a{i}.json" for i in range(5)]
+    page = _fake_page(raw)
+    deps = _FakeDeps(page, {})
+    cfg = _settings()
+    cfg.capture_max_lotties = 2
+
+    counter = {"n": 0}
+
+    async def _fake_fetch(url, *, max_bytes):
+        counter["n"] += 1
+        return _lottie_json(f"L{counter['n']}"), "application/json"
+
+    from unittest.mock import patch
+    import logging
+    with patch("parsers.capture._assets.fetch_asset_bytes", new=_fake_fetch):
+        from parsers.capture.orchestrator import run_capture
+        with caplog.at_level(logging.INFO):
+            outcome = await run_capture("https://x", "kb", "d1", cfg, deps)
+
+    assert len(outcome.profile.lottie_manifest["lotties"]) == 2
+    assert counter["n"] == 2                       # only 2 sources fetched
+    assert any("lottie cap" in r.message for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_run_capture_lottie_includes_legacy_single_url():
+    raw = _full_quality_raw()
+    raw["assets"]["lottie"] = "https://x/legacy.json"   # only the legacy single field
+    page = _fake_page(raw)
+    deps = _FakeDeps(page, {})
+
+    async def _fake_fetch(url, *, max_bytes):
+        return _lottie_json("Legacy"), "application/json"
+
+    from unittest.mock import patch
+    with patch("parsers.capture._assets.fetch_asset_bytes", new=_fake_fetch):
+        from parsers.capture.orchestrator import run_capture
+        outcome = await run_capture("https://x", "kb", "d1", _settings(), deps)
+
+    lm = outcome.profile.lottie_manifest
+    assert lm is not None and lm["lotties"][0]["name"] == "Legacy"

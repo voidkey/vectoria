@@ -172,6 +172,28 @@ EXTRACT_JS = r"""
   const favicon = document.querySelector('link[rel~="icon"]');
   const video = document.querySelector('video source, video[src]');
   const lottie = document.querySelector('lottie-player[src], [data-animation-path]');
+  // Multi-source lottie discovery (ported from index.ts DOM scan + mediaCapture.ts):
+  // web components (dotlottie-wc / lottie-player / dotlottie-player [src] +
+  // [data-animation-path]), lottie-web's registered animations, and .lottie/.json
+  // anchors. Absolutized, deduped, bounded — Python does the download + validate.
+  const lottieUrls = [];
+  const pushLottie = (u) => {
+    const au = abs(u);
+    if (au && !au.startsWith('data:') && lottieUrls.indexOf(au) === -1 && lottieUrls.length < 40)
+      lottieUrls.push(au);
+  };
+  document.querySelectorAll('dotlottie-wc[src], lottie-player[src], dotlottie-player[src], [data-animation-path]')
+    .forEach(function(el) { pushLottie(el.getAttribute('src') || el.getAttribute('data-animation-path')); });
+  try {
+    if (window.lottie && window.lottie.getRegisteredAnimations) {
+      window.lottie.getRegisteredAnimations().forEach(function(anim) {
+        if (anim && anim.path) pushLottie(anim.path);
+      });
+    }
+  } catch(e) {}
+  document.querySelectorAll('a[href$=".lottie"], a[href$=".json"]').forEach(function(a) {
+    pushLottie(a.getAttribute('href'));
+  });
   const assets = {
     logo: pickLogo(),
     hero: meta('meta[property="og:image"]') || null,
@@ -179,6 +201,7 @@ EXTRACT_JS = r"""
     favicon: favicon ? abs(favicon.href) : null,
     video: video ? abs(video.src || video.getAttribute('src')) : null,
     lottie: lottie ? abs(lottie.getAttribute('src') || lottie.getAttribute('data-animation-path')) : null,
+    lotties: lottieUrls,
   };
 
   const scriptsHref = Array.from(document.querySelectorAll('script[src], link[href]'))

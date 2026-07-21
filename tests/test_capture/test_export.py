@@ -544,3 +544,62 @@ async def test_build_zip_omits_video_manifest_when_absent():
         data = await build_hyperframes_zip(doc)
     names = set(zipfile.ZipFile(io.BytesIO(data)).namelist())
     assert "capture/extracted/video-manifest.json" not in names
+
+
+@pytest.mark.asyncio
+async def test_build_zip_routes_lotties_and_writes_manifest():
+    """Phase 8: lottie_json/lottie_preview AssetRefs route under assets/lottie/ and
+    assets/lottie/previews/; the manifest is written as the bare lotties array."""
+    doc = type("D", (), {})()
+    doc.id, doc.kb_id = "d1", "kb"
+    doc.profile = {
+        "fonts": {}, "text": {"headline": "T"}, "screenshots": [], "spacing": {},
+        "lottie_manifest": {
+            "lotties": [{"file": "assets/lottie/animation-0.json",
+                         "url": "https://x/a.json", "name": "Hero", "width": 200,
+                         "height": 100, "duration": 2.0, "frameRate": 30, "layers": 2,
+                         "preview": "assets/lottie/previews/animation-0-preview.png"}],
+            "meta": {"discovered": 1, "previews": 1}},
+        "assets": [
+            {"kind": "lottie_json",
+             "storage_key": "captures/kb/d1/assets/lottie/animation-0.json",
+             "format": "json"},
+            {"kind": "lottie_preview",
+             "storage_key": "captures/kb/d1/assets/lottie/previews/animation-0-preview.png",
+             "format": "png"},
+        ],
+    }
+    storage = AsyncMock()
+    storage.get = AsyncMock(return_value=b"BYTES")
+    with (
+        patch("parsers.capture.export.get_storage", new=AsyncMock(return_value=storage)),
+        patch("parsers.capture.export._image_keys", new=AsyncMock(return_value={})),
+    ):
+        from parsers.capture.export import build_hyperframes_zip
+        data = await build_hyperframes_zip(doc)
+    zf = zipfile.ZipFile(io.BytesIO(data))
+    names = set(zf.namelist())
+    assert "capture/assets/lottie/animation-0.json" in names
+    assert "capture/assets/lottie/previews/animation-0-preview.png" in names
+    assert "capture/extracted/lottie-manifest.json" in names
+    manifest = json.loads(zf.read("capture/extracted/lottie-manifest.json"))
+    assert isinstance(manifest, list) and manifest[0]["name"] == "Hero"
+
+
+@pytest.mark.asyncio
+async def test_build_zip_omits_lottie_manifest_when_absent():
+    """Backward-compat: an old profile without lottie_manifest omits the file."""
+    doc = type("D", (), {})()
+    doc.id, doc.kb_id = "d1", "kb"
+    doc.profile = {"fonts": {}, "text": {"headline": "T"}, "screenshots": [],
+                   "spacing": {}, "assets": []}
+    storage = AsyncMock()
+    storage.get = AsyncMock(return_value=b"BYTES")
+    with (
+        patch("parsers.capture.export.get_storage", new=AsyncMock(return_value=storage)),
+        patch("parsers.capture.export._image_keys", new=AsyncMock(return_value={})),
+    ):
+        from parsers.capture.export import build_hyperframes_zip
+        data = await build_hyperframes_zip(doc)
+    names = set(zipfile.ZipFile(io.BytesIO(data)).namelist())
+    assert "capture/extracted/lottie-manifest.json" not in names

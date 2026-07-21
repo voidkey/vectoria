@@ -138,6 +138,62 @@ async def _capture_video_previews(page, entries: list, out: dict) -> None:
             out[src] = data
 
 
+async def _save_lotties(urls: list, kb_id: str, doc_id: str, cfg, storage) -> tuple[list, list]:
+    """Download + validate discovered lottie sources; store the animation JSON.
+
+    Port of mediaCapture.ts::saveLottieAnimations: for up to ``capture_max_lotties``
+    sources, fetch (SSRF/size-capped via fetch_asset_bytes), unzip a dotLottie ZIP to
+    its animation JSON, validate lottie structure (v/ip/op/layers/w/h/fr), dedup by
+    content hash, and store to ``captures/{kb}/{doc}/assets/lottie/animation-N.json``.
+    Returns (asset_refs, manifest_entries). Best-effort per lottie — one failure never
+    aborts. The parsed dict is carried on each manifest entry (``_parsed``, popped by
+    the preview pass) so previews need no re-parse."""
+    from parsers.capture._assets import fetch_asset_bytes
+    from parsers.capture._media import lottie_json_from_bytes, lottie_manifest_entry
+    from parsers.capture.profile import AssetRef
+
+    refs: list = []
+    entries: list = []
+    seen_hashes: set[str] = set()
+    saved = 0
+    for u in (urls or [])[: cfg.capture_max_lotties]:
+        if not u or not u.startswith("http"):
+            continue
+        got = await fetch_asset_bytes(u, max_bytes=cfg.capture_max_asset_bytes)
+        if got is None:
+            continue
+        data, _ctype = got
+        try:
+            result = lottie_json_from_bytes(u, data)
+        except Exception:
+            logger.info("capture: lottie parse failed for %s", u, exc_info=True)
+            continue
+        if result is None:
+            continue
+        json_bytes, parsed = result
+        digest = hashlib.sha1(json_bytes).hexdigest()
+        if digest in seen_hashes:
+            continue
+        seen_hashes.add(digest)
+        name = f"animation-{saved}.json"
+        key = f"captures/{kb_id}/{doc_id}/assets/lottie/{name}"
+        try:
+            await storage.put(key, json_bytes, content_type="application/json")
+        except Exception:
+            logger.info("capture: lottie store failed for %s", key, exc_info=True)
+            continue
+        saved += 1
+        refs.append(AssetRef(kind="lottie_json", storage_key=key, url=u, format="json"))
+        entry = lottie_manifest_entry(name, u, parsed)
+        entry["_parsed"] = parsed          # popped by the preview pass; never serialized
+        entries.append(entry)
+    if len(urls or []) > cfg.capture_max_lotties:
+        logger.info("capture: lottie cap (%d) dropped %d of %d discovered sources",
+                    cfg.capture_max_lotties,
+                    len(urls) - cfg.capture_max_lotties, len(urls))
+    return refs, entries
+
+
 def _safe_hex(css: str) -> str:
     from parsers.capture._colors import _to_hex, parse_css_color
     rgb = parse_css_color(css or "")
@@ -433,6 +489,31 @@ async def run_capture(url: str, kb_id: str, doc_id: str, cfg, deps: CaptureDeps)
         await storage.put(key, data, content_type=ctype or "application/octet-stream")
         profile_assets.append(AssetRef(kind=kind, storage_key=key, format=ext.lstrip(".")))
 
+    # ---- lotties: multi-source discovery -> download + dotLottie unzip -> manifest ----
+    # Port of mediaCapture.ts saveLottieAnimations. Discovery (DOM web components +
+    # lottie-web registered animations + .lottie/.json links) happened in the extractor
+    # (raw["assets"]["lotties"]); here we download/validate/store + build the manifest.
+    # Best-effort — a failure logs and leaves the manifest empty, never aborts. Includes
+    # the legacy single `lottie` asset URL so a page that only exposes it still surfaces.
+    lottie_urls: list = list(raw_assets.get("lotties") or [])
+    legacy_lottie = raw_assets.get("lottie")
+    if legacy_lottie and legacy_lottie not in lottie_urls:
+        lottie_urls.insert(0, legacy_lottie)
+    lottie_manifest = None
+    if lottie_urls:
+        try:
+            lottie_refs, lottie_entries = await _save_lotties(
+                lottie_urls, kb_id, doc_id, cfg, storage)
+        except Exception:
+            logger.info("capture: lottie save failed for %s", url, exc_info=True)
+            lottie_refs, lottie_entries = [], []
+        profile_assets.extend(lottie_refs)
+        if lottie_entries:
+            lottie_manifest = {
+                "lotties": lottie_entries,
+                "meta": {"discovered": len(lottie_entries), "previews": 0},
+            }
+
     # ---- video manifest: preview frames + bounded/budgeted direct-ext downloads ----
     # Two-layer discovery already merged into video_entries. Store per-video preview
     # frames (captured while the page was open) as kind="video_preview" AssetRefs, and
@@ -701,6 +782,12 @@ async def run_capture(url: str, kb_id: str, doc_id: str, cfg, deps: CaptureDeps)
                         viewport_width=vp.get("width", 0) or 0,
                         viewport_height=vp.get("height", 0) or 0)
 
+    # Drop the transient parsed-lottie dicts (carried only for the preview pass) so
+    # the persisted manifest stays lean + JSON-serializable.
+    if lottie_manifest:
+        for e in lottie_manifest.get("lotties", []):
+            e.pop("_parsed", None)
+
     t = raw.get("text", {})
     profile = SiteProfile(
         url=final_url, captured_at=datetime.now(timezone.utc).isoformat(),
@@ -722,7 +809,7 @@ async def run_capture(url: str, kb_id: str, doc_id: str, cfg, deps: CaptureDeps)
         motion_hints=_motion_hints(MotionHints, raw.get("motion", {}), shaders),
         asset_catalog=asset_catalog, videos=page_videos,
         animation_catalog=animation_catalog, shaders=shaders,
-        video_manifest=video_manifest)
+        video_manifest=video_manifest, lottie_manifest=lottie_manifest)
 
     return CaptureOutcome(
         profile=profile,
