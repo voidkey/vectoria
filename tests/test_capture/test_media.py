@@ -12,6 +12,7 @@ from parsers.capture._media import (
     lottie_manifest_entry,
     make_video_response_handler,
     merge_video_manifest,
+    render_lottie_previews,
     video_descriptors,
 )
 
@@ -371,3 +372,75 @@ def test_handler_swallows_headers_raising_leaves_set_unchanged_for_non_video():
     handler = make_video_response_handler(discovered)
     handler(_FakeResponse("https://x.com/opaque", raise_on_headers=True))
     assert discovered == set()
+
+
+# ── Phase 8: render_lottie_previews (fake page, best-effort) ────────────────
+class _FakeRenderPage:
+    def __init__(self, *, set_content_raises=False, screenshot=b"PNG",
+                 screenshot_raises=False):
+        self._set_content_raises = set_content_raises
+        self._screenshot = screenshot
+        self._screenshot_raises = screenshot_raises
+        self.evaluated = []
+
+    async def set_content(self, html, **k):
+        if self._set_content_raises:
+            raise RuntimeError("cdn blocked")
+
+    async def evaluate(self, script, *args):
+        self.evaluated.append((script, args))
+
+    async def wait_for_function(self, expr, **k):
+        return None
+
+    async def screenshot(self, **k):
+        if self._screenshot_raises:
+            raise RuntimeError("render failed")
+        return self._screenshot
+
+
+def _entry(name="animation-0.json", op=60, ip=0):
+    return {"file": f"assets/lottie/{name}", "name": name,
+            "_parsed": _lottie(op=op, ip=ip)}
+
+
+@pytest.mark.asyncio
+async def test_render_lottie_previews_returns_png_per_entry():
+    page = _FakeRenderPage()
+    out = await render_lottie_previews(page, [_entry()], max_bytes=2_000_000)
+    assert out == {"animation-0.json": b"PNG"}
+    # mid-frame = int((60-0)*0.3) = 18 passed to the loader
+    assert page.evaluated and page.evaluated[0][1][0][1] == 18
+
+
+@pytest.mark.asyncio
+async def test_render_lottie_previews_degrades_when_shell_load_fails(caplog):
+    import logging
+    page = _FakeRenderPage(set_content_raises=True)
+    with caplog.at_level(logging.INFO):
+        out = await render_lottie_previews(page, [_entry()], max_bytes=2_000_000)
+    assert out == {}
+    assert any("lottie preview render skipped" in r.message for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_render_lottie_previews_degrades_when_screenshot_fails(caplog):
+    import logging
+    page = _FakeRenderPage(screenshot_raises=True)
+    with caplog.at_level(logging.INFO):
+        out = await render_lottie_previews(page, [_entry()], max_bytes=2_000_000)
+    assert out == {}
+    assert any("lottie preview render skipped" in r.message for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_render_lottie_previews_skips_oversized():
+    page = _FakeRenderPage()
+    out = await render_lottie_previews(page, [_entry()], max_bytes=10)
+    assert out == {}    # JSON larger than 10 bytes -> skipped
+
+
+@pytest.mark.asyncio
+async def test_render_lottie_previews_empty_input_returns_empty():
+    out = await render_lottie_previews(_FakeRenderPage(), [], max_bytes=2_000_000)
+    assert out == {}

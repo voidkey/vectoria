@@ -362,6 +362,82 @@ VIDEO_DESCRIPTORS_JS = r"""(() => {
 })()"""
 
 
+# lottie-web from a CDN — the render page injects this to rasterize a mid-frame.
+# CDN may be blocked in the server env; the whole preview pass is best-effort and
+# LOGS on failure (never aborts the capture). Mirrors renderLottiePreviews.
+_LOTTIE_WEB_CDN = "https://cdnjs.cloudflare.com/ajax/libs/lottie-web/5.12.2/lottie.min.js"
+_LOTTIE_PREVIEW_HTML = (
+    "<!DOCTYPE html><html><head>"
+    f'<script src="{_LOTTIE_WEB_CDN}"></script>'
+    "<style>*{margin:0;padding:0;background:transparent}"
+    "#c{width:400px;height:400px}</style>"
+    "</head><body><div id=\"c\"></div></body></html>")
+
+# In-page loader: lottie.loadAnimation(animationData) + goToAndStop(midFrame).
+# String expression (no arrow-fn __name injection). Sets window.__READY on load.
+_LOTTIE_LOAD_JS = """(args) => {
+  var data = args[0], frame = args[1];
+  window.__READY = false;
+  try {
+    var a = window.lottie.loadAnimation({
+      container: document.getElementById('c'), renderer: 'svg',
+      loop: false, autoplay: false, animationData: data });
+    a.addEventListener('DOMLoaded', function() {
+      try { a.goToAndStop(frame, true); } catch(e) {}
+      window.__READY = true; });
+  } catch(e) { window.__READY = true; }
+}"""
+
+
+async def render_lottie_previews(page, entries: list, *, max_bytes: int) -> dict:
+    """Best-effort mid-frame preview PNGs for parsed lottie entries.
+
+    Port of mediaCapture.ts::renderLottiePreviews: for each entry (carrying its
+    parsed lottie under ``_parsed``), inject lottie-web into a shell page, load the
+    animation data, seek to ~30% of (op-ip), and screenshot a transparent PNG.
+    Returns ``{entry_name: png_bytes}``. Skips a lottie whose JSON is larger than
+    ``max_bytes`` (CDP message-limit guard). The WHOLE pass is wrapped so a blocked
+    CDN / render failure LOGS ("lottie preview render skipped: …") and leaves the
+    result empty — a failure never aborts the capture. Requires a live browser page
+    with set_content/evaluate/screenshot; a fake/limited page degrades cleanly."""
+    out: dict = {}
+    if not entries:
+        return out
+    try:
+        await page.set_content(_LOTTIE_PREVIEW_HTML, wait_until="load", timeout=10000)
+    except Exception:
+        logger.info("lottie preview render skipped: shell page load failed", exc_info=True)
+        return out
+    for entry in entries:
+        parsed = entry.get("_parsed")
+        name = entry.get("file", "").rsplit("/", 1)[-1] or entry.get("name", "")
+        if not parsed or not name:
+            continue
+        try:
+            raw_len = len(json.dumps(parsed).encode())
+        except Exception:
+            continue
+        if raw_len > max_bytes:
+            logger.info("lottie preview render skipped: %s over %d bytes", name, max_bytes)
+            continue
+        ip = parsed.get("ip") or 0
+        op = parsed.get("op") or 0
+        mid_frame = int((op - ip) * 0.3)
+        try:
+            await page.evaluate(_LOTTIE_LOAD_JS, [parsed, mid_frame])
+            try:
+                await page.wait_for_function("() => window.__READY === true", timeout=5000)
+            except Exception:
+                pass
+            png = await page.screenshot(omit_background=True)
+        except Exception:
+            logger.info("lottie preview render skipped: %s render failed", name, exc_info=True)
+            continue
+        if png:
+            out[name] = png
+    return out
+
+
 def _width_param(url: str) -> int:
     """Return the ``w=`` query value (Next.js image size), 0 if absent/invalid."""
     try:

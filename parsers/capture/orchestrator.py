@@ -243,7 +243,7 @@ async def run_capture(url: str, kb_id: str, doc_id: str, cfg, deps: CaptureDeps)
     from parsers.capture._html import extract_page_html
     from parsers.capture._media import (
         catalog_assets, make_video_response_handler, merge_video_manifest,
-        video_descriptors)
+        render_lottie_previews, video_descriptors)
     from parsers.capture._quality import assess_quality
     from parsers.capture._screenshots import (
         NEUTRALIZE_ANIMATION_CSS, capture_screenshots, prepare_page)
@@ -283,6 +283,9 @@ async def run_capture(url: str, kb_id: str, doc_id: str, cfg, deps: CaptureDeps)
         shaders: list = []
         video_entries: list = []          # merged video manifest entries
         video_previews: dict = {}         # url -> preview PNG bytes (DOM videos)
+        lottie_refs: list = []            # kind="lottie_json" AssetRefs
+        lottie_entries: list = []         # lottie-manifest entries (+ transient _parsed)
+        lottie_preview_pngs: dict = {}    # entry basename -> preview PNG bytes
         try:
             try:
                 await page.goto(url, wait_until="load",
@@ -371,6 +374,30 @@ async def run_capture(url: str, kb_id: str, doc_id: str, cfg, deps: CaptureDeps)
                     page_html = await extract_page_html(page)  # MUTATES DOM — must be last
                 except Exception:
                     logger.info("capture: page.html extract failed for %s", url, exc_info=True)
+            # Lotties: multi-source discovery (extractor: raw["assets"]["lotties"] +
+            # legacy single `lottie`) -> download + dotLottie unzip + validate + store
+            # the animation JSON, then a BEST-EFFORT in-page mid-frame preview render
+            # (lottie-web via CDN). Runs at ALL quality levels (lotties exist on partial
+            # pages). Placed dead-last in the page block because render_lottie_previews
+            # does page.set_content, which DESTROYS the DOM — nothing page-dependent may
+            # follow. Fully guarded: any failure logs + degrades (no manifest / no
+            # previews), never aborts. Store/manifest assembly happens after close.
+            lottie_urls: list = list(raw.get("assets", {}).get("lotties") or [])
+            _legacy_lottie = raw.get("assets", {}).get("lottie")
+            if _legacy_lottie and _legacy_lottie not in lottie_urls:
+                lottie_urls.insert(0, _legacy_lottie)
+            if lottie_urls:
+                try:
+                    lottie_refs, lottie_entries = await _save_lotties(
+                        lottie_urls, kb_id, doc_id, cfg, deps.storage)
+                except Exception:
+                    logger.info("capture: lottie save failed for %s", url, exc_info=True)
+                if lottie_entries:
+                    try:
+                        lottie_preview_pngs = await render_lottie_previews(
+                            page, lottie_entries, max_bytes=cfg.capture_max_lottie_bytes)
+                    except Exception:
+                        logger.info("lottie preview render skipped: %s", url, exc_info=True)
         finally:
             # Detach the CDP session (if any) regardless of what happened above.
             if cdp_session is not None:
@@ -489,30 +516,33 @@ async def run_capture(url: str, kb_id: str, doc_id: str, cfg, deps: CaptureDeps)
         await storage.put(key, data, content_type=ctype or "application/octet-stream")
         profile_assets.append(AssetRef(kind=kind, storage_key=key, format=ext.lstrip(".")))
 
-    # ---- lotties: multi-source discovery -> download + dotLottie unzip -> manifest ----
-    # Port of mediaCapture.ts saveLottieAnimations. Discovery (DOM web components +
-    # lottie-web registered animations + .lottie/.json links) happened in the extractor
-    # (raw["assets"]["lotties"]); here we download/validate/store + build the manifest.
-    # Best-effort — a failure logs and leaves the manifest empty, never aborts. Includes
-    # the legacy single `lottie` asset URL so a page that only exposes it still surfaces.
-    lottie_urls: list = list(raw_assets.get("lotties") or [])
-    legacy_lottie = raw_assets.get("lottie")
-    if legacy_lottie and legacy_lottie not in lottie_urls:
-        lottie_urls.insert(0, legacy_lottie)
+    # ---- lotties: attach downloaded refs + build manifest (previews rendered in-page) ----
+    # The download + validate + store + best-effort preview render happened INSIDE the
+    # page block (lottie_refs / lottie_entries / lottie_preview_pngs). Here we attach the
+    # AssetRefs, store the preview PNGs, and assemble the manifest. Best-effort throughout.
     lottie_manifest = None
-    if lottie_urls:
-        try:
-            lottie_refs, lottie_entries = await _save_lotties(
-                lottie_urls, kb_id, doc_id, cfg, storage)
-        except Exception:
-            logger.info("capture: lottie save failed for %s", url, exc_info=True)
-            lottie_refs, lottie_entries = [], []
+    if lottie_entries:
         profile_assets.extend(lottie_refs)
-        if lottie_entries:
-            lottie_manifest = {
-                "lotties": lottie_entries,
-                "meta": {"discovered": len(lottie_entries), "previews": 0},
-            }
+        preview_count = 0
+        for idx, entry in enumerate(lottie_entries):
+            name = entry.get("file", "").rsplit("/", 1)[-1]
+            png = lottie_preview_pngs.get(name)
+            if png:
+                pname = name.rsplit(".", 1)[0] + "-preview.png"
+                pkey = f"captures/{kb_id}/{doc_id}/assets/lottie/previews/{pname}"
+                try:
+                    await storage.put(pkey, png, content_type="image/png")
+                    entry["preview"] = f"assets/lottie/previews/{pname}"
+                    profile_assets.append(AssetRef(
+                        kind="lottie_preview", storage_key=pkey, format="png"))
+                    preview_count += 1
+                except Exception:
+                    logger.info("capture: lottie preview store failed for %s", pkey,
+                                exc_info=True)
+        lottie_manifest = {
+            "lotties": lottie_entries,
+            "meta": {"discovered": len(lottie_entries), "previews": preview_count},
+        }
 
     # ---- video manifest: preview frames + bounded/budgeted direct-ext downloads ----
     # Two-layer discovery already merged into video_entries. Store per-video preview

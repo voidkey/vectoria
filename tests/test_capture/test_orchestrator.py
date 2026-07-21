@@ -1223,3 +1223,100 @@ async def test_run_capture_lottie_includes_legacy_single_url():
 
     lm = outcome.profile.lottie_manifest
     assert lm is not None and lm["lotties"][0]["name"] == "Legacy"
+
+
+# ── Phase 8: lottie mid-frame previews (best-effort, fake page) ─────────────
+@pytest.mark.asyncio
+async def test_run_capture_lottie_previews_rendered_when_page_renders():
+    """A fake page that 'renders' (set_content ok, screenshot returns bytes) yields
+    a lottie_preview AssetRef + preview path in the manifest entry."""
+    raw = _full_quality_raw()
+    raw["assets"]["lotties"] = ["https://x/a.json"]
+    page = _fake_page(raw)
+    # Default fake page: set_content/wait_for_function are AsyncMocks; screenshot
+    # returns b"PNG". So a preview PNG is produced.
+    page.set_content = AsyncMock()
+    page.wait_for_function = AsyncMock()
+    deps = _FakeDeps(page, {})
+
+    async def _fake_fetch(url, *, max_bytes):
+        return _lottie_json("Hero"), "application/json"
+
+    from unittest.mock import patch
+    with patch("parsers.capture._assets.fetch_asset_bytes", new=_fake_fetch):
+        from parsers.capture.orchestrator import run_capture
+        outcome = await run_capture("https://x", "kb", "d1", _settings(), deps)
+
+    lm = outcome.profile.lottie_manifest
+    assert lm["meta"]["previews"] == 1
+    assert lm["lotties"][0]["preview"] == "assets/lottie/previews/animation-0-preview.png"
+    prev_refs = [a for a in outcome.profile.assets if a.kind == "lottie_preview"]
+    assert len(prev_refs) == 1
+    assert prev_refs[0].storage_key.endswith(
+        "assets/lottie/previews/animation-0-preview.png")
+
+
+@pytest.mark.asyncio
+async def test_run_capture_lottie_previews_degrade_when_render_fails(caplog):
+    """A page whose screenshot render raises -> NO previews, manifest still emitted,
+    and the degradation is LOGGED (no silent skip). Never aborts the capture."""
+    raw = _full_quality_raw()
+    raw["assets"]["lotties"] = ["https://x/a.json"]
+    page = _fake_page(raw)
+    page.set_content = AsyncMock()
+    page.wait_for_function = AsyncMock()
+
+    # Screenshot raises ONLY for the transparent lottie preview render (omit_background),
+    # so ordinary screenshots earlier in the capture still succeed.
+    async def _shot(*a, **k):
+        if k.get("omit_background"):
+            raise RuntimeError("render blocked")
+        return b"PNG"
+    page.screenshot = AsyncMock(side_effect=_shot)
+    deps = _FakeDeps(page, {})
+
+    async def _fake_fetch(url, *, max_bytes):
+        return _lottie_json("Hero"), "application/json"
+
+    from unittest.mock import patch
+    import logging
+    with patch("parsers.capture._assets.fetch_asset_bytes", new=_fake_fetch):
+        from parsers.capture.orchestrator import run_capture
+        with caplog.at_level(logging.INFO):
+            outcome = await run_capture("https://x", "kb", "d1", _settings(), deps)
+
+    lm = outcome.profile.lottie_manifest
+    assert lm is not None                       # manifest still emitted
+    assert lm["meta"]["previews"] == 0          # no previews
+    assert not [a for a in outcome.profile.assets if a.kind == "lottie_preview"]
+    assert "preview" not in lm["lotties"][0]
+    assert any("lottie preview render skipped" in r.message for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_run_capture_lottie_preview_skips_oversized(caplog):
+    """A lottie whose JSON exceeds capture_max_lottie_bytes is stored but its preview
+    is skipped (logged). Manifest entry has no preview."""
+    raw = _full_quality_raw()
+    raw["assets"]["lotties"] = ["https://x/big.json"]
+    page = _fake_page(raw)
+    page.set_content = AsyncMock()
+    page.wait_for_function = AsyncMock()
+    deps = _FakeDeps(page, {})
+    cfg = _settings()
+    cfg.capture_max_lottie_bytes = 50           # tiny cap -> preview skipped
+
+    async def _fake_fetch(url, *, max_bytes):
+        return _lottie_json("Big", layers=5), "application/json"
+
+    from unittest.mock import patch
+    import logging
+    with patch("parsers.capture._assets.fetch_asset_bytes", new=_fake_fetch):
+        from parsers.capture.orchestrator import run_capture
+        with caplog.at_level(logging.INFO):
+            outcome = await run_capture("https://x", "kb", "d1", cfg, deps)
+
+    lm = outcome.profile.lottie_manifest
+    assert lm["meta"]["previews"] == 0
+    assert [a for a in outcome.profile.assets if a.kind == "lottie_json"]  # JSON stored
+    assert any("lottie preview render skipped" in r.message for r in caplog.records)
