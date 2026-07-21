@@ -49,12 +49,43 @@ class Spacing(BaseModel):
     section_gap: int | None = None
 
 
+class Heading(BaseModel):
+    level: int
+    text: str = ""
+    font_size: str = ""
+    font_weight: str = ""
+    color: str = ""
+
+
+class SvgInfo(BaseModel):
+    # DB-bloat guard: the extractor's raw svg dict carries `outerHTML` (later
+    # phases download it), but it MUST NOT be persisted here — metadata only.
+    label: str = ""
+    view_box: str = ""
+    width: int = 0
+    height: int = 0
+    is_logo: bool = False
+
+
+class PageGeom(BaseModel):
+    width: int = 0
+    height: int = 0
+    viewport_width: int = 0
+    viewport_height: int = 0
+
+
 class SectionInfo(BaseModel):
     index: int
     heading: str = ""
     type: str = "generic"
     bg_color: str = ""
     screenshot_image_id: str | None = None
+    # Phase 1: rich section content for faithful page-card recreation downstream.
+    layout: str = ""
+    background_image: str = ""
+    cta_texts: list[str] = Field(default_factory=list)
+    asset_urls: list[str] = Field(default_factory=list)
+    text: str = ""
 
 
 class TextInfo(BaseModel):
@@ -109,6 +140,12 @@ class SiteProfile(BaseModel):
     design_styles: dict | None = None
     colors: list[ColorToken] = Field(default_factory=list)
     theme_color: str | None = None
+    # Phase 1: hyperframes DesignTokens parity — :root custom properties,
+    # heading typography, SVG (logo) metadata, and full-page/viewport geometry.
+    css_variables: dict[str, str] = Field(default_factory=dict)
+    headings: list[Heading] = Field(default_factory=list)
+    svgs: list[SvgInfo] = Field(default_factory=list)
+    page: PageGeom | None = None
     fonts: Fonts
     spacing: Spacing
     sections: list[SectionInfo] = Field(default_factory=list)
