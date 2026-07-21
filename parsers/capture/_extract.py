@@ -88,6 +88,8 @@ EXTRACT_JS = r"""
     return s.display !== 'none' && s.visibility !== 'hidden' && s.opacity !== '0'
       && el.getBoundingClientRect().height > 0;
   };
+  // Caps below mirror tokenExtractor.ts: sections ≤30, per-section ctas ≤8,
+  // assetUrls ≤10, section text ≤600; headings ≤40; svgs ≤50, outerHTML ≤10000.
   let sectionEls = Array.from(document.querySelectorAll('body > section, main > section, main > div, body > div'));
   sectionEls = sectionEls.filter(el => {
     const r = el.getBoundingClientRect();
@@ -127,6 +129,7 @@ EXTRACT_JS = r"""
     if (backgroundImage && !backgroundImage.startsWith('data:') &&
         assetUrls.indexOf(backgroundImage) === -1) assetUrls.unshift(backgroundImage);
     const imgCount = el.querySelectorAll('img').length;
+    // Coarse layout hint; 'stacked' = default vertical flow (no image/heading cue).
     let layout = 'stacked';
     if (imgCount >= 3) layout = 'grid';
     else if (el.querySelector('img, video') && headingText) layout = 'split';
@@ -139,8 +142,6 @@ EXTRACT_JS = r"""
             assetUrls: assetUrls,
             layout: layout,
             text: (el.innerText || el.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 600),
-            x: Math.round(r.left + scrollX), y: Math.round(r.y + scrollY),
-            width: Math.round(r.width), height: Math.round(r.height),
             rect: {y: r.y + scrollY, height: r.height}};
   });
   const section_gaps = [];
@@ -250,10 +251,13 @@ EXTRACT_JS = r"""
           ariaLabel.toLowerCase().indexOf(titleBrand.toLowerCase()) !== -1) isLogo = true;
     }
     const rect = svg.getBoundingClientRect();
-    return {label: label || '', viewBox: svg.getAttribute('viewBox') || '',
-            width: Math.round(rect.width), height: Math.round(rect.height),
-            outerHTML: svg.outerHTML.slice(0, 10000), isLogo: isLogo};
-  }).filter(Boolean).slice(0, 50);
+    // Cheap metadata only; outerHTML (≤10000) attached AFTER filter+cap so we
+    // never serialize markup for SVGs we discard (icon-heavy pages = hundreds).
+    return {node: svg, label: label || '', viewBox: svg.getAttribute('viewBox') || '',
+            width: Math.round(rect.width), height: Math.round(rect.height), isLogo: isLogo};
+  }).filter(Boolean).slice(0, 50).map(s => ({
+    label: s.label, viewBox: s.viewBox, width: s.width, height: s.height,
+    outerHTML: s.node.outerHTML.slice(0, 10000), isLogo: s.isLogo}));
 
   const page = {width: Math.round(document.documentElement.scrollWidth),
                 height: Math.round(document.documentElement.scrollHeight),

@@ -84,8 +84,8 @@ async def run_capture(url: str, kb_id: str, doc_id: str, cfg, deps: CaptureDeps)
     from parsers.capture._screenshots import (
         NEUTRALIZE_ANIMATION_CSS, capture_screenshots, prepare_page)
     from parsers.capture.profile import (
-        AssetRef, FontFile, Fonts, MotionHints, ScreenshotRef, SectionInfo,
-        Spacing, TextInfo)
+        AssetRef, FontFile, Fonts, Heading, MotionHints, PageGeom, ScreenshotRef,
+        SectionInfo, Spacing, SvgInfo, TextInfo)
 
     async with deps.open_page() as page:
         try:
@@ -290,7 +290,33 @@ async def run_capture(url: str, kb_id: str, doc_id: str, cfg, deps: CaptureDeps)
                           s["index"], len(raw_sections)),
         bg_color=_safe_hex(s.get("bg", "")),
         screenshot_image_id=shot_by_section.get(s["index"]),
+        layout=s.get("layout", ""),
+        background_image=s.get("backgroundImage", ""),
+        cta_texts=s.get("callsToAction", []),
+        asset_urls=s.get("assetUrls", []),
+        text=s.get("text", ""),
     ) for s in raw_sections]
+
+    # ---- Phase 1 tokens: headings / svgs / page geometry (hyperframes parity) ----
+    # camelCase (raw) -> snake_case (profile); SVG outerHTML is DROPPED here so the
+    # raw markup never lands in the persisted profile (DB-bloat guard).
+    headings = [Heading(level=h.get("level", 1), text=h.get("text", ""),
+                        font_size=h.get("fontSize", ""),
+                        font_weight=h.get("fontWeight", ""),
+                        color=h.get("color", ""))
+                for h in raw.get("headings", [])]
+    svgs = [SvgInfo(label=s.get("label", ""), view_box=s.get("viewBox", ""),
+                    width=s.get("width", 0) or 0, height=s.get("height", 0) or 0,
+                    is_logo=bool(s.get("isLogo", False)))
+            for s in raw.get("svgs", [])]
+    raw_page = raw.get("page") or {}
+    page = None
+    if raw_page:
+        vp = raw_page.get("viewport", {}) or {}
+        page = PageGeom(width=raw_page.get("width", 0) or 0,
+                        height=raw_page.get("height", 0) or 0,
+                        viewport_width=vp.get("width", 0) or 0,
+                        viewport_height=vp.get("height", 0) or 0)
 
     t = raw.get("text", {})
     profile = SiteProfile(
@@ -299,6 +325,8 @@ async def run_capture(url: str, kb_id: str, doc_id: str, cfg, deps: CaptureDeps)
         capture_quality=capture_quality, blocked_reason=blocked_reason,
         page_html_key=page_html_key, design_styles=design_styles,
         colors=colors, theme_color=raw.get("colors", {}).get("theme_color"),
+        css_variables=raw.get("colors", {}).get("css_vars", {}) or {},
+        headings=headings, svgs=svgs, page=page,
         fonts=fonts, spacing=spacing, sections=sections,
         text=TextInfo(headline=t.get("headline", ""), tagline=t.get("tagline", ""),
                       ctas=t.get("ctas", []), full_text=t.get("full_text", "")),

@@ -96,3 +96,66 @@ async def test_run_capture_happy_path_builds_profile_without_browser_or_db():
     assert prof["motion_hints"]["libraries"] == ["gsap"]
     assert {c["role"] for c in prof["colors"]} >= {"background", "text"}
     assert len(prof["screenshots"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_run_capture_maps_phase1_tokens_and_strips_svg_markup():
+    raw = {
+        "final_url": "https://x/final",
+        "colors": {"samples": [{"color": "#0b0b0f", "area": 400000, "text": False}],
+                   "css_vars": {"--brand": "#f00", "--radius": "8px"},
+                   "theme_color": None},
+        "fonts": {"display": {"family": "Inter", "weight": 700, "selector": "h1"},
+                  "body": {"family": "Inter", "weight": 400, "selector": "p"},
+                  "face_srcs": {}},
+        "spacing": {"margins": [8], "paddings": [16], "radii": [8],
+                    "container_max_width": 1200, "section_gaps": []},
+        "sections": [{"index": 0, "heading": "Hero", "classNames": ["hero"],
+                      "bg": "#0b0b0f", "backgroundImage": "https://x/bg.png",
+                      "callsToAction": ["Start", "Learn"],
+                      "assetUrls": ["https://x/a.png"], "layout": "split",
+                      "text": "hero body text", "x": 0, "y": 0,
+                      "width": 1280, "height": 600,
+                      "rect": {"y": 0, "height": 600}}],
+        "headings": [{"level": 1, "text": "Hero", "fontSize": "48px",
+                      "fontWeight": "700", "color": "rgb(17, 17, 17)"}],
+        "svgs": [{"label": "logo", "viewBox": "0 0 24 24", "width": 24, "height": 24,
+                  "outerHTML": "<svg>...huge markup...</svg>", "isLogo": True}],
+        "page": {"width": 1440, "height": 5000,
+                 "viewport": {"width": 1280, "height": 800}},
+        "text": {"headline": "Hello", "tagline": "world", "ctas": ["Start"],
+                 "full_text": "Hello world."},
+        "assets": {"logo": None, "hero": None, "og_image": None, "favicon": None,
+                   "video": None, "lottie": None},
+        "motion": {"libraries": [], "has_video_background": False, "has_canvas": False},
+    }
+    deps = _FakeDeps(_fake_page(raw), {})
+
+    from parsers.capture.orchestrator import run_capture
+    outcome = await run_capture("https://x", "kb", "d1", _settings(), deps)
+    prof = outcome.profile.model_dump()
+
+    assert prof["css_variables"] == {"--brand": "#f00", "--radius": "8px"}
+    h = prof["headings"][0]
+    assert h["level"] == 1 and h["text"] == "Hero"
+    assert h["font_size"] == "48px" and h["font_weight"] == "700"
+    assert h["color"] == "rgb(17, 17, 17)"
+    s = prof["svgs"][0]
+    assert s["label"] == "logo" and s["view_box"] == "0 0 24 24"
+    assert s["width"] == 24 and s["height"] == 24 and s["is_logo"] is True
+    # DB-bloat guard: raw SVG markup must never reach the profile.
+    assert "outerHTML" not in s and "outer_html" not in s
+    assert "markup" not in json_dumps(s)
+    assert prof["page"] == {"width": 1440, "height": 5000,
+                            "viewport_width": 1280, "viewport_height": 800}
+    sec = prof["sections"][0]
+    assert sec["layout"] == "split"
+    assert sec["background_image"] == "https://x/bg.png"
+    assert sec["cta_texts"] == ["Start", "Learn"]
+    assert sec["asset_urls"] == ["https://x/a.png"]
+    assert sec["text"] == "hero body text"
+
+
+def json_dumps(obj):
+    import json
+    return json.dumps(obj)

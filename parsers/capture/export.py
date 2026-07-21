@@ -74,7 +74,7 @@ def _official_tokens(profile: dict) -> dict:
     rich ColorTokens (build-frame reads `.hex`); title/description come from the
     captured page text; fonts/colorStats are projected from vectoria's own fields."""
     text = profile.get("text", {}) or {}
-    return {
+    out = {
         "title": text.get("headline", ""),
         "description": text.get("tagline", ""),
         "ctas": text.get("ctas", []),  # extra (official schema ignores unknown keys); handy for downstream summaries
@@ -82,9 +82,48 @@ def _official_tokens(profile: dict) -> dict:
         "fonts": _fonts_array(profile.get("fonts", {}) or {}),
         "colorStats": _color_stats(profile.get("colors", []) or []),
         "spacing": profile.get("spacing", {}),
+        # Phase 1 — hyperframes DesignTokens parity. Vectoria's profile is
+        # snake_case; project back to the verbatim camelCase keys build-frame reads.
+        "cssVariables": profile.get("css_variables", {}) or {},
+        "headings": _headings_out(profile.get("headings", []) or []),
+        "svgs": _svgs_out(profile.get("svgs", []) or []),
+        "sections": _sections_out(profile.get("sections", []) or []),
         # extra: lets downstream (go-figlens) gate structural rebuild on fidelity.
         "capture_quality": profile.get("capture_quality", "full"),
     }
+    page = profile.get("page")
+    if page:
+        out["page"] = {"width": page.get("width", 0), "height": page.get("height", 0),
+                       "viewport": {"width": page.get("viewport_width", 0),
+                                    "height": page.get("viewport_height", 0)}}
+    return out
+
+
+def _headings_out(headings: list[dict]) -> list[dict]:
+    """snake_case Heading -> hyperframes camelCase (fontSize/fontWeight)."""
+    return [{"level": h["level"], "text": h.get("text", ""),
+             "fontSize": h.get("font_size", ""), "fontWeight": h.get("font_weight", ""),
+             "color": h.get("color", "")} for h in headings]
+
+
+def _svgs_out(svgs: list[dict]) -> list[dict]:
+    """snake_case SvgInfo -> hyperframes camelCase (viewBox/isLogo). Metadata only —
+    outerHTML was never persisted to the profile (DB-bloat guard)."""
+    return [{"label": s.get("label", ""), "viewBox": s.get("view_box", ""),
+             "width": s.get("width", 0), "height": s.get("height", 0),
+             "isLogo": bool(s.get("is_logo", False))} for s in svgs]
+
+
+def _sections_out(sections: list[dict]) -> list[dict]:
+    """snake_case SectionInfo -> hyperframes DesignTokens `sections` shape
+    (backgroundColor/backgroundImage/callsToAction/assetUrls)."""
+    return [{"type": s.get("type", "generic"), "heading": s.get("heading", ""),
+             "backgroundColor": s.get("bg_color", ""),
+             "backgroundImage": s.get("background_image", ""),
+             "callsToAction": s.get("cta_texts", []) or [],
+             "assetUrls": s.get("asset_urls", []) or [],
+             "layout": s.get("layout", ""), "text": s.get("text", "")}
+            for s in sections]
 
 
 async def build_hyperframes_zip(doc) -> bytes:
