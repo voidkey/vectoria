@@ -103,12 +103,14 @@ def test_lottie_manifest_entry_shape():
     entry = lottie_manifest_entry("animation-0.json", "https://x/a.json",
                                   _lottie(nm="Hero", w=400, h=300, fr=30, ip=0, op=60))
     assert entry["file"] == "assets/lottie/animation-0.json"
-    assert entry["url"] == "https://x/a.json"
+    assert "url" not in entry           # reference entry has no url — 1:1 key set
     assert entry["name"] == "Hero"
     assert entry["width"] == 400 and entry["height"] == 300
     assert entry["frameRate"] == 30
     assert entry["duration"] == 2.0     # (60-0)/30
     assert entry["layers"] == 2
+    assert set(entry) == {"file", "name", "width", "height",
+                          "duration", "frameRate", "layers"}
 
 
 def test_dedupe_keeps_highest_width_variant():

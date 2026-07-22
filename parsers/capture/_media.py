@@ -110,8 +110,11 @@ def lottie_json_from_bytes(
 def lottie_manifest_entry(name: str, url: str, parsed: dict) -> dict:
     """Build one lottie-manifest entry from a parsed lottie dict.
 
-    Mirrors renderLottiePreviews' manifest shape: file/url/name/width/height/
-    duration/frameRate/layers. ``preview`` is added later by the preview pass. Pure."""
+    Reference manifest shape (mediaCapture.ts::renderLottiePreviews) is exactly
+    ``{file, preview, name, width, height, duration, frameRate, layers}`` — no
+    ``url``. ``preview`` is added later by the preview pass. ``url`` stays a
+    parameter (the caller passes the source URL for AssetRef provenance) but is
+    intentionally NOT serialized into the manifest, to stay 1:1. Pure."""
     fr = parsed.get("fr") or 30
     ip = parsed.get("ip") or 0
     op = parsed.get("op") or 0
@@ -121,7 +124,6 @@ def lottie_manifest_entry(name: str, url: str, parsed: dict) -> dict:
         duration = 0
     return {
         "file": f"assets/lottie/{name}",
-        "url": url,
         "name": parsed.get("nm") or name,
         "width": parsed.get("w") or 0,
         "height": parsed.get("h") or 0,

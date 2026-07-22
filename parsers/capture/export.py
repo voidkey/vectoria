@@ -268,35 +268,15 @@ def _hostname(url: str) -> str:
 
 
 def _meta_json(profile: dict) -> dict:
-    """Project metadata (capture/meta.json). The reference scaffolding.ts writes a
-    minimal {id, name}; we keep those for parity and add the richer vectoria fields
-    (url/capturedAt/captureQuality/counts/generatedBy) the export surfaces. Counts
-    are derived from the assembled profile so downstream can size the capture at a
-    glance without unzipping every artifact."""
-    url = profile.get("url", "")
-    host = _hostname(url)
+    """Project metadata (capture/meta.json) — the exact reference shape.
+
+    scaffolding.ts writes ONLY ``{id: hostname + "-video", name: tokens.title ||
+    hostname}`` (it deliberately never writes index.html; a downstream agent owns
+    that). We match it verbatim: no url/capturedAt/counts/generatedBy superset —
+    that data already lives in tokens.json / the manifests."""
+    host = _hostname(profile.get("url", ""))
     title = (profile.get("text", {}) or {}).get("headline", "") or host
-    video_manifest = profile.get("video_manifest") or {}
-    lottie_manifest = profile.get("lottie_manifest") or {}
-    ranked = _ranked_colors(profile)
-    counts = {
-        "screenshots": len(profile.get("screenshots") or []),
-        "assets": len(profile.get("assets") or []),
-        "fonts": len(_fonts_array(profile.get("fonts", {}) or {})),
-        "videos": len(video_manifest.get("videos") or []),
-        "lotties": len(lottie_manifest.get("lotties") or []),
-        "colors": len(ranked),
-    }
-    return {
-        "id": (host + "-video") if host else "capture-video",
-        "name": title,
-        "url": url,
-        "title": title,
-        "capturedAt": profile.get("captured_at", ""),
-        "captureQuality": profile.get("capture_quality", "full"),
-        "counts": counts,
-        "generatedBy": "vectoria",
-    }
+    return {"id": (host + "-video") if host else "capture-video", "name": title}
 
 
 # Contact-sheet rows: match `contact-sheet.jpg` + digit-suffixed paginated pages
@@ -372,7 +352,6 @@ def _agent_prompt(profile: dict, written: set[str]) -> str:
         f"| `extracted/tokens.json` | Design tokens: {len(ranked)} colors, "
         f"{len(_fonts_array(fonts))} fonts, {len(profile.get('headings') or [])} "
         f"headings, {len(text.get('ctas') or [])} CTAs |")
-    rows.append("| `extracted/fonts.json` | Role-keyed display/body font families. |")
     if present("extracted/fonts-manifest.json"):
         rows.append("| `extracted/fonts-manifest.json` | Captured font faces "
                     "(family/weights) from fonttools. |")
@@ -443,9 +422,9 @@ async def build_hyperframes_zip(doc) -> bytes:
         # detection (no longer projected from role tokens/luminance fallback).
         zf.writestr("capture/extracted/tokens.json",
                     json.dumps(_official_tokens(profile), ensure_ascii=False, indent=2))
-        # extracted/fonts.json — the role-keyed Fonts object (legacy shape).
-        zf.writestr("capture/extracted/fonts.json",
-                    json.dumps(profile.get("fonts", {}), ensure_ascii=False, indent=2))
+        # No extracted/fonts.json — the reference emits only fonts-manifest.json
+        # (fonttools/fontkit metadata); the role-keyed Fonts object has no reference
+        # counterpart, so writing it broke 1:1. Role fonts still live in tokens.json.
         # extracted/fonts-manifest.json — the REAL types.ts::FontsManifest built from
         # captured font bytes (fonttools). Fallback for old profiles without
         # font_files: an empty-but-well-formed manifest so downstream never breaks.

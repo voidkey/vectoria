@@ -55,7 +55,7 @@ async def test_build_hyperframes_zip_layout():
     zf = zipfile.ZipFile(io.BytesIO(data))
     names = set(zf.namelist())
     assert "capture/extracted/tokens.json" in names
-    assert "capture/extracted/fonts.json" in names
+    assert "capture/extracted/fonts.json" not in names  # dropped — no reference counterpart
     assert "capture/extracted/fonts-manifest.json" in names
     assert "capture/extracted/visible-text.txt" in names
     assert "capture/extracted/asset-descriptions.md" in names
@@ -685,8 +685,9 @@ def test_contact_sheet_rows_numeric_pagination_and_labels():
 
 @pytest.mark.asyncio
 async def test_build_zip_emits_meta_json_with_counts():
-    """capture/meta.json carries the reference-shaped project metadata with
-    counts derived from the assembled profile."""
+    """capture/meta.json carries EXACTLY the reference shape {id, name} — no
+    url/capturedAt/counts/generatedBy superset (scaffolding.ts writes only those
+    two keys)."""
     doc = type("D", (), {})()
     doc.id, doc.kb_id = "d1", "kb"
     doc.profile = {
@@ -731,18 +732,7 @@ async def test_build_zip_emits_meta_json_with_counts():
     zf = zipfile.ZipFile(io.BytesIO(data))
     assert "capture/meta.json" in set(zf.namelist())
     meta = json.loads(zf.read("capture/meta.json"))
-    assert meta["url"] == "https://www.acme.com/launch"
-    assert meta["title"] == "Acme Launch"
-    assert meta["capturedAt"] == "2026-07-21T00:00:00+00:00"
-    assert meta["captureQuality"] == "full"
-    assert meta["generatedBy"] == "vectoria"
-    counts = meta["counts"]
-    assert counts["screenshots"] == 2
-    assert counts["assets"] == 2
-    assert counts["fonts"] == 2       # display + body, deduped families
-    assert counts["videos"] == 1
-    assert counts["lotties"] == 2
-    assert counts["colors"] == 3
+    assert meta == {"id": "acme.com-video", "name": "Acme Launch"}
     # No index.html is ever written (reference deliberately omits it).
     assert "capture/index.html" not in set(zf.namelist())
 
@@ -750,7 +740,7 @@ async def test_build_zip_emits_meta_json_with_counts():
 @pytest.mark.asyncio
 async def test_build_zip_meta_json_minimal_profile_backward_compat():
     """A minimal/old profile (missing newer fields) still produces a valid
-    meta.json with zeroed counts and title falling back to the hostname."""
+    meta.json; name falls back to the hostname (www. stripped)."""
     doc = type("D", (), {})()
     doc.id, doc.kb_id = "d1", "kb"
     doc.profile = {
@@ -767,10 +757,7 @@ async def test_build_zip_meta_json_minimal_profile_backward_compat():
         data = await build_hyperframes_zip(doc)
     zf = zipfile.ZipFile(io.BytesIO(data))
     meta = json.loads(zf.read("capture/meta.json"))
-    assert meta["title"] == "example.com"   # hostname fallback (www. stripped)
-    assert meta["captureQuality"] == "full"  # default
-    assert meta["counts"] == {"screenshots": 0, "assets": 0, "fonts": 0,
-                              "videos": 0, "lotties": 0, "colors": 0}
+    assert meta == {"id": "example.com-video", "name": "example.com"}
 
 
 # ---------------------------------------------------------------------------
