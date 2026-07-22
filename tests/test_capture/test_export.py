@@ -451,6 +451,47 @@ def test_official_tokens_colors_fallback_when_ranked_empty():
     assert tokens["colorStats"] == []
 
 
+def test_official_tokens_fonts_variable_weightrange_and_og_image():
+    """tokens.json fonts carry the reference {family, weights, variable, weightRange?}
+    shape (variable/weightRange derived from the captured faces' wght axis + weight
+    span; no css_url), and ogImage is surfaced when the page had an og:image."""
+    from parsers.capture.export import _official_tokens
+    tokens = _official_tokens({
+        "colors_ranked": ["#000000"],
+        "og_image": "https://x/og.png",
+        "fonts": {
+            "display": {"family": "Roboto Flex", "weights": [400],
+                        "catalog_match": {"css_url": "https://c/rf.css"}},
+            "body": {"family": "Inter", "weights": [400, 700],
+                     "catalog_match": {}},
+        },
+        "font_files": [
+            {"family": "Roboto Flex", "weight": 100, "variationAxes": ["wght", "slnt"]},
+            {"family": "Roboto Flex", "weight": 900, "variationAxes": ["wght"]},
+            {"family": "Inter", "weight": 400, "variationAxes": []},
+            {"family": "Inter", "weight": 700, "variationAxes": []},
+        ],
+        "text": {"headline": "T"},
+    })
+    disp = next(f for f in tokens["fonts"] if f["family"] == "Roboto Flex")
+    body = next(f for f in tokens["fonts"] if f["family"] == "Inter")
+    assert disp["variable"] is True
+    assert disp["weightRange"] == [100, 900]        # weight span across faces
+    assert "css_url" not in disp                     # reference has no css_url
+    assert body["variable"] is False
+    assert "weightRange" not in body                 # only present when variable
+    assert set(disp) == {"family", "weights", "variable", "weightRange"}
+    assert set(body) == {"family", "weights", "variable"}
+    assert tokens["ogImage"] == "https://x/og.png"
+
+
+def test_official_tokens_omits_og_image_when_absent():
+    from parsers.capture.export import _official_tokens
+    tokens = _official_tokens({"colors_ranked": ["#000"], "fonts": {},
+                               "text": {"headline": "T"}})
+    assert "ogImage" not in tokens
+
+
 def test_official_tokens_no_synthetic_color_stats_helper():
     """The synthetic _color_stats projection is gone."""
     import parsers.capture.export as export_mod

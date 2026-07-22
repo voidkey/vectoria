@@ -152,6 +152,9 @@ class SiteProfile(BaseModel):
     colors_ranked: list[str] = Field(default_factory=list)
     color_stats: list[dict] = Field(default_factory=list)
     theme_color: str | None = None
+    # og:image URL (hyperframes DesignTokens `ogImage`) — surfaced verbatim in
+    # tokens.json. Empty when the page has no og:image. Defaults to "" for old profiles.
+    og_image: str = ""
     # Phase 1: hyperframes DesignTokens parity — :root custom properties,
     # heading typography, SVG (logo) metadata, and full-page/viewport geometry.
     css_variables: dict[str, str] = Field(default_factory=dict)

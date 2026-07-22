@@ -1026,6 +1026,7 @@ async def run_capture(url: str, kb_id: str, doc_id: str, cfg, deps: CaptureDeps)
         capture_quality=capture_quality, blocked_reason=blocked_reason,
         page_html_key=page_html_key, design_styles=design_styles,
         colors=colors, theme_color=raw.get("colors", {}).get("theme_color"),
+        og_image=raw.get("assets", {}).get("og_image") or "",
         # Phase 2 — reference-shaped color parity alongside the role tokens:
         # top-20 usage-ranked hexes + top-48 raw stat dicts (build-frame reads
         # these directly; role tokens above stay for vectoria's own downstream).

@@ -24,10 +24,35 @@ async def _image_keys(doc_id: str) -> dict[str, str]:
     return {i: k for i, k in rows}
 
 
-def _fonts_array(fonts: dict) -> list[dict]:
+def _font_variable_map(font_files: list) -> dict:
+    """family(lower) -> {"variable": bool, "weights": sorted[int]} from the captured
+    fonttools metadata. A family is `variable` when any of its faces exposes a `wght`
+    variation axis; the weight span across its faces gives `weightRange`. Used to fill
+    the reference tokens.json `fonts[].variable`/`weightRange` (which hyperframes reads
+    from CSS @font-face weight ranges — we recover the same signal from the faces)."""
+    m: dict[str, dict] = {}
+    for f in font_files or []:
+        fam = (f.get("family") or "").strip().lower()
+        if not fam:
+            continue
+        e = m.setdefault(fam, {"variable": False, "weights": set()})
+        if "wght" in (f.get("variationAxes") or []):
+            e["variable"] = True
+        w = f.get("weight")
+        if isinstance(w, int) and w > 0:
+            e["weights"].add(w)
+    return {k: {"variable": v["variable"], "weights": sorted(v["weights"])}
+            for k, v in m.items()}
+
+
+def _fonts_array(fonts: dict, var_map: dict | None = None) -> list[dict]:
     """Flatten the role-keyed Fonts object ({display, body}) into the official
-    hyperframes tokens.json `fonts` array [{family, weights, ...}], deduped by
-    family (display first so it wins the display role in build-frame)."""
+    hyperframes tokens.json `fonts` array, deduped by family (display first so it wins
+    the display role in build-frame). Reference entry shape is exactly
+    ``{family, weights, variable, weightRange?}`` — `variable` is always present;
+    `weightRange` [lo, hi] only when variable. (No `css_url` — the reference has no
+    such key.)"""
+    var_map = var_map or {}
     out: list[dict] = []
     seen: set[str] = set()
     for role in ("display", "body"):
@@ -36,10 +61,14 @@ def _fonts_array(fonts: dict) -> list[dict]:
         if not fam or fam.lower() in seen:
             continue
         seen.add(fam.lower())
-        entry = {"family": fam, "weights": fr.get("weights", [])}
-        cm = fr.get("catalog_match") or {}
-        if cm.get("css_url"):
-            entry["css_url"] = cm["css_url"]  # renderable brand font served from a CDN
+        weights = fr.get("weights", []) or []
+        vm = var_map.get(fam.lower())
+        entry = {"family": fam, "weights": weights,
+                 "variable": bool(vm and vm["variable"])}
+        if entry["variable"]:
+            span = vm["weights"] or sorted(weights)
+            if span:
+                entry["weightRange"] = [span[0], span[-1]]
         out.append(entry)
     return out
 
@@ -68,7 +97,8 @@ def _official_tokens(profile: dict) -> dict:
         "description": text.get("tagline", ""),
         "ctas": text.get("ctas", []),  # extra (official schema ignores unknown keys); handy for downstream summaries
         "colors": ranked,
-        "fonts": _fonts_array(profile.get("fonts", {}) or {}),
+        "fonts": _fonts_array(profile.get("fonts", {}) or {},
+                              _font_variable_map(profile.get("font_files") or [])),
         "colorStats": profile.get("color_stats") or [],
         "spacing": profile.get("spacing", {}),
         # Phase 1 — hyperframes DesignTokens parity. Vectoria's profile is
@@ -80,6 +110,9 @@ def _official_tokens(profile: dict) -> dict:
         # extra: lets downstream (go-figlens) gate structural rebuild on fidelity.
         "capture_quality": profile.get("capture_quality", "full"),
     }
+    og_image = profile.get("og_image") or ""
+    if og_image:
+        out["ogImage"] = og_image     # reference DesignTokens.ogImage (optional)
     page = profile.get("page")
     if page:
         out["page"] = {"width": page.get("width", 0), "height": page.get("height", 0),
