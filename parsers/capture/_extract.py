@@ -185,12 +185,25 @@ EXTRACT_JS = r"""
     if (out.length > 30000) out = out.slice(0, 30000) + '\n[...truncated]';
     return out;
   })();
+  // CTAs with their href (hyperframes tokens.ctas is [{text, href?}]). Buttons have
+  // no href, so href is omitted for them. `ctas` (text-only) is derived from these
+  // for internal use (visible-text fallback / counts).
+  const ctaEls = Array.from(document.querySelectorAll('a,button'))
+    .filter(a => /btn|cta|button/i.test(a.className) || a.tagName === 'BUTTON');
+  const ctaLinks = [];
+  for (let ci = 0; ci < ctaEls.length && ctaLinks.length < 8; ci++) {
+    const cel = ctaEls[ci];
+    const ctxt = (cel.textContent || '').trim();
+    if (!ctxt || ctxt.length >= 40) continue;
+    const link = {text: ctxt};
+    if (cel.href) link.href = cel.href;
+    ctaLinks.push(link);
+  }
   const text = {
     headline: meta('meta[property="og:title"]') || (h1 ? h1.textContent.trim() : document.title),
     tagline: meta('meta[name="description"]') || meta('meta[property="og:description"]'),
-    ctas: Array.from(document.querySelectorAll('a,button'))
-      .filter(a => /btn|cta|button/i.test(a.className) || a.tagName === 'BUTTON')
-      .map(a => a.textContent.trim()).filter(t => t && t.length < 40).slice(0, 8),
+    ctas: ctaLinks.map(c => c.text),
+    cta_links: ctaLinks,
     visible_text: visibleText,
     // Internal fallback (innerText); not written to visible-text.txt when
     // visible_text is present. Capped so a huge page can't bloat the profile JSON.

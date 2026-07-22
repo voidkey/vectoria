@@ -533,10 +533,12 @@ async def _build_contact_sheets(shots: list, asset_sheet_items: list, svg_raster
             except Exception:
                 logger.info("capture: contact sheet store failed for %s", skey, exc_info=True)
 
-    scroll_items = [(s["bytes"],
-                     (s["kind"] if s.get("section_index") is None
-                      else f"section-{s['section_index']:02d}"))
-                    for s in shots if s.get("bytes")]
+    # Reference scroll sheet: only the scroll strips, labelled "N% scroll"
+    # (contactSheet.ts::createScrollContactSheet). The internal full_page shot is
+    # excluded.
+    scroll_items = [(s["bytes"], f"{s['pct']}% scroll")
+                    for s in shots
+                    if s.get("bytes") and s.get("kind") == "scroll"]
     try:
         scroll_pages = build_contact_sheet(scroll_items, cols=3, per_page=9, thumb_w=600)
         await _store_sheets(scroll_pages, "screenshots")
@@ -821,10 +823,10 @@ async def run_capture(url: str, kb_id: str, doc_id: str, cfg, deps: CaptureDeps)
                 img_wait_ms=cfg.capture_img_wait_ms)
             raw = await run_extract(page)
             shots = await capture_screenshots(
-                page, raw.get("sections", []),
+                page,
                 max_screenshots=cfg.capture_max_screenshots,
                 max_height=cfg.capture_max_screenshot_height,
-                section_settle_ms=cfg.capture_section_settle_ms)
+                settle_ms=cfg.capture_section_settle_ms)
             # Classify capture quality (real content vs anti-bot challenge / thin SPA).
             # High-fidelity artifacts (design-styles, page.html) are GATED on "full":
             # rebuilding from a challenge/login page would reproduce the block page.
@@ -943,11 +945,14 @@ async def run_capture(url: str, kb_id: str, doc_id: str, cfg, deps: CaptureDeps)
         await _fetch_named_assets(raw_assets, cfg)
 
     # ---- screenshots -> ImageRef ----
+    # Only the reference scroll-position strips (kind=="scroll") are uploaded/exported;
+    # the internal full_page shot is used solely for the colour cross-check below.
     shot_refs: list = []
     shot_meta: list[tuple[str, dict]] = []
     for s in shots:
-        label = s["kind"] if s["section_index"] is None else f"section-{s['section_index']:02d}"
-        fname = f"screenshot-{label}.png"
+        if s["kind"] != "scroll":
+            continue
+        fname = f"screenshot-scroll-{s['pct']:03d}.png"
         shot_meta.append((fname, s))
         shot_refs.append(image_ref_from_bytes(s["bytes"], filename=fname, mime="image/png",
                                               width=s["width"], height=s["height"]))
@@ -1012,7 +1017,8 @@ async def run_capture(url: str, kb_id: str, doc_id: str, cfg, deps: CaptureDeps)
         img_id, _skey = row
         profile_shots.append(ScreenshotRef(kind=s["kind"], image_id=img_id,
                                            width=s["width"], height=s["height"],
-                                           section_index=s["section_index"]))
+                                           section_index=s["section_index"],
+                                           pct=s.get("pct")))
 
     # ---- colors / spacing / sections / headings / svgs / page geometry ----
     colors, spacing, sections, headings, svgs, page = _build_layout_tokens(
@@ -1041,7 +1047,8 @@ async def run_capture(url: str, kb_id: str, doc_id: str, cfg, deps: CaptureDeps)
         headings=headings, svgs=svgs, page=page,
         fonts=fonts, font_files=font_files, spacing=spacing, sections=sections,
         text=TextInfo(headline=t.get("headline", ""), tagline=t.get("tagline", ""),
-                      ctas=t.get("ctas", []), visible_text=t.get("visible_text", ""),
+                      ctas=t.get("ctas", []), cta_links=t.get("cta_links", []),
+                      visible_text=t.get("visible_text", ""),
                       full_text=t.get("full_text", "")),
         assets=profile_assets, screenshots=profile_shots,
         motion_hints=_motion_hints(MotionHints, raw.get("motion", {}), shaders),

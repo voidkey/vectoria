@@ -276,8 +276,8 @@ class Settings(BaseSettings):
     capture_scroll_max_steps: int = 60            # guard against infinitely-growing pages
     capture_networkidle_timeout: float = 8.0      # best-effort network settle on top of `load` (s)
     capture_img_wait_ms: int = 5000               # cap on waiting for lazy images during prepare
-    capture_section_settle_ms: int = 350          # settle after scrolling each section into view
-    capture_max_screenshots: int = 10             # above-fold + full-page + sections, hard cap
+    capture_section_settle_ms: int = 350          # settle after scrolling to each scroll position
+    capture_max_screenshots: int = 10             # max scroll-position strips (reference cap 20)
     capture_viewport_width: int = 1280
     capture_viewport_height: int = 800
     capture_max_asset_bytes: int = 25 * 1024 * 1024   # per non-image binary (video/lottie/woff2)

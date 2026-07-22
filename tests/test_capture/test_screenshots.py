@@ -5,32 +5,68 @@ from parsers.capture._screenshots import (
     DISMISS_CONSENT_JS, _PREPARE_JS, capture_screenshots, prepare_page)
 
 
-@pytest.mark.asyncio
-async def test_capture_screenshots_caps_and_labels():
+def _screenshot_page(scroll_h=4000, vh=800, vw=1280):
+    """Fake page whose geometry probes return real numbers so capture_screenshots
+    computes scroll positions (screenshot returns fixed bytes)."""
     page = AsyncMock()
     page.screenshot = AsyncMock(return_value=b"PNG")
-    page.viewport_size = {"width": 1280, "height": 800}
-    sections = [{"index": i, "rect": {"y": i * 500, "height": 480}} for i in range(20)]
-    shots = await capture_screenshots(page, sections, max_screenshots=5, max_height=20000)
-    assert len(shots) == 5                       # above_fold + full_page + 3 sections
-    assert shots[0]["kind"] == "above_fold"
-    assert shots[1]["kind"] == "full_page"
-    assert shots[2]["kind"] == "section"
-    assert all(s["bytes"] == b"PNG" for s in shots)
+    page.viewport_size = {"width": vw, "height": vh}
+    page.wait_for_timeout = AsyncMock()
+
+    async def _eval(script, *a, **k):
+        if "Math.max(document.body.scrollHeight" in script:
+            return scroll_h
+        if script == "window.innerHeight":
+            return vh
+        if "documentElement.scrollHeight" in script:
+            return scroll_h
+        return None
+    page.evaluate = _eval
+    return page
 
 
 @pytest.mark.asyncio
-async def test_capture_sections_scroll_into_view_before_shot():
-    """Each section is scrolled to its top before being screenshotted."""
-    page = AsyncMock()
-    page.screenshot = AsyncMock(return_value=b"PNG")
-    page.viewport_size = {"width": 1280, "height": 800}
-    sections = [{"index": 0, "rect": {"y": 1500, "height": 600}}]
-    await capture_screenshots(page, sections, max_screenshots=10, max_height=20000,
-                              section_settle_ms=0)
-    # the section's y (1500) was passed to a scrollTo evaluate call
-    scroll_ys = [c.args[1] for c in page.evaluate.await_args_list if len(c.args) > 1]
-    assert 1500 in scroll_ys
+async def test_capture_screenshots_scroll_positions_pct_and_cap():
+    """Reference scroll model: strips labelled by scroll percentage, capped, always
+    top (0%) → bottom (100%); plus one internal full_page shot (not exported)."""
+    page = _screenshot_page(scroll_h=4000, vh=800)
+    shots = await capture_screenshots(page, max_screenshots=5, max_height=20000, settle_ms=0)
+    scroll = [s for s in shots if s["kind"] == "scroll"]
+    full = [s for s in shots if s["kind"] == "full_page"]
+    assert len(scroll) == 5                       # capped at max_screenshots
+    assert len(full) == 1                         # internal color-cross-check shot
+    assert scroll[0]["pct"] == 0                  # top
+    assert scroll[-1]["pct"] == 100               # bottom
+    pcts = [s["pct"] for s in scroll]
+    assert pcts == sorted(pcts)                   # monotonic
+    assert all(s["bytes"] == b"PNG" for s in scroll)
+    assert all(s["section_index"] is None for s in scroll)
+
+
+@pytest.mark.asyncio
+async def test_capture_screenshots_scrolls_through_positions_to_bottom():
+    """Each computed position is scrolled to before its shot; the bottom is reached."""
+    page = _screenshot_page(scroll_h=4000, vh=800)
+    calls = []
+    orig = page.evaluate
+
+    async def _eval(script, *a, **k):
+        calls.append(script)
+        return await orig(script, *a, **k)
+    page.evaluate = _eval
+    await capture_screenshots(page, max_screenshots=20, max_height=20000, settle_ms=0)
+    # bottom position = scroll_h - viewport = 4000 - 800 = 3200
+    assert any(c == "window.scrollTo(0, 3200)" for c in calls)
+    assert any(c == "window.scrollTo(0, 0)" for c in calls)   # starts at top
+
+
+@pytest.mark.asyncio
+async def test_capture_screenshots_short_page_single_shot():
+    """A page no taller than the viewport yields exactly one scroll shot at 0%."""
+    page = _screenshot_page(scroll_h=800, vh=800)
+    shots = await capture_screenshots(page, max_screenshots=10, max_height=20000, settle_ms=0)
+    scroll = [s for s in shots if s["kind"] == "scroll"]
+    assert len(scroll) == 1 and scroll[0]["pct"] == 0
 
 
 @pytest.mark.asyncio

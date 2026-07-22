@@ -27,6 +27,14 @@ def _eval_router(raw, anim=None, shaders=None):
             return anim if anim is not None else _CANNED_ANIM
         if "__capturedShaders" in script:   # collect_shaders read
             return shaders if shaders is not None else _CANNED_SHADERS
+        # Scroll-screenshot capture probes (capture_screenshots): page geometry +
+        # scrollTo. A tall page (4000px / 800 viewport) yields several scroll stops.
+        if "Math.max(document.body.scrollHeight" in script:
+            return 4000
+        if script == "window.innerHeight":
+            return 800
+        if script.startswith("window.scrollTo("):
+            return None
         return raw
     return _run
 
@@ -83,6 +91,7 @@ class _FakeDeps:
         self._hydrate = hydrate
         self.storage = AsyncMock()          # .put is a no-op AsyncMock
         self.uploads = []                   # records (vision_configured, [names])
+        self._uploaded_names = []           # every uploaded ref name (for auto-hydrate)
 
     def open_page(self):
         page = self._page
@@ -95,10 +104,15 @@ class _FakeDeps:
 
     async def upload_image_refs(self, refs, *, vision_configured):
         self.uploads.append((vision_configured, [r.name for r in refs]))
+        self._uploaded_names.extend(r.name for r in refs)
         return len(refs)
 
     async def hydrate_image_ids(self):
-        return self._hydrate
+        # Auto-row every uploaded ref (scroll screenshots have data-dependent names);
+        # any explicit `hydrate` entry wins so tests can pin specific ids.
+        auto = {n: (f"img-{i}", f"images/kb/d1/{n}")
+                for i, n in enumerate(self._uploaded_names)}
+        return {**auto, **self._hydrate}
 
 
 def _settings():
@@ -140,9 +154,7 @@ async def test_run_capture_happy_path_builds_profile_without_browser_or_db():
                    "video": None, "lottie": None},
         "motion": {"libraries": ["gsap"], "has_video_background": False, "has_canvas": True},
     }
-    hydrate = {"screenshot-above_fold.png": ("s1", "images/kb/d1/a.png"),
-               "screenshot-full_page.png": ("s2", "images/kb/d1/b.png")}
-    deps = _FakeDeps(_fake_page(raw), hydrate)
+    deps = _FakeDeps(_fake_page(raw), {})       # scroll shots auto-hydrated
 
     from parsers.capture.orchestrator import run_capture
     outcome = await run_capture("https://x", "kb", "d1", _settings(), deps)
@@ -154,7 +166,11 @@ async def test_run_capture_happy_path_builds_profile_without_browser_or_db():
     assert prof["text"]["headline"] == "Hello"
     assert prof["motion_hints"]["libraries"] == ["gsap"]
     assert {c["role"] for c in prof["colors"]} >= {"background", "text"}
-    assert len(prof["screenshots"]) == 2
+    # Reference scroll-strip screenshots (kind="scroll", 0%..100%), no full_page/section.
+    assert prof["screenshots"]
+    assert all(s["kind"] == "scroll" for s in prof["screenshots"])
+    assert prof["screenshots"][0]["pct"] == 0
+    assert prof["screenshots"][-1]["pct"] == 100
 
 
 @pytest.mark.asyncio

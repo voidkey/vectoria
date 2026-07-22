@@ -57,7 +57,8 @@ async def test_build_hyperframes_zip_layout():
     names = set(zf.namelist())
     assert "capture/extracted/tokens.json" in names
     assert "capture/extracted/fonts.json" not in names  # dropped — no reference counterpart
-    assert "capture/extracted/fonts-manifest.json" in names
+    # fonts-manifest.json omitted here (this profile captured no font faces).
+    assert "capture/extracted/fonts-manifest.json" not in names
     assert "capture/extracted/visible-text.txt" in names
     assert "capture/extracted/asset-descriptions.md" in names
     assert any(n.startswith("capture/assets/") for n in names)
@@ -159,6 +160,39 @@ async def test_asset_descriptions_fallback_when_no_content_assets():
         data = await build_hyperframes_zip(doc)
     zf = zipfile.ZipFile(io.BytesIO(data))
     assert zf.read("capture/extracted/asset-descriptions.md").decode() == "(no descriptions)"
+
+
+@pytest.mark.asyncio
+async def test_screenshots_routed_as_scroll_pct_filenames():
+    """Reference naming: kind=="scroll" screenshots route to
+    capture/screenshots/scroll-NNN.png (NNN = zero-padded scroll %)."""
+    doc = type("D", (), {})()
+    doc.id, doc.kb_id = "d1", "kb"
+    doc.profile = {
+        "fonts": {}, "text": {"headline": "T"}, "spacing": {}, "assets": [],
+        "screenshots": [
+            {"kind": "scroll", "image_id": "i0", "pct": 0, "section_index": None},
+            {"kind": "scroll", "image_id": "i1", "pct": 52, "section_index": None},
+            {"kind": "scroll", "image_id": "i2", "pct": 100, "section_index": None},
+        ],
+    }
+    storage = AsyncMock()
+    storage.get = AsyncMock(return_value=b"PNGBYTES")
+    with (
+        patch("parsers.capture.export.get_storage", new=AsyncMock(return_value=storage)),
+        patch("parsers.capture.export._image_keys",
+              new=AsyncMock(return_value={"i0": "images/kb/d1/0.png",
+                                          "i1": "images/kb/d1/1.png",
+                                          "i2": "images/kb/d1/2.png"})),
+    ):
+        from parsers.capture.export import build_hyperframes_zip
+        data = await build_hyperframes_zip(doc)
+    names = set(zipfile.ZipFile(io.BytesIO(data)).namelist())
+    assert "capture/screenshots/scroll-000.png" in names
+    assert "capture/screenshots/scroll-052.png" in names
+    assert "capture/screenshots/scroll-100.png" in names
+    # no section-NN / above_fold / full_page naming
+    assert not any("section-" in n or "above_fold" in n or "full_page" in n for n in names)
 
 
 @pytest.mark.asyncio
@@ -404,9 +438,9 @@ async def test_build_zip_emits_real_fonts_manifest_from_font_files():
 
 
 @pytest.mark.asyncio
-async def test_build_zip_fonts_manifest_fallback_empty_font_files():
-    """Old profiles without font_files still export: an empty-but-well-formed
-    manifest and the role-font fallback fonts.css."""
+async def test_build_zip_omits_fonts_manifest_when_no_font_files():
+    """No captured faces -> no fonts-manifest.json (reference emits it only when the
+    fonts/ dir exists). The role-font fallback fonts.css is still written."""
     doc = type("D", (), {})()
     doc.id, doc.kb_id = "d1", "kb"
     doc.profile = {
@@ -431,10 +465,7 @@ async def test_build_zip_fonts_manifest_fallback_empty_font_files():
         from parsers.capture.export import build_hyperframes_zip
         data = await build_hyperframes_zip(doc)
     zf = zipfile.ZipFile(io.BytesIO(data))
-    manifest = json.loads(zf.read("capture/extracted/fonts-manifest.json"))
-    assert manifest == {"files": [], "families": [], "unidentified": [],
-                        "meta": {"generatedAt": "2026-07-20T00:00:00+00:00",
-                                 "tool": "fonttools"}}
+    assert "capture/extracted/fonts-manifest.json" not in set(zf.namelist())
     # Fallback fonts.css from the role-font files still works.
     css = zf.read("capture/assets/fonts/fonts.css").decode()
     assert 'font-family: "Poppins"' in css
@@ -528,12 +559,26 @@ def test_official_tokens_omits_og_image_when_absent():
     assert "ogImage" not in tokens
 
 
-def test_official_tokens_ctas_are_objects_not_strings():
-    """Reference tokens.ctas is [{text, href?}] — objects, not bare strings."""
+def test_official_tokens_ctas_are_objects_with_href():
+    """Reference tokens.ctas is [{text, href?}]: objects carrying href from the
+    captured cta_links (href omitted when absent, e.g. a <button>)."""
+    from parsers.capture.export import _official_tokens
+    tokens = _official_tokens({
+        "colors_ranked": ["#000"], "fonts": {},
+        "text": {"headline": "T",
+                 "ctas": ["Get started", "Sign in"],
+                 "cta_links": [{"text": "Get started", "href": "https://x/signup"},
+                               {"text": "Sign in"}]}})   # button: no href
+    assert tokens["ctas"] == [{"text": "Get started", "href": "https://x/signup"},
+                              {"text": "Sign in"}]
+
+
+def test_official_tokens_ctas_fallback_text_only_for_old_profiles():
+    """Old profiles without cta_links fall back to text-only {text} objects."""
     from parsers.capture.export import _official_tokens
     tokens = _official_tokens({"colors_ranked": ["#000"], "fonts": {},
-                               "text": {"headline": "T", "ctas": ["Get started", "Docs"]}})
-    assert tokens["ctas"] == [{"text": "Get started"}, {"text": "Docs"}]
+                               "text": {"headline": "T", "ctas": ["Docs"]}})
+    assert tokens["ctas"] == [{"text": "Docs"}]
 
 
 def test_official_tokens_no_synthetic_color_stats_helper():

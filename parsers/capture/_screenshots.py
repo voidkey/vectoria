@@ -1,16 +1,19 @@
-"""Screenshot capture aligned with the mainstream headless-capture playbook.
+"""Screenshot capture — 1:1 with hyperframes ``screenshotCapture.ts``.
 
 Modern marketing sites reveal below-fold content on scroll (IntersectionObserver
 / scroll-linked animations, ``loading="lazy"`` images), so a single static
-full-page paint captures those sections in their initial hidden state — a solid
-background with no content. Following what Puppeteer/Playwright screenshot tools
-(and HyperFrames' own capture) do, we:
+full-page paint captures those sections in their initial hidden state. Matching
+the reference ``captureScrollScreenshots``, we:
 
 1. inject CSS that collapses animation/transition timing (final frame, no fade);
 2. *prepare* the page — walk it top→bottom to fire reveals + lazy loads, wait for
-   fonts and images, hide sticky/fixed chrome (cookie bars, chat widgets);
-3. screenshot each section **while it is scrolled into view**, so scroll-linked
-   reveals are captured revealed rather than blank.
+   fonts and images, dismiss cookie/consent, hide sticky/fixed chrome (z-index>100);
+3. step down the page in 70%-of-viewport increments and screenshot the viewport at
+   each stop, naming each by its scroll PERCENTAGE (``scroll-000.png`` …
+   ``scroll-100.png``) — natural browsing state with reveal animations fired.
+
+One extra full-page screenshot is taken for the dominant-colour cross-check only;
+it is NOT exported (the reference writes no full-page.png).
 """
 from __future__ import annotations
 
@@ -164,54 +167,95 @@ async def prepare_page(page, *, step_frac: float, step_ms: int, max_steps: int,
         pass
 
 
-async def capture_screenshots(page, sections: list[dict], *, max_screenshots: int,
-                              max_height: int, section_settle_ms: int = 350) -> list[dict]:
-    shots: list[dict] = []
+async def capture_screenshots(page, *, max_screenshots: int, max_height: int,
+                              settle_ms: int = 400) -> list[dict]:
+    """Reference scroll-position capture (screenshotCapture.ts::captureScrollScreenshots).
+
+    Step down the page in 70%-of-viewport increments (30% overlap), screenshot the
+    viewport at each stop, and label each by its scroll PERCENTAGE — so the exported
+    files are ``scroll-000.png`` (top) … ``scroll-100.png`` (bottom), exactly as
+    hyperframes. Always includes the top and the bottom; downsamples to
+    ``max_screenshots`` positions on very long pages (keeping first + last, striding
+    the middle); collapses positions that round to the same percentage to one shot
+    (the reference overwrites the same filename). Sticky/fixed overlays were already
+    hidden and cookie/consent dismissed by ``prepare_page``, so shots show the page in
+    its natural scrolled state with reveal animations fired.
+
+    ALSO captures one ``kind="full_page"`` shot — NOT exported (the reference writes no
+    full-page.png), retained only for the dominant-colour cross-check in
+    ``_build_layout_tokens``. Scroll shots carry ``kind="scroll"`` + ``pct``. Every
+    step is best-effort; a failure at one position just skips it."""
     vp = page.viewport_size or {"width": 1280, "height": 800}
-    # above-the-fold (page is at top after prepare)
+    vw, vh = vp["width"], vp["height"]
+    shots: list[dict] = []
+
+    if max_screenshots <= 0:
+        return shots        # screenshots disabled — capture nothing (not even full_page)
+
     try:
-        await page.evaluate("() => window.scrollTo(0, 0)")
+        scroll_h = int(await page.evaluate(
+            "Math.max(document.body.scrollHeight, document.documentElement.scrollHeight)"))
     except Exception:
-        pass
-    shots.append({"kind": "above_fold", "bytes": await page.screenshot(),
-                  "width": vp["width"], "height": vp["height"], "section_index": None})
-    # full page — kept for the dominant-colour cross-check (may still show a band
-    # on scroll-linked sites, but it's only sampled for colour). Fall back to a
-    # viewport shot if full_page fails.
+        scroll_h = vh
     try:
-        full = await page.screenshot(full_page=True)
+        vph = int(await page.evaluate("window.innerHeight")) or vh
     except Exception:
-        full = await page.screenshot()
-        full_h = vp["height"]
-    else:
-        try:
-            full_h = int(await page.evaluate("document.documentElement.scrollHeight"))
-        except Exception:
-            full_h = vp["height"]
-    shots.append({"kind": "full_page", "bytes": full, "width": vp["width"],
-                  "height": min(max_height, full_h) if full_h > 0 else vp["height"],
-                  "section_index": None})
-    # per-section: scroll each section to the top of the viewport so scroll-linked
-    # / reveal-on-scroll content is in its revealed state, then capture the
-    # viewport it fills. Viewport-tile capture (vs. clipping a static full-page
-    # paint) is what makes below-fold sections render instead of coming out blank.
-    for sec in sections:
-        if len(shots) >= max_screenshots:
-            break
-        rect = sec.get("rect") or {}
-        y = int(rect.get("y", 0) or 0)
-        if int(rect.get("height", 0) or 0) <= 0:
+        vph = vh
+
+    # Scroll positions: 0, then +70% viewport until the bottom, always ending at the
+    # true bottom (scroll_h - viewport).
+    step = max(1, int(vph * 0.7))
+    positions = [0]
+    y = step
+    while y < scroll_h - vph:
+        positions.append(y)
+        y += step
+    last = max(0, scroll_h - vph)
+    if positions[-1] != last:
+        positions.append(last)
+
+    # Downsample to the cap (keep first + last, stride the middle).
+    cap = max(1, max_screenshots)
+    if len(positions) > cap:
+        sampled = [positions[0]]
+        stride = (len(positions) - 1) / (cap - 1) if cap > 1 else 1.0
+        for i in range(1, cap - 1):
+            sampled.append(positions[round(i * stride)])
+        sampled.append(positions[-1])
+        positions = sampled
+
+    span = max(1, scroll_h - vph)
+    last_pct = None
+    for pos in positions:
+        pct = min(100, round(pos / span * 100))
+        if pct == last_pct:          # same percentage -> one file (reference overwrites)
             continue
+        last_pct = pct
         try:
-            await page.evaluate("(y) => window.scrollTo(0, y)", max(0, y))
-            await page.wait_for_timeout(section_settle_ms)
+            await page.evaluate(f"window.scrollTo(0, {pos})")
+            await page.wait_for_timeout(settle_ms)
             b = await page.screenshot()
         except Exception:
             continue
-        shots.append({"kind": "section", "bytes": b, "width": vp["width"],
-                      "height": vp["height"], "section_index": sec.get("index")})
+        shots.append({"kind": "scroll", "bytes": b, "pct": pct,
+                      "width": vw, "height": vph, "section_index": None})
+
     try:
-        await page.evaluate("() => window.scrollTo(0, 0)")
+        await page.evaluate("window.scrollTo(0, 0)")
     except Exception:
         pass
-    return shots[:max_screenshots]
+
+    # Internal full_page shot for the dominant-colour cross-check only (never exported).
+    try:
+        full = await page.screenshot(full_page=True)
+        try:
+            full_h = int(await page.evaluate("document.documentElement.scrollHeight"))
+        except Exception:
+            full_h = vh
+    except Exception:
+        full, full_h = None, vh
+    if full:
+        shots.append({"kind": "full_page", "bytes": full, "pct": None, "width": vw,
+                      "height": min(max_height, full_h) if full_h > 0 else vh,
+                      "section_index": None})
+    return shots

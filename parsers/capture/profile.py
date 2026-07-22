@@ -99,6 +99,9 @@ class TextInfo(BaseModel):
     headline: str = ""
     tagline: str = ""
     ctas: list[str] = Field(default_factory=list)
+    # CTAs with hrefs ([{text, href?}]) for the reference tokens.ctas shape. `ctas`
+    # above stays text-only for internal use. Default [] keeps old profiles valid.
+    cta_links: list[dict] = Field(default_factory=list)
     # visible-text.txt body: DOM text nodes in reading order, each `[tag] text`
     # (hyperframes contentExtractor.ts parity). full_text (innerText) is retained as
     # a fallback for old profiles captured before visible_text existed.
@@ -125,6 +128,9 @@ class ScreenshotRef(BaseModel):
     width: int = 0
     height: int = 0
     section_index: int | None = None
+    # Scroll percentage (0..100) for reference `scroll-NNN.png` naming; None for
+    # non-scroll shots. Default keeps old stored profiles valid.
+    pct: int | None = None
 
 
 class MotionHints(BaseModel):

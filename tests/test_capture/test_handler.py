@@ -21,6 +21,16 @@ def _eval_router(raw):
     return _run
 
 
+class _AnyScreenshotHydrate(dict):
+    """hydrate map that returns a synthetic (image_id, storage_key) row for any
+    ``screenshot-*`` filename — scroll-strip names (scroll-NNN) are data-dependent,
+    so a fixed dict can't enumerate them."""
+    def get(self, key, default=None):
+        if isinstance(key, str) and key.startswith("screenshot-"):
+            return (f"img-{key}", f"images/kb/d1/{key}")
+        return super().get(key, default)
+
+
 def _wire_cdp(page):
     """Give a fake page a Playwright-shaped CDP session (sync .on; async
     .send/.detach) so start_cdp_animation_capture exercises without leaking an
@@ -97,10 +107,8 @@ async def test_handle_capture_happy_path():
         patch("worker.handlers.get_settings", return_value=settings),
         patch("worker.handlers.get_storage", new=AsyncMock(return_value=AsyncMock())),
         patch("worker.handlers.enqueue", new=AsyncMock()),
-        patch("worker.handlers._capture_hydrate_image_ids", new=AsyncMock(return_value={
-            "screenshot-above_fold.png": ("s1", "images/kb/d1/a.png"),
-            "screenshot-full_page.png": ("s2", "images/kb/d1/b.png"),
-        })),
+        patch("worker.handlers._capture_hydrate_image_ids",
+              new=AsyncMock(return_value=_AnyScreenshotHydrate())),
     ):
         from worker.handlers import handle_capture
         await handle_capture({"doc_id": "d1", "kb_id": "kb", "url": "https://x"})
@@ -113,8 +121,10 @@ async def test_handle_capture_happy_path():
     assert prof["text"]["full_text"] == "Hello world. Full page body copy here."
     assert prof["motion_hints"]["libraries"] == ["gsap"]
     assert {c["role"] for c in prof["colors"]} >= {"background", "text"}
-    # 2 screenshots captured (above_fold + full_page), no image assets
-    assert len(prof["screenshots"]) == 2
+    # Reference scroll-strip screenshots (kind="scroll", top→bottom), no image assets.
+    assert prof["screenshots"]
+    assert all(s["kind"] == "scroll" for s in prof["screenshots"])
+    assert prof["screenshots"][0]["pct"] == 0
     assert updates["image_status"] == "completed"
 
 

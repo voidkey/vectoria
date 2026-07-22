@@ -81,6 +81,25 @@ def _ranked_colors(profile: dict) -> list[str]:
         c["hex"] for c in (profile.get("colors") or []) if c.get("hex")]
 
 
+def _ctas_out(text: dict) -> list[dict]:
+    """tokens.ctas in the reference [{text, href?}] shape. Prefer the captured
+    cta_links (carry href); fall back to the text-only ctas -> {text} for profiles
+    captured before cta_links existed. href omitted when absent (reference does too)."""
+    links = text.get("cta_links")
+    if links:
+        out = []
+        for c in links:
+            t = (c.get("text") or "").strip()
+            if not t:
+                continue
+            entry = {"text": t}
+            if c.get("href"):
+                entry["href"] = c["href"]
+            out.append(entry)
+        return out
+    return [{"text": c} for c in (text.get("ctas") or []) if c]
+
+
 def _official_tokens(profile: dict) -> dict:
     """tokens.json in the official hyperframes shape build-frame.mjs reads:
     {title, description, colors, fonts[], colorStats, spacing}. `colors` is the
@@ -95,10 +114,10 @@ def _official_tokens(profile: dict) -> dict:
     out = {
         "title": text.get("headline", ""),
         "description": text.get("tagline", ""),
-        # Reference DesignTokens.ctas is [{text, href?}]; we capture cta text only, so
-        # href is omitted (the reference omits it too when falsy). Object shape, not
-        # bare strings, so a strict reader's `cta.text` works.
-        "ctas": [{"text": c} for c in (text.get("ctas") or []) if c],
+        # Reference DesignTokens.ctas is [{text, href?}]. Built from the captured
+        # cta_links (text + href); old profiles without cta_links fall back to the
+        # text-only ctas projected to {text}.
+        "ctas": _ctas_out(text),
         "colors": ranked,
         "fonts": _fonts_array(profile.get("fonts", {}) or {},
                               _font_variable_map(profile.get("font_files") or [])),
@@ -464,8 +483,8 @@ def _agent_prompt(profile: dict, written: set[str]) -> str:
     if ss_rows:
         rows += ss_rows
     if any(p.startswith("capture/screenshots/") and p.endswith(".png") for p in written):
-        rows.append("| `screenshots/*.png` | Individual viewport screenshots for "
-                    "detail on a specific section. |")
+        rows.append("| `screenshots/*.png` | Individual scroll-position viewport "
+                    "screenshots (`scroll-NNN.png`, NNN = scroll %). |")
     # Core extracted artifacts — always present.
     rows.append(
         f"| `extracted/tokens.json` | Design tokens: {len(ranked)} colors, "
@@ -546,12 +565,13 @@ async def build_hyperframes_zip(doc) -> bytes:
         # (fonttools/fontkit metadata); the role-keyed Fonts object has no reference
         # counterpart, so writing it broke 1:1. Role fonts still live in tokens.json.
         # extracted/fonts-manifest.json — the REAL types.ts::FontsManifest built from
-        # captured font bytes (fonttools). Fallback for old profiles without
-        # font_files: an empty-but-well-formed manifest so downstream never breaks.
+        # captured font bytes (fonttools). Written ONLY when faces were captured
+        # (reference emits it only if the fonts/ dir exists) — no empty-manifest file.
         font_files = profile.get("font_files") or []
-        manifest = build_fonts_manifest(font_files, profile.get("captured_at", ""))
-        zf.writestr("capture/extracted/fonts-manifest.json",
-                    json.dumps(manifest, ensure_ascii=False, indent=2))
+        if font_files:
+            manifest = build_fonts_manifest(font_files, profile.get("captured_at", ""))
+            zf.writestr("capture/extracted/fonts-manifest.json",
+                        json.dumps(manifest, ensure_ascii=False, indent=2))
         # extracted/visible-text.txt — the reference format: DOM text nodes in
         # reading order, each `[tag] text` (captured as text.visible_text). Old
         # profiles (pre-visible_text) fall back to the headline/tagline/ctas/innerText
@@ -625,10 +645,16 @@ async def build_hyperframes_zip(doc) -> bytes:
             members.append((_asset_zip_path(a, skey), skey))
         for s in profile.get("screenshots", []):
             key = keys.get(s.get("image_id"))
-            if key:
+            if not key:
+                continue
+            # Reference scroll-position naming: scroll-NNN.png (NNN = scroll %).
+            # Older profiles (pre-scroll model) fall back to the kind/section label.
+            if s.get("kind") == "scroll" and s.get("pct") is not None:
+                label = f"scroll-{s['pct']:03d}"
+            else:
                 label = (s.get("kind") if s.get("section_index") is None
                          else f"section-{s['section_index']:02d}")
-                members.append((f"capture/screenshots/{label}.png", key))
+            members.append((f"capture/screenshots/{label}.png", key))
         # Captured woff2 faces -> capture/assets/fonts/ (where build-frame.mjs globs
         # to stage @font-face faces). Phase 4: the bounded face set (font_files) plus
         # the role-font files; deduped by storage key so a role font that's also in
