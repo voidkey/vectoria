@@ -210,31 +210,90 @@ def _clean_name(filename: str) -> str:
     return re.sub(r"[-_]+", " ", filename.rsplit(".", 1)[0]).strip()
 
 
-def _asset_descriptions_md(profile: dict) -> str:
-    """asset-descriptions.md in the reference format: one ``- <filename> — <desc>``
-    line per downloaded content asset (images + SVGs), filename-led so a reader can
-    map a description back to a file (the old ``- **kind**: desc`` shape couldn't).
-    Assets with a real (vision) description are listed first; the rest fall back to a
-    cleaned filename (the reference's catalog fallback), so every file gets a line.
-    File sizes (reference appends ``— NKB``) are omitted — the bytes aren't in hand at
-    export time. Non-content binaries (videos/lottie/contact sheets) are excluded,
-    matching generateAssetDescriptions."""
-    described: list[str] = []
-    fallback: list[str] = []
+def _asset_descriptions_md(profile: dict, sizes: dict | None = None) -> str:
+    """asset-descriptions.md in the reference ``generateAssetDescriptions`` shape.
+
+    Emits one ``- <path> — <desc>`` line per materialized asset, in the reference's
+    line order — **videos first**, then captioned images, uncaptioned images, SVGs,
+    fonts::
+
+      - <video-base> — [video] <caption|heading|"motion clip">, ~WxH
+      - <file> — <NKB>, <vision description>          # captioned image
+      - <file> — <NKB>, <cleaned filename>            # uncaptioned image
+      - svgs/<file> — <description|cleaned filename>
+      - fonts/<file> — font file
+
+    Videos lead and carry the ``[video]`` marker downstream planners key off; they
+    come from ``video_manifest`` (only clips with a ``localPath``) since the bare
+    bodies lack captions. Image lines carry a ``NKB`` size from ``sizes`` (a
+    {storage_key: byte_len} map of what was actually fetched into the zip) — reference
+    reads it off the written file, so we compute it from the same S3 fetch. An asset
+    with no fetched bytes isn't in the zip, so it's skipped (reference walks the dir).
+    Lottie / contact sheets / preview frames are excluded, matching the reference. The
+    header is source-neutral (vectoria's captions aren't Gemini's, so copying the
+    reference's Gemini-specific wording would misattribute them)."""
+    sizes = sizes or {}
+    video_lines: list[str] = []
+    captioned: list[str] = []
+    uncaptioned: list[str] = []
+    svg_lines: list[str] = []
+    font_lines: list[str] = []
+
+    # Videos first — [video] marker + dims, from the manifest (has captions the bare
+    # bodies lack). Only clips that actually downloaded (localPath present). Guarded
+    # against pre-1:1 profiles whose video_manifest was the old {videos, meta} dict.
+    vm = profile.get("video_manifest")
+    for v in (vm if isinstance(vm, list) else []):
+        if not isinstance(v, dict):
+            continue
+        lp = v.get("localPath")
+        if not lp:
+            continue
+        base = lp.rsplit("/", 1)[-1] or v.get("filename") or ""
+        if not base:
+            continue
+        desc = " ".join((v.get("caption") or v.get("heading") or "").split())[:140] or "motion clip"
+        dw = v.get("sourceWidth") or v.get("width")
+        dh = v.get("sourceHeight") or v.get("height")
+        dims = f", ~{dw}×{dh}" if dw and dh else ""
+        video_lines.append(f"- {base} — [video] {desc}{dims}")
+
     for a in profile.get("assets", []) or []:
         if a.get("kind") in _DESC_EXCLUDE_KINDS:
-            continue
+            continue                       # videos (above) / lottie / contact sheets
         sk = a.get("storage_key")
-        if not sk:
-            continue
-        fname = _asset_zip_path(a, sk).rsplit("/", 1)[-1]
+        if not sk or sk not in sizes:
+            continue                       # not fetched -> not in the zip -> not listed
+        zp = _asset_zip_path(a, sk)
+        fname = zp.rsplit("/", 1)[-1]
         desc = (a.get("description") or "").strip()
+        if "/assets/svgs/" in zp:
+            label = desc or _clean_name(fname)
+            svg_lines.append(f"- svgs/{fname} — {label}" if label else f"- svgs/{fname}")
+            continue
+        if any(seg in zp for seg in ("/assets/videos/", "/assets/lottie/", "/screenshots/")):
+            continue                       # defensive: non-image buckets never get a size line
+        size_kb = round(sizes[sk] / 1024)
+        head = f"- {fname} — {size_kb}KB"
         if desc:
-            described.append(f"- {fname} — {desc}")
+            captioned.append(f"{head}, {desc}")
         else:
             cn = _clean_name(fname)
-            fallback.append(f"- {fname} — {cn}" if cn else f"- {fname}")
-    lines = described + fallback
+            uncaptioned.append(f"{head}, {cn}" if cn else head)
+
+    # Fonts last — the staged woff2 faces (deduped by basename).
+    seen_fonts: set[str] = set()
+    for m in profile.get("font_files") or []:
+        key = m.get("storage_key") or ""
+        if not key.startswith("captures/"):
+            continue
+        base = key.rsplit("/", 1)[-1]
+        if base in seen_fonts:
+            continue
+        seen_fonts.add(base)
+        font_lines.append(f"- fonts/{base} — font file")
+
+    lines = video_lines + captioned + uncaptioned + svg_lines + font_lines
     return (_ASSET_DESC_HEADER + "\n".join(lines) + "\n") if lines else "(no descriptions)"
 
 
@@ -581,11 +640,9 @@ async def build_hyperframes_zip(doc) -> bytes:
             t.get("headline", ""), t.get("tagline", ""),
             "\n".join(t.get("ctas", [])), t.get("full_text", "")]))
         zf.writestr("capture/extracted/visible-text.txt", text_body)
-        # extracted/asset-descriptions.md — reference format: one `- <filename> —
-        # <desc>` line per downloaded content asset (filename-led so a reader can map
-        # descriptions to files). Built from the profile assets (no S3 needed).
-        zf.writestr("capture/extracted/asset-descriptions.md",
-                    _asset_descriptions_md(profile))
+        # extracted/asset-descriptions.md is written AFTER the binary fetch below, so
+        # its per-image `NKB` size can be read off the same fetched bytes (the
+        # reference stats the written files). See the post-fetch write.
         # extracted/design-styles.json — computed design system (only present when
         # capture_quality == full). Inlined in the profile, so write directly.
         if profile.get("design_styles"):
@@ -671,9 +728,18 @@ async def build_hyperframes_zip(doc) -> bytes:
             members.append((f"capture/assets/fonts/{key.rsplit('/', 1)[-1]}", key))
 
         datas = await asyncio.gather(*(_safe_get(storage, k) for _, k in members))
-        for (path, _key), data in zip(members, datas):
+        sizes: dict[str, int] = {}
+        for (path, key), data in zip(members, datas):
             if data is not None:
                 zf.writestr(path, data)
+                sizes[key] = len(data)
+
+        # extracted/asset-descriptions.md — reference generateAssetDescriptions shape
+        # (videos first with the [video] marker, then captioned/uncaptioned images
+        # with NKB sizes, SVGs, fonts). Written here (post-fetch) so per-image sizes
+        # come from the bytes we just staged — the reference stats the written files.
+        zf.writestr("capture/extracted/asset-descriptions.md",
+                    _asset_descriptions_md(profile, sizes))
 
         # Phase 9 — agent scaffolding. Emit from the assembled profile + the set
         # of capture/ paths ACTUALLY written above (so the data inventory reflects

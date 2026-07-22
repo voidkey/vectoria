@@ -129,12 +129,51 @@ async def test_asset_descriptions_filename_led_described_first():
     md = zipfile.ZipFile(io.BytesIO(data)).read(
         "capture/extracted/asset-descriptions.md").decode()
     assert md.startswith("# Asset Descriptions")
-    assert "- hero-shot.jpg — the hero shot" in md
-    assert "- logo-ab12.svg — logo ab12" in md        # blank -> cleaned filename
-    assert "- **" not in md                           # old kind-led format is gone
-    assert "v0.mp4" not in md                          # video body excluded
-    # Described asset is listed before the blank fallback.
+    assert "- hero-shot.jpg — 0KB, the hero shot" in md   # image line carries an NKB size
+    assert "- svgs/logo-ab12.svg — logo ab12" in md       # svg -> svgs/ prefix, cleaned name
+    assert "- **" not in md                               # old kind-led format is gone
+    assert "v0.mp4" not in md                              # video body excluded from image walk
+    # Captioned image is listed before the SVG group.
     assert md.index("hero-shot.jpg") < md.index("logo-ab12.svg")
+
+
+@pytest.mark.asyncio
+async def test_asset_descriptions_videos_first_and_fonts_last():
+    """Reference generateAssetDescriptions line order: videos (with the `[video]`
+    marker + dims) lead, then images with NKB sizes, then SVGs, then fonts."""
+    doc = type("D", (), {})()
+    doc.id, doc.kb_id = "d1", "kb"
+    doc.profile = {
+        "fonts": {}, "text": {"headline": "T"}, "screenshots": [], "spacing": {},
+        "video_manifest": [
+            {"localPath": "assets/videos/video-0.mp4", "caption": "a hero demo",
+             "sourceWidth": 1920, "sourceHeight": 1080},
+            {"caption": "no local body"},                 # no localPath -> dropped
+        ],
+        "font_files": [
+            {"storage_key": "captures/kb/d1/assets/fonts/Inter.woff2", "family": "Inter"},
+        ],
+        "assets": [
+            {"kind": "image", "storage_key": "captures/kb/d1/assets/hero-shot.jpg",
+             "format": "jpg", "description": "the hero shot"},
+        ],
+    }
+    storage = AsyncMock()
+    storage.get = AsyncMock(return_value=b"BYTES")
+    with (
+        patch("parsers.capture.export.get_storage", new=AsyncMock(return_value=storage)),
+        patch("parsers.capture.export._image_keys", new=AsyncMock(return_value={})),
+    ):
+        from parsers.capture.export import build_hyperframes_zip
+        data = await build_hyperframes_zip(doc)
+    md = zipfile.ZipFile(io.BytesIO(data)).read(
+        "capture/extracted/asset-descriptions.md").decode()
+    assert "- video-0.mp4 — [video] a hero demo, ~1920×1080" in md
+    assert "- hero-shot.jpg — 0KB, the hero shot" in md
+    assert "- fonts/Inter.woff2 — font file" in md
+    assert "no local body" not in md                      # manifest entry without localPath dropped
+    # Reference order: video before image before font.
+    assert md.index("video-0.mp4") < md.index("hero-shot.jpg") < md.index("Inter.woff2")
 
 
 @pytest.mark.asyncio
