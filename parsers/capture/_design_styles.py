@@ -1,5 +1,6 @@
 """Computed design-system extraction — typography / buttons / cards / chips / stats
-/ tabs / spacing / radius / shadows from ~50 key elements.
+/ tabs / spacing / radius / shadows / gradient-backgrounds / frosted-glass from ~50
+key elements.
 
 Ported verbatim from hyperframes' designStyleExtractor.ts EXTRACT_DESIGN_STYLES_SCRIPT
 (reuse the exact page.evaluate script → zero schema drift). Output is a compact,
@@ -20,8 +21,11 @@ EXTRACT_DESIGN_STYLES_SCRIPT = r"""(() => {
   function rgbToHex(color) {
     if (!color) return "";
     if (color.startsWith('#')) return color.toUpperCase();
-    var m = color.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*(?:,\s*([\d.]+))?/);
+    // capture optional alpha (group 4), allowing both comma and modern slash (rgb r g b / a) syntax.
+    var m = color.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)(?:\s*[,/]\s*([\d.]+))?/);
     if (!m) return color;
+    // fully-transparent fill (rgba(...,0)) → sentinel, NOT #000000 — otherwise a transparent
+    // chip/tab/stat ground reads as solid black on a light-ground site.
     if (m[4] !== undefined && parseFloat(m[4]) === 0) return "transparent";
     return '#' + ((1<<24) + (parseInt(m[1])<<16) + (parseInt(m[2])<<8) + parseInt(m[3])).toString(16).slice(1).toUpperCase();
   }
@@ -30,8 +34,15 @@ EXTRACT_DESIGN_STYLES_SCRIPT = r"""(() => {
     return f.split(",")[0].replace(/['"]/g, "").trim();
   }
 
+  // keep only gradient background-images (drop url() sprites + "none"); gradients are a core
+  // brand signal (Stripe/ElevenLabs/Snowflake mesh washes) that a flat background-color misses.
+  function gradientOf(v) {
+    return v && v.indexOf("gradient") >= 0 ? v.trim() : "";
+  }
+
   function getStyles(el) {
     var s = getComputedStyle(el);
+    var bf = s.backdropFilter || s.webkitBackdropFilter || "";
     return {
       fontFamily: cleanFont(s.fontFamily),
       fontSize: s.fontSize,
@@ -40,6 +51,8 @@ EXTRACT_DESIGN_STYLES_SCRIPT = r"""(() => {
       letterSpacing: s.letterSpacing,
       color: rgbToHex(s.color),
       background: rgbToHex(s.backgroundColor),
+      backgroundImage: gradientOf(s.backgroundImage),
+      backdropFilter: bf === "none" ? "" : bf,
       padding: s.padding,
       borderRadius: s.borderRadius,
       border: s.border,
@@ -48,6 +61,7 @@ EXTRACT_DESIGN_STYLES_SCRIPT = r"""(() => {
     };
   }
 
+  // ── 1. Typography hierarchy ──
   var typographyMap = {};
   var roleSelectors = [
     { role: "display", sel: "h1", max: 3 },
@@ -102,29 +116,52 @@ EXTRACT_DESIGN_STYLES_SCRIPT = r"""(() => {
     }
   }
 
+  // ── 2. Buttons ──
+  // a page's primary CTA is very often a FILLED pill in the nav/header ("Sign up", "Start for free").
+  // Old code dropped everything under <nav>, losing that CTA; keep nav elements that carry a solid
+  // fill (a real button), still dropping plain nav text links.
+  var isFilledEl = (el) => {
+    var cs = getComputedStyle(el);
+    var bg = cs.backgroundColor;
+    var solid = !!bg && bg !== "transparent" && !/rgba?\([^)]*,\s*0\s*\)/.test(bg);
+    // a gradient-filled CTA (e.g. Snowflake's blue pill = background: var(--ui-background-03)) has a
+    // transparent background-COLOR but a gradient background-IMAGE — count it as filled too.
+    return solid || (cs.backgroundImage || "").indexOf("gradient") >= 0;
+  };
   var buttonEls = Array.from(document.querySelectorAll(
     'button, a[class*="btn"], a[class*="button"], a[role="button"], ' +
     '[class*="btn-"], [class*="button-"], [class*="cta"]'
   )).filter(function(el) {
-    return isVisible(el) && !el.closest('nav, [role="navigation"]');
-  }).slice(0, 10);
+    if (!isVisible(el)) return false;
+    return el.closest('nav, [role="navigation"]') ? isFilledEl(el) : true;
+  }).slice(0, 16);
 
   var buttonMap = {};
   for (var bi = 0; bi < buttonEls.length; bi++) {
     var bs = getStyles(buttonEls[bi]);
-    var bKey = bs.background + "|" + bs.borderRadius + "|" + bs.border;
+    // Deduplicate by visual appearance (gradient fill kept distinct so a gradient CTA survives)
+    var bKey = bs.background + "|" + bs.backgroundImage + "|" + bs.borderRadius + "|" + bs.border;
     if (!buttonMap[bKey]) {
       var btnText = (buttonEls[bi].textContent || "").trim().slice(0, 40);
       buttonMap[bKey] = {
         label: btnText || "button",
-        background: bs.background, color: bs.color, padding: bs.padding,
-        borderRadius: bs.borderRadius, border: bs.border, boxShadow: bs.boxShadow,
-        fontSize: bs.fontSize, fontWeight: bs.fontWeight, height: bs.height
+        background: bs.background,
+        backgroundImage: bs.backgroundImage,
+        backdropFilter: bs.backdropFilter,
+        color: bs.color,
+        padding: bs.padding,
+        borderRadius: bs.borderRadius,
+        border: bs.border,
+        boxShadow: bs.boxShadow,
+        fontSize: bs.fontSize,
+        fontWeight: bs.fontWeight,
+        height: bs.height
       };
     }
   }
-  var buttons = Object.values(buttonMap).slice(0, 4);
+  var buttons = Object.values(buttonMap).slice(0, 6);
 
+  // ── 3. Cards / containers ──
   var cardEls = Array.from(document.querySelectorAll(
     '[class*="card"], [class*="Card"], [class*="tile"], [class*="Tile"], ' +
     '[class*="panel"], [class*="Panel"], [class*="feature"], ' +
@@ -137,30 +174,49 @@ EXTRACT_DESIGN_STYLES_SCRIPT = r"""(() => {
   var cardMap = {};
   for (var ci = 0; ci < cardEls.length; ci++) {
     var cs = getStyles(cardEls[ci]);
-    var cKey = cs.background + "|" + cs.borderRadius + "|" + cs.border;
+    // gradient fill + glass blur kept in the key so a gradient/frosted card is a distinct variant
+    var cKey = cs.background + "|" + cs.backgroundImage + "|" + cs.backdropFilter + "|" + cs.borderRadius + "|" + cs.border;
     if (!cardMap[cKey]) {
       cardMap[cKey] = {
         label: "card",
-        background: cs.background, color: cs.color, padding: cs.padding,
-        borderRadius: cs.borderRadius, border: cs.border, boxShadow: cs.boxShadow,
-        fontSize: cs.fontSize, fontWeight: cs.fontWeight, height: cs.height
+        background: cs.background,
+        backgroundImage: cs.backgroundImage,
+        backdropFilter: cs.backdropFilter,
+        color: cs.color,
+        padding: cs.padding,
+        borderRadius: cs.borderRadius,
+        border: cs.border,
+        boxShadow: cs.boxShadow,
+        fontSize: cs.fontSize,
+        fontWeight: cs.fontWeight,
+        height: cs.height
       };
     }
   }
   var cards = Object.values(cardMap).slice(0, 4);
 
+  // ── 4. Navigation ──
   var navEl = document.querySelector('nav, header, [role="navigation"], [class*="navbar"], [class*="header"]');
   var nav = null;
   if (navEl && isVisible(navEl)) {
     var ns = getStyles(navEl);
     nav = {
       label: "navigation",
-      background: ns.background, color: ns.color, padding: ns.padding,
-      borderRadius: ns.borderRadius, border: ns.border, boxShadow: ns.boxShadow,
-      fontSize: ns.fontSize, fontWeight: ns.fontWeight, height: ns.height
+      background: ns.background,
+      backgroundImage: ns.backgroundImage,
+      backdropFilter: ns.backdropFilter,
+      color: ns.color,
+      padding: ns.padding,
+      borderRadius: ns.borderRadius,
+      border: ns.border,
+      boxShadow: ns.boxShadow,
+      fontSize: ns.fontSize,
+      fontWeight: ns.fontWeight,
+      height: ns.height
     };
   }
 
+  // ── 4b. Chips / pills / badges / tags ──
   var chipEls = Array.from(document.querySelectorAll(
     '[class*="pill"], [class*="Pill"], [class*="badge"], [class*="Badge"], ' +
     '[class*="chip"], [class*="Chip"], [class*="tag"], [class*="Tag"]'
@@ -194,6 +250,7 @@ EXTRACT_DESIGN_STYLES_SCRIPT = r"""(() => {
   }
   var chips = Object.values(chipMap).slice(0, 4);
 
+  // ── 4c. Stat / metric cells (a big numeral + a small label) ──
   var statEls = Array.from(document.querySelectorAll(
     '[class*="stat"], [class*="Stat"], [class*="metric"], [class*="Metric"], ' +
     '[class*="kpi"], [class*="KPI"], [class*="figure"], [class*="Figure"]'
@@ -215,7 +272,7 @@ EXTRACT_DESIGN_STYLES_SCRIPT = r"""(() => {
   for (var sti = 0; sti < statEls.length; sti++) {
     var numEl = biggestFontChild(statEls[sti]) || statEls[sti];
     var numFz = parseFloat(getComputedStyle(numEl).fontSize) || 0;
-    if (numFz < 28) continue;
+    if (numFz < 28) continue; // needs a genuinely large numeral to count as a stat cell
     var cst = getStyles(statEls[sti]);
     var nst = getStyles(numEl);
     var stKey = Math.round(numFz) + "|" + cst.background;
@@ -228,6 +285,7 @@ EXTRACT_DESIGN_STYLES_SCRIPT = r"""(() => {
   }
   var statCells = Object.values(statMap).slice(0, 3);
 
+  // ── 4d. Tabs ──
   var tabEls = Array.from(document.querySelectorAll(
     '[role="tab"], [class*="tab"]:not([class*="table"]):not([class*="Table"])'
   )).filter(function(el) {
@@ -250,6 +308,7 @@ EXTRACT_DESIGN_STYLES_SCRIPT = r"""(() => {
   }
   var tabs = Object.values(tabMap).slice(0, 4);
 
+  // ── 5. Spacing scale ──
   var spacingCounts = {};
   var spacingSamples = Array.from(document.querySelectorAll(
     "section, div, article, main, aside, header, footer, nav, " +
@@ -280,6 +339,7 @@ EXTRACT_DESIGN_STYLES_SCRIPT = r"""(() => {
     baseUnit = (divisible4 > divisible8 * 1.5) ? 4 : 8;
   }
 
+  // ── 6. Border radius scale ──
   var radiusCounts = {};
   var radiusSamples = Array.from(document.querySelectorAll(
     "button, a, [class*='card'], [class*='btn'], input, select, textarea, " +
@@ -297,6 +357,7 @@ EXTRACT_DESIGN_STYLES_SCRIPT = r"""(() => {
     .sort(function(a, b) { return parseFloat(a[0]) - parseFloat(b[0]); })
     .map(function(e) { return e[0]; });
 
+  // ── 7. Box shadows ──
   var shadowCounts = {};
   var shadowSamples = Array.from(document.querySelectorAll(
     "[class*='card'], [class*='Card'], button, [class*='btn'], " +
@@ -315,6 +376,90 @@ EXTRACT_DESIGN_STYLES_SCRIPT = r"""(() => {
     .slice(0, 5)
     .map(function(e) { return { value: e[0], count: e[1] }; });
 
+  // ── 8. Dominant gradient / mesh backgrounds ──
+  // A site's signature color wash (Stripe/ElevenLabs/Snowflake) lives in gradient background-images
+  // on large blocks — often on a pseudo-element (::before glow orbs) rather than the block itself.
+  // Weight each distinct gradient by the total on-screen area it covers; return the top few.
+  var gradientArea = {};
+  var gradSamples = Array.from(document.querySelectorAll(
+    "body, main, section, header, div, [class*='hero'], [class*='gradient'], [class*='bg'], [class*='background']"
+  )).slice(0, 400);
+
+  // max stop chroma (max−min RGB) of a gradient: a vivid brand wash scores high, a neutral
+  // white/cream scrim ~0. Used to rank washes so a small vivid gradient beats a big grey scrim.
+  function gradientChroma(g) {
+    var max = 0, re = /rgba?\(\s*(\d+)[,\s]+(\d+)[,\s]+(\d+)/g, m;
+    while ((m = re.exec(g))) {
+      var r = +m[1], gr = +m[2], b = +m[3];
+      var c = Math.max(r, gr, b) - Math.min(r, gr, b);
+      if (c > max) max = c;
+    }
+    return max;
+  }
+
+  function addGradient(val, area) {
+    var g = gradientOf(val);
+    if (!g || area < 20000) return; // ignore tiny decorative gradients
+    var norm = g.replace(/\s+/g, " ");
+    gradientArea[norm] = (gradientArea[norm] || 0) + area;
+  }
+
+  for (var gi = 0; gi < gradSamples.length; gi++) {
+    var gel = gradSamples[gi];
+    if (!isVisible(gel)) continue;
+    var grect = gel.getBoundingClientRect();
+    var garea = grect.width * grect.height;
+    if (garea < 20000) continue;
+    addGradient(getComputedStyle(gel).backgroundImage, garea);
+    addGradient(getComputedStyle(gel, "::before").backgroundImage, garea);
+    addGradient(getComputedStyle(gel, "::after").backgroundImage, garea);
+  }
+
+  // rank by chroma-weighted area so the brand's signature color wash outranks a larger neutral scrim
+  var backgrounds = Object.entries(gradientArea)
+    .map(function(e) { return { value: e[0], area: Math.round(e[1]), score: e[1] * (1 + 2 * gradientChroma(e[0]) / 255) }; })
+    .sort(function(a, b) { return b.score - a.score; })
+    .slice(0, 6)
+    .map(function(e) { return { value: e.value, area: e.area }; });
+
+  // ── 9. Frosted-glass panels (backdrop-filter) ──
+  // A defining material on modern hero UIs (HeyGen's prompt box, Stripe's floating chrome): a
+  // translucent surface with a backdrop blur. Capture the RAW fill (rgba/gradient — alpha preserved,
+  // unlike rgbToHex) + the blur, ranked by area. This is what lets a frame render a real frosted card.
+  var glassSamples = Array.from(document.querySelectorAll(
+    "div, section, header, nav, aside, [class*='card'], [class*='panel'], [class*='glass'], [class*='blur'], [class*='modal'], [class*='overlay'], [class*='input']"
+  )).slice(0, 400);
+  var glassByKey = {};
+  for (var qi = 0; qi < glassSamples.length; qi++) {
+    var qel = glassSamples[qi];
+    if (!isVisible(qel)) continue;
+    var qs = getComputedStyle(qel);
+    var bf = qs.backdropFilter || qs.webkitBackdropFilter || "";
+    if (!bf || bf === "none" || bf.indexOf("blur") < 0) continue;
+    var qrect = qel.getBoundingClientRect();
+    var qarea = qrect.width * qrect.height;
+    if (qarea < 8000) continue; // ignore tiny blurred chips
+    // raw fill with alpha intact: prefer a translucent gradient, else the rgba background-color
+    var gi2 = qs.backgroundImage;
+    var rawFill = gi2 && gi2.indexOf("gradient") >= 0 ? gi2.replace(/\s+/g, " ").trim() : qs.backgroundColor;
+    var key = bf + "|" + rawFill + "|" + qs.borderRadius;
+    if (!glassByKey[key]) {
+      glassByKey[key] = {
+        backdropFilter: bf,
+        background: rawFill,
+        border: qs.border,
+        borderRadius: qs.borderRadius,
+        boxShadow: qs.boxShadow === "none" ? "" : qs.boxShadow,
+        area: 0
+      };
+    }
+    glassByKey[key].area += qarea;
+  }
+  var glass = Object.values(glassByKey)
+    .sort(function(a, b) { return b.area - a.area; })
+    .slice(0, 3)
+    .map(function(g) { return { backdropFilter: g.backdropFilter, background: g.background, border: g.border, borderRadius: g.borderRadius, boxShadow: g.boxShadow, area: Math.round(g.area) }; });
+
   return {
     typography: uniqueTypo,
     spacing: { observed: observedSpacing.slice(0, 15), baseUnit: baseUnit },
@@ -325,7 +470,9 @@ EXTRACT_DESIGN_STYLES_SCRIPT = r"""(() => {
     nav: nav,
     chips: chips,
     statCells: statCells,
-    tabs: tabs
+    tabs: tabs,
+    backgrounds: backgrounds,
+    glass: glass
   };
 })()"""
 
