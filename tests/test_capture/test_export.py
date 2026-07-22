@@ -100,21 +100,21 @@ async def test_build_hyperframes_zip_layout():
 
 
 @pytest.mark.asyncio
-async def test_asset_descriptions_skips_blank_description_assets():
-    """M1: Phase 3 adds many svg/logo/image refs with description="" — those must
-    NOT emit noise "- **kind**: " lines with nothing after the colon. Only assets
-    with a real description show up; blanks are dropped."""
+async def test_asset_descriptions_filename_led_described_first():
+    """Reference format: `- <filename> — <desc>` (filename-led, not `**kind**:`),
+    with vision-described assets first and blank ones falling back to a cleaned
+    filename (so every downloaded file gets a line). Non-content binaries excluded."""
     doc = type("D", (), {})()
     doc.id, doc.kb_id = "d1", "kb"
     doc.profile = {
         "fonts": {}, "text": {"headline": "T"}, "screenshots": [], "spacing": {},
         "assets": [
-            {"kind": "logo", "storage_key": "captures/kb/d1/assets/logo.svg",
-             "format": "svg", "description": ""},          # blank -> skipped
-            {"kind": "image", "storage_key": "captures/kb/d1/assets/pic.jpg",
-             "format": "jpg", "description": ""},           # blank -> skipped
-            {"kind": "hero", "storage_key": "captures/kb/d1/assets/hero.jpg",
-             "format": "jpg", "description": "the hero shot"},  # kept
+            {"kind": "logo", "storage_key": "captures/kb/d1/assets/svgs/logo-ab12.svg",
+             "format": "svg", "description": ""},          # blank -> cleanname fallback
+            {"kind": "image", "storage_key": "captures/kb/d1/assets/hero-shot.jpg",
+             "format": "jpg", "description": "the hero shot"},  # described -> first
+            {"kind": "video", "storage_key": "captures/kb/d1/assets/videos/v0.mp4",
+             "format": "mp4", "description": "a clip"},     # non-content -> excluded
         ],
     }
     storage = AsyncMock()
@@ -125,30 +125,32 @@ async def test_asset_descriptions_skips_blank_description_assets():
     ):
         from parsers.capture.export import build_hyperframes_zip
         data = await build_hyperframes_zip(doc)
-    zf = zipfile.ZipFile(io.BytesIO(data))
-    md = zf.read("capture/extracted/asset-descriptions.md").decode()
-    assert "- **hero**: the hero shot" in md
-    # No noise lines: nothing ends in a bare colon-space, and blanks are gone.
-    assert "- **logo**: " not in md
-    assert "- **image**: " not in md
-    assert md.strip() == "- **hero**: the hero shot"
+    md = zipfile.ZipFile(io.BytesIO(data)).read(
+        "capture/extracted/asset-descriptions.md").decode()
+    assert md.startswith("# Asset Descriptions")
+    assert "- hero-shot.jpg — the hero shot" in md
+    assert "- logo-ab12.svg — logo ab12" in md        # blank -> cleaned filename
+    assert "- **" not in md                           # old kind-led format is gone
+    assert "v0.mp4" not in md                          # video body excluded
+    # Described asset is listed before the blank fallback.
+    assert md.index("hero-shot.jpg") < md.index("logo-ab12.svg")
 
 
 @pytest.mark.asyncio
-async def test_asset_descriptions_fallback_when_all_blank():
-    """When every asset has a blank description, the (no descriptions) fallback
-    still applies (empty join -> fallback string)."""
+async def test_asset_descriptions_fallback_when_no_content_assets():
+    """The (no descriptions) fallback applies only when there are NO content assets
+    (e.g. every asset is an excluded video/lottie/contact-sheet)."""
     doc = type("D", (), {})()
     doc.id, doc.kb_id = "d1", "kb"
     doc.profile = {
         "fonts": {}, "text": {"headline": "T"}, "screenshots": [], "spacing": {},
         "assets": [
-            {"kind": "logo", "storage_key": "captures/kb/d1/assets/logo.svg",
-             "format": "svg", "description": ""},
+            {"kind": "contact_sheet",
+             "storage_key": "captures/kb/d1/assets/contact-sheet.jpg", "format": "jpg"},
         ],
     }
     storage = AsyncMock()
-    storage.get = AsyncMock(return_value=b"<svg/>")
+    storage.get = AsyncMock(return_value=b"BYTES")
     with (
         patch("parsers.capture.export.get_storage", new=AsyncMock(return_value=storage)),
         patch("parsers.capture.export._image_keys", new=AsyncMock(return_value={})),

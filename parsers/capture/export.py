@@ -167,6 +167,55 @@ def _sections_out(sections: list[dict], asset_paths: dict | None = None) -> list
     return out
 
 
+# Kinds that are NOT "described assets" in the reference asset-descriptions.md
+# (video bodies, lottie JSON + preview frames, and the contact-sheet grids).
+_DESC_EXCLUDE_KINDS = {"video", "video_preview", "lottie_json", "lottie_preview",
+                       "contact_sheet", "background_video"}
+
+_ASSET_DESC_HEADER = (
+    "# Asset Descriptions\n\n"
+    "One line per file. Read this instead of opening every image individually.\n\n"
+    "To find a specific brand or icon, grep this file for the brand name in the "
+    "description text.\n\n"
+    "The `logo-<hash>.svg` filename prefix is a structural hint (the DOM said this "
+    "SVG was inside a `<header>`, a home-link `<a>`, or had an aria-label matching "
+    "the page brand) — not a content claim.\n\n")
+
+
+def _clean_name(filename: str) -> str:
+    """Reference cleanName fallback: filename without extension, dashes/underscores
+    collapsed to spaces."""
+    return re.sub(r"[-_]+", " ", filename.rsplit(".", 1)[0]).strip()
+
+
+def _asset_descriptions_md(profile: dict) -> str:
+    """asset-descriptions.md in the reference format: one ``- <filename> — <desc>``
+    line per downloaded content asset (images + SVGs), filename-led so a reader can
+    map a description back to a file (the old ``- **kind**: desc`` shape couldn't).
+    Assets with a real (vision) description are listed first; the rest fall back to a
+    cleaned filename (the reference's catalog fallback), so every file gets a line.
+    File sizes (reference appends ``— NKB``) are omitted — the bytes aren't in hand at
+    export time. Non-content binaries (videos/lottie/contact sheets) are excluded,
+    matching generateAssetDescriptions."""
+    described: list[str] = []
+    fallback: list[str] = []
+    for a in profile.get("assets", []) or []:
+        if a.get("kind") in _DESC_EXCLUDE_KINDS:
+            continue
+        sk = a.get("storage_key")
+        if not sk:
+            continue
+        fname = _asset_zip_path(a, sk).rsplit("/", 1)[-1]
+        desc = (a.get("description") or "").strip()
+        if desc:
+            described.append(f"- {fname} — {desc}")
+        else:
+            cn = _clean_name(fname)
+            fallback.append(f"- {fname} — {cn}" if cn else f"- {fname}")
+    lines = described + fallback
+    return (_ASSET_DESC_HEADER + "\n".join(lines) + "\n") if lines else "(no descriptions)"
+
+
 def _asset_paths_by_url(profile: dict) -> dict:
     """Map each downloaded asset's original URL -> its capture-relative ZIP path
     ("assets/..."), so section assetUrls can be resolved to local ``assets`` (the
@@ -509,14 +558,11 @@ async def build_hyperframes_zip(doc) -> bytes:
             t.get("headline", ""), t.get("tagline", ""),
             "\n".join(t.get("ctas", [])), t.get("full_text", "")]))
         zf.writestr("capture/extracted/visible-text.txt", text_body)
-        # extracted/asset-descriptions.md — under extracted/ (the path the skills
-        # read: capture/extracted/asset-descriptions.md), not top-level capture/.
-        # Skip blank-description assets (Phase 3 adds many svg/logo/image refs with
-        # description=""): a media-heavy page would otherwise emit dozens of noise
-        # lines with nothing after the colon. Fallback stays "(no descriptions)".
-        desc = "\n".join(f"- **{a.get('kind')}**: {a.get('description', '')}"
-                         for a in profile.get("assets", []) if a.get("description"))
-        zf.writestr("capture/extracted/asset-descriptions.md", desc or "(no descriptions)")
+        # extracted/asset-descriptions.md — reference format: one `- <filename> —
+        # <desc>` line per downloaded content asset (filename-led so a reader can map
+        # descriptions to files). Built from the profile assets (no S3 needed).
+        zf.writestr("capture/extracted/asset-descriptions.md",
+                    _asset_descriptions_md(profile))
         # extracted/design-styles.json — computed design system (only present when
         # capture_quality == full). Inlined in the profile, so write directly.
         if profile.get("design_styles"):
