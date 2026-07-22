@@ -59,10 +59,10 @@ def test_siteprofile_carries_video_manifest():
     from parsers.capture.profile import (
         SiteProfile, Fonts, FontRole, CatalogMatch, Spacing, TextInfo, MotionHints,
     )
-    vm = {"videos": [{"url": "https://x/hero.mp4", "source": "dom", "width": 1280,
-                      "height": 720, "poster": "", "download": True,
-                      "preview": None}],
-          "meta": {"discovered": 1, "downloaded": 0, "previews": 0}}
+    vm = [{"index": 0, "url": "https://x/hero.mp4", "filename": "hero.mp4",
+           "width": 1280, "height": 720, "sourceWidth": 1920, "sourceHeight": 1080,
+           "heading": "", "caption": "", "ariaLabel": "",
+           "localPath": "assets/videos/video-0.mp4"}]
     p = SiteProfile(
         url="https://x", captured_at="2026-07-14T00:00:00Z",
         fonts=Fonts(
@@ -73,7 +73,7 @@ def test_siteprofile_carries_video_manifest():
         spacing=Spacing(), text=TextInfo(headline="Hi"), motion_hints=MotionHints(),
         video_manifest=vm)
     d = p.model_dump()
-    assert d["video_manifest"]["videos"][0]["url"] == "https://x/hero.mp4"
+    assert d["video_manifest"][0]["url"] == "https://x/hero.mp4"
     # Old profile dict lacking the key still validates (backward-compat).
     old = {k: v for k, v in d.items() if k != "video_manifest"}
     p2 = SiteProfile.model_validate(old)

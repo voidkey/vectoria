@@ -707,23 +707,31 @@ def make_video_response_handler(discovered: set):
     return _handler
 
 
+def _video_url_basename(url: str) -> str:
+    """Reference filename derivation for a network-only video (src.split('/').pop()
+    .split('?')[0])."""
+    try:
+        return (urlsplit(url).path.rsplit("/", 1)[-1] or "").split("?")[0]
+    except Exception:
+        return ""
+
+
 def merge_video_manifest(network_urls: set, dom_videos: list, cap: int) -> list[dict]:
     """Merge two-layer video discovery into capped manifest entries.
 
-    Port of mediaCapture.ts::captureVideoManifest's merge step, mapped to
-    vectoria's manifest entry shape. Layer 2 (DOM, rich — carries width/height/
-    poster) is kept ahead of Layer 1 (network-only, thin) so a clip seen in both
-    lands once as the richer DOM entry. Deduped by URL, then capped (DOM entries
-    first so the cap never drops a rich entry in favour of a thin one).
+    Port of mediaCapture.ts::captureVideoManifest's merge step. Layer 2 (DOM, rich
+    — carries dims + nearby heading/caption/aria) is kept ahead of Layer 1 (network-
+    only, thin) so a clip seen in both lands once as the richer DOM entry. Deduped by
+    URL, then capped (DOM entries first so the cap never drops a rich entry).
 
-    Each entry leaves this function with the key set ``{url, source, width,
-    height, poster, download, preview}``: ``source`` is "dom" or "network";
-    ``download`` marks a direct-ext body the orchestrator may fetch (False for
-    HLS/DASH/blob/data); ``preview`` starts None and is filled by the
-    orchestrator's screenshot pass. The orchestrator ALSO annotates each entry it
-    downloads in place with ``local_key`` and ``downloaded`` (both serialized into
-    video-manifest.json) — those two keys are added downstream, not here.
-    Pure — no I/O."""
+    Each entry carries the reference manifest keys ``{url, filename, width, height,
+    sourceWidth, sourceHeight, heading, caption, ariaLabel}`` PLUS two underscore-
+    prefixed internal control fields the orchestrator consumes and then strips before
+    serialization: ``_source`` ("dom"|"network", drives which entries get a preview
+    screenshot) and ``_download`` (direct-ext body the orchestrator may fetch — False
+    for HLS/DASH/blob/data). ``index``/``preview``/``localPath`` are added by the
+    orchestrator's per-video pass (reference assigns them in the download loop), NOT
+    here. Pure — no I/O."""
     by_url: dict[str, dict] = {}
     for d in dom_videos or []:
         url = d.get("src") or ""
@@ -731,24 +739,27 @@ def merge_video_manifest(network_urls: set, dom_videos: list, cap: int) -> list[
             continue
         by_url[url] = {
             "url": url,
-            "source": "dom",
+            "filename": d.get("filename") or _video_url_basename(url),
             "width": d.get("width", 0) or 0,
             "height": d.get("height", 0) or 0,
-            "poster": d.get("poster") or "",
-            "download": is_downloadable_video_url(url),
-            "preview": None,
+            "sourceWidth": d.get("sourceWidth", 0) or 0,
+            "sourceHeight": d.get("sourceHeight", 0) or 0,
+            "heading": d.get("heading") or "",
+            "caption": d.get("caption") or "",
+            "ariaLabel": d.get("ariaLabel") or "",
+            "_source": "dom",
+            "_download": is_downloadable_video_url(url),
         }
     for url in network_urls or set():
         if not url or url in by_url:
             continue
         by_url[url] = {
             "url": url,
-            "source": "network",
-            "width": 0,
-            "height": 0,
-            "poster": "",
-            "download": is_downloadable_video_url(url),
-            "preview": None,
+            "filename": _video_url_basename(url),
+            "width": 0, "height": 0, "sourceWidth": 0, "sourceHeight": 0,
+            "heading": "", "caption": "", "ariaLabel": "",
+            "_source": "network",
+            "_download": is_downloadable_video_url(url),
         }
     items = list(by_url.values())
     kept, truncated = cap_items(items, cap)

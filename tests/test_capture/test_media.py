@@ -236,19 +236,23 @@ async def test_video_descriptors_caps():
 
 def test_merge_video_manifest_shapes_entries_verbatim_keys():
     dom = [{"src": "https://x.com/hero.mp4", "width": 1280, "height": 720,
-            "poster": "https://x.com/p.jpg"}]
+            "sourceWidth": 1920, "sourceHeight": 1080, "heading": "Watch",
+            "caption": "A demo", "ariaLabel": "hero video", "filename": "hero.mp4"}]
     out = merge_video_manifest(set(), dom, cap=6)
     assert len(out) == 1
     e = out[0]
-    # Exact key set — nothing more, nothing less.
-    assert set(e) == {"url", "source", "width", "height", "poster", "download", "preview"}
+    # Reference manifest keys + the two internal control keys (stripped at serialize).
+    assert set(e) == {"url", "filename", "width", "height", "sourceWidth",
+                      "sourceHeight", "heading", "caption", "ariaLabel",
+                      "_source", "_download"}
     assert e["url"] == "https://x.com/hero.mp4"
-    assert e["source"] == "dom"
-    assert e["width"] == 1280
-    assert e["height"] == 720
-    assert e["poster"] == "https://x.com/p.jpg"
-    assert e["download"] is True     # direct .mp4 ext
-    assert e["preview"] is None      # filled later by orchestrator
+    assert e["filename"] == "hero.mp4"
+    assert e["_source"] == "dom"
+    assert e["width"] == 1280 and e["height"] == 720
+    assert e["sourceWidth"] == 1920 and e["sourceHeight"] == 1080
+    assert e["heading"] == "Watch" and e["caption"] == "A demo"
+    assert e["ariaLabel"] == "hero video"
+    assert e["_download"] is True     # direct .mp4 ext
 
 
 def test_merge_video_manifest_dedups_url_in_both_network_and_dom():
@@ -259,11 +263,13 @@ def test_merge_video_manifest_dedups_url_in_both_network_and_dom():
     urls = [e["url"] for e in out]
     assert urls.count("https://x.com/clip.mp4") == 1
     clip = next(e for e in out if e["url"] == "https://x.com/clip.mp4")
-    assert clip["source"] == "dom"           # DOM entry kept, not overwritten by network
+    assert clip["_source"] == "dom"          # DOM entry kept, not overwritten by network
     assert clip["width"] == 800
     other = next(e for e in out if e["url"] == "https://x.com/other.webm")
-    assert other["source"] == "network"
+    assert other["_source"] == "network"
     assert other["width"] == 0               # thin network entry
+    # Network-only filename is derived from the URL path.
+    assert other["filename"] == "other.webm"
 
 
 def test_merge_video_manifest_marks_hls_dash_blob_not_downloadable():
@@ -276,11 +282,11 @@ def test_merge_video_manifest_marks_hls_dash_blob_not_downloadable():
     }
     out = merge_video_manifest(net, [], cap=10)
     by_url = {e["url"]: e for e in out}
-    assert by_url["https://x.com/stream.m3u8"]["download"] is False
-    assert by_url["https://x.com/stream.mpd"]["download"] is False
-    assert by_url["blob:https://x.com/abc"]["download"] is False
-    assert by_url["data:video/mp4;base64,AAAA"]["download"] is False
-    assert by_url["https://x.com/real.mov"]["download"] is True
+    assert by_url["https://x.com/stream.m3u8"]["_download"] is False
+    assert by_url["https://x.com/stream.mpd"]["_download"] is False
+    assert by_url["blob:https://x.com/abc"]["_download"] is False
+    assert by_url["data:video/mp4;base64,AAAA"]["_download"] is False
+    assert by_url["https://x.com/real.mov"]["_download"] is True
 
 
 def test_merge_video_manifest_caps_total():

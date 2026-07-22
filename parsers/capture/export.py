@@ -464,10 +464,11 @@ async def build_hyperframes_zip(doc) -> bytes:
         if shaders:
             zf.writestr("capture/extracted/shaders.json",
                         json.dumps(shaders, ensure_ascii=False, indent=2))
-        # extracted/video-manifest.json — two-layer (network + DOM) video manifest
-        # (Phase 7). Carries per-video metadata + preview/local-body paths; the
-        # binaries themselves are routed below (kind=="video"/"video_preview").
-        # Omitted for old profiles / pages with no discovered videos.
+        # extracted/video-manifest.json — the reference BARE ARRAY of video entries
+        # (mediaCapture.ts): [{index, url, filename, width, height, sourceWidth,
+        # sourceHeight, heading, caption, ariaLabel, preview?, localPath?}] from two-
+        # layer (network + DOM) discovery; the binaries are routed below (kind==
+        # "video"/"video_preview"). Omitted for old profiles / pages with no videos.
         video_manifest = profile.get("video_manifest")
         if video_manifest:
             zf.writestr("capture/extracted/video-manifest.json",

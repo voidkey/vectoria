@@ -913,12 +913,16 @@ async def test_run_capture_builds_video_manifest_from_network_and_dom():
 
     vm = outcome.profile.video_manifest
     assert vm is not None
-    urls = {v["url"] for v in vm["videos"]}
+    assert isinstance(vm, list)                 # reference bare array
+    urls = {v["url"] for v in vm}
+    # The two direct-ext bodies download → kept via localPath.
     assert "https://x/dom-hero.mp4" in urls
     assert "https://x/net-clip.webm" in urls
-    assert "https://x/live/master.m3u8" in urls
-    hls = next(v for v in vm["videos"] if v["url"].endswith(".m3u8"))
-    assert hls["download"] is False
+    # The HLS master is not downloadable and (network-only) has no preview, so it
+    # carries nothing usable downstream — reference drops it from the manifest.
+    assert "https://x/live/master.m3u8" not in urls
+    assert all(v.get("localPath") for v in vm)  # every kept entry has a body here
+    assert all("_source" not in v and "_download" not in v for v in vm)  # internals stripped
 
     # Downloaded video bodies land as kind="video" AssetRefs under assets/videos/.
     video_refs = [a for a in outcome.profile.assets if a.kind == "video"]
@@ -954,6 +958,13 @@ async def test_run_capture_video_manifest_no_download_when_not_full():
                    "filename": "dom.mp4"}]
     page = _fake_page(raw)
     page.evaluate = _dom_video_eval(raw, dom_videos)
+    # A DOM <video> element that yields a preview frame — so at non-full quality
+    # (no body downloads) the DOM video is still kept via its preview, exactly as a
+    # real browser would. The network-only clip has no element → no preview.
+    vh = MagicMock()
+    vh.evaluate = AsyncMock(return_value="https://x/dom.mp4")
+    vh.screenshot = AsyncMock(return_value=b"PNG")
+    page.query_selector_all = AsyncMock(return_value=[vh])
 
     async def _goto(*a, **k):
         _emit_response(page, "https://x/net.mp4", "video/mp4")
@@ -973,11 +984,15 @@ async def test_run_capture_video_manifest_no_download_when_not_full():
 
     prof = outcome.profile
     assert prof.capture_quality != "full"
-    # Manifest still built from discovery.
+    # Discovery + manifest still happen at non-full quality: the DOM video survives
+    # via its preview frame; the network-only clip (no preview, no download) is dropped.
     assert prof.video_manifest is not None
-    assert {v["url"] for v in prof.video_manifest["videos"]} >= {
-        "https://x/dom.mp4", "https://x/net.mp4"}
-    # But nothing was downloaded.
+    urls = {v["url"] for v in prof.video_manifest}
+    assert "https://x/dom.mp4" in urls
+    assert "https://x/net.mp4" not in urls
+    dom_entry = next(v for v in prof.video_manifest if v["url"] == "https://x/dom.mp4")
+    assert dom_entry["preview"] == "assets/videos/previews/video-0-preview.png"
+    # But no video BODY was downloaded.
     assert fetched == []
     assert [a for a in prof.assets if a.kind == "video"] == []
 
@@ -1077,10 +1092,11 @@ async def test_run_capture_degrades_when_page_lacks_on_support():
         from parsers.capture.orchestrator import run_capture
         outcome = await run_capture("https://x", "kb", "d1", _settings(), deps)
 
-    # Capture completed; DOM discovery still populated the manifest.
+    # Capture completed; DOM discovery still populated the manifest (dom.mp4 is a
+    # direct-ext body downloaded at full quality → kept).
     vm = outcome.profile.video_manifest
     assert vm is not None
-    assert {v["url"] for v in vm["videos"]} == {"https://x/dom.mp4"}
+    assert {v["url"] for v in vm} == {"https://x/dom.mp4"}
 
 
 def json_dumps(obj):

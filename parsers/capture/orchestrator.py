@@ -115,7 +115,7 @@ async def _capture_video_previews(page, entries: list, out: dict) -> None:
     gets no preview; an unscreenshotable video is simply omitted. One failure never
     aborts — mirrors mediaCapture.ts's per-video preview guard. Non-mutating (runs
     before the DOM-mutating page.html pass)."""
-    by_url = {e["url"]: e for e in entries if e.get("source") == "dom"}
+    by_url = {e["url"]: e for e in entries if e.get("_source") == "dom"}
     if not by_url:
         return
     try:
@@ -338,85 +338,101 @@ async def _store_lottie_previews(lottie_entries: list, lottie_refs: list,
 
 
 async def _store_videos(video_entries: list, video_previews: dict, capture_quality: str,
-                        kb_id: str, doc_id: str, cfg, storage) -> tuple[list, dict | None]:
+                        kb_id: str, doc_id: str, cfg, storage) -> tuple[list, list | None]:
     """Store per-video preview frames + bounded/budgeted direct-ext body downloads.
 
-    Two-layer discovery already merged into ``video_entries``. Stores the preview
-    frames (captured while the page was open) as ``kind="video_preview"`` AssetRefs,
-    and DOWNLOADS direct-ext bodies (skip HLS/DASH/blob/data — ``download=False``) only
-    when ``capture_quality == "full"``, bounded by ``capture_max_video_downloads`` AND a
-    cumulative wall-clock budget. Each entry's ``preview``/``local_key``/``downloaded``
-    is annotated in place. Returns ``(profile_asset_refs, video_manifest_or_None)``.
+    Two-layer discovery already merged into ``video_entries`` (each carrying the
+    reference keys + internal ``_source``/``_download``). Stores preview frames
+    (captured while the page was open) as ``kind="video_preview"`` AssetRefs, and
+    DOWNLOADS direct-ext bodies (skip HLS/DASH/blob/data) only when ``capture_quality
+    == "full"``, bounded by ``capture_max_video_downloads`` AND a cumulative wall-clock
+    budget.
+
+    Returns ``(profile_asset_refs, video_manifest_list_or_None)`` — the manifest is
+    the reference BARE ARRAY: entries ``{index, url, filename, width, height,
+    sourceWidth, sourceHeight, heading, caption, ariaLabel}`` plus optional
+    ``preview``/``localPath`` (relative paths). Mirroring mediaCapture.ts, an entry
+    that yields NEITHER a preview NOR a downloaded body is dropped (it carries nothing
+    usable downstream), and the internal ``_``-prefixed control keys never serialize.
     Best-effort per video."""
     from parsers.capture._assets import fetch_asset_bytes
     from parsers.capture.profile import AssetRef
 
     refs: list = []
+    kept: list = []
     video_dl_count = 0
     video_dl_start = _monotonic()
     video_budget_hit = False
     allow_download = capture_quality == "full"
     for idx, entry in enumerate(video_entries):
         v_url = entry["url"]
+        preview: str | None = None
+        local_path: str | None = None
         # Preview frame (DOM videos only) -> assets/videos/previews/.
         png = video_previews.get(v_url)
         if png:
             pkey = f"captures/{kb_id}/{doc_id}/assets/videos/previews/video-{idx}-preview.png"
             try:
                 await storage.put(pkey, png, content_type="image/png")
-                entry["preview"] = f"assets/videos/previews/video-{idx}-preview.png"
+                preview = f"assets/videos/previews/video-{idx}-preview.png"
                 refs.append(AssetRef(
                     kind="video_preview", storage_key=pkey, url=v_url, format="png"))
             except Exception:
                 logger.info("capture: video preview store failed for %s", pkey, exc_info=True)
-        # Direct-ext body download (guarded, bounded, budgeted).
-        if not (allow_download and entry.get("download")):
+        # Direct-ext body download (guarded, bounded, budgeted). Skipping the download
+        # must NOT skip the entry — a preview-only entry is still listed.
+        if allow_download and entry.get("_download"):
+            if video_dl_count >= cfg.capture_max_video_downloads:
+                logger.info("capture: video download cap (%d) reached — %s not fetched",
+                            cfg.capture_max_video_downloads, v_url)
+            elif _monotonic() - video_dl_start >= cfg.capture_video_download_budget_s:
+                if not video_budget_hit:
+                    logger.info("capture: video download budget (%.0fs) exceeded — "
+                                "remaining bodies not fetched",
+                                cfg.capture_video_download_budget_s)
+                    video_budget_hit = True
+            else:
+                got = await fetch_asset_bytes(v_url, max_bytes=cfg.capture_max_video_bytes)
+                if got is not None:
+                    data, ctype = got
+                    # Ext from content-type, else the URL. Safe to reuse the image-ext
+                    # helper: we only get here when _download is True (is_downloadable_
+                    # video_url confirmed a direct .mp4/.webm/.mov/.m4v path), so the
+                    # helper's .jpg fallback is unreachable.
+                    ext = _VIDEO_CT_EXT.get((ctype or "").lower()) or _catalog_image_ext(v_url)
+                    vkey = f"captures/{kb_id}/{doc_id}/assets/videos/video-{idx}{ext}"
+                    try:
+                        await storage.put(
+                            vkey, data, content_type=ctype or "application/octet-stream")
+                        video_dl_count += 1
+                        local_path = f"assets/videos/video-{idx}{ext}"
+                        refs.append(AssetRef(
+                            kind="video", storage_key=vkey, url=v_url, format=ext.lstrip(".")))
+                    except Exception:
+                        logger.info("capture: video body store failed for %s", vkey,
+                                    exc_info=True)
+        # A video with neither a preview nor a body is a dead reference — drop it.
+        if preview is None and local_path is None:
             continue
-        if video_dl_count >= cfg.capture_max_video_downloads:
-            logger.info("capture: video download cap (%d) reached — %s not fetched",
-                        cfg.capture_max_video_downloads, v_url)
-            continue
-        # Cumulative wall-clock budget: stop STARTING new downloads once exceeded.
-        if _monotonic() - video_dl_start >= cfg.capture_video_download_budget_s:
-            if not video_budget_hit:
-                logger.info("capture: video download budget (%.0fs) exceeded — "
-                            "remaining bodies not fetched",
-                            cfg.capture_video_download_budget_s)
-                video_budget_hit = True
-            continue
-        got = await fetch_asset_bytes(v_url, max_bytes=cfg.capture_max_video_bytes)
-        if got is None:
-            continue
-        data, ctype = got
-        # Ext from content-type, else from the URL. Reusing the image-ext helper is
-        # safe here: we only reach this block when entry["download"] is True, which
-        # means is_downloadable_video_url() already confirmed the URL path ends in a
-        # direct video ext (.mp4/.webm/.mov/.m4v), so the helper's .jpg fallback is
-        # unreachable and it always returns the real video ext.
-        ext = _VIDEO_CT_EXT.get((ctype or "").lower()) or _catalog_image_ext(v_url)
-        vkey = f"captures/{kb_id}/{doc_id}/assets/videos/video-{idx}{ext}"
-        try:
-            await storage.put(vkey, data, content_type=ctype or "application/octet-stream")
-        except Exception:
-            logger.info("capture: video body store failed for %s", vkey, exc_info=True)
-            continue
-        video_dl_count += 1
-        entry["local_key"] = vkey
-        entry["downloaded"] = True
-        refs.append(AssetRef(
-            kind="video", storage_key=vkey, url=v_url, format=ext.lstrip(".")))
-
-    manifest = None
-    if video_entries:
-        manifest = {
-            "videos": video_entries,
-            "meta": {
-                "discovered": len(video_entries),
-                "downloaded": video_dl_count,
-                "previews": sum(1 for e in video_entries if e.get("preview")),
-            },
+        out: dict = {
+            "index": idx,
+            "url": v_url,
+            "filename": entry.get("filename", ""),
+            "width": entry.get("width", 0),
+            "height": entry.get("height", 0),
+            "sourceWidth": entry.get("sourceWidth", 0),
+            "sourceHeight": entry.get("sourceHeight", 0),
+            "heading": entry.get("heading", ""),
+            "caption": entry.get("caption", ""),
+            "ariaLabel": entry.get("ariaLabel", ""),
         }
-    return refs, manifest
+        if preview:
+            out["preview"] = preview
+        if local_path:
+            out["localPath"] = local_path
+        kept.append(out)
+
+    return refs, (kept or None)
 
 
 async def _download_catalog_images(asset_catalog: list, seen_urls: set, kb_id: str,

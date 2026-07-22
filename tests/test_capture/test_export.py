@@ -487,14 +487,12 @@ async def test_build_zip_emits_video_manifest_and_routes_video_assets():
     doc.id, doc.kb_id = "d1", "kb"
     doc.profile = {
         "fonts": {}, "text": {"headline": "T"}, "screenshots": [], "spacing": {},
-        "video_manifest": {
-            "videos": [{"url": "https://x/hero.mp4", "source": "dom", "width": 1280,
-                        "height": 720, "poster": "", "download": True,
-                        "preview": "assets/videos/previews/video-0-preview.png",
-                        "local_key": "captures/kb/d1/assets/videos/video-0.mp4",
-                        "downloaded": True}],
-            "meta": {"discovered": 1, "downloaded": 1, "previews": 1},
-        },
+        "video_manifest": [
+            {"index": 0, "url": "https://x/hero.mp4", "filename": "hero.mp4",
+             "width": 1280, "height": 720, "sourceWidth": 1920, "sourceHeight": 1080,
+             "heading": "", "caption": "", "ariaLabel": "",
+             "preview": "assets/videos/previews/video-0-preview.png",
+             "localPath": "assets/videos/video-0.mp4"}],
         "assets": [
             {"kind": "video", "storage_key": "captures/kb/d1/assets/videos/video-0.mp4",
              "format": "mp4", "url": "https://x/hero.mp4"},
@@ -515,8 +513,10 @@ async def test_build_zip_emits_video_manifest_and_routes_video_assets():
     names = set(zf.namelist())
     assert "capture/extracted/video-manifest.json" in names
     manifest = json.loads(zf.read("capture/extracted/video-manifest.json"))
-    assert manifest["videos"][0]["url"] == "https://x/hero.mp4"
-    assert manifest["meta"]["downloaded"] == 1
+    assert isinstance(manifest, list)                  # reference bare array
+    assert manifest[0]["url"] == "https://x/hero.mp4"
+    assert manifest[0]["localPath"] == "assets/videos/video-0.mp4"
+    assert "source" not in manifest[0] and "download" not in manifest[0]
     # video body + preview routed to the videos/ tree by basename.
     assert "capture/assets/videos/video-0.mp4" in names
     assert "capture/assets/videos/previews/video-0-preview.png" in names

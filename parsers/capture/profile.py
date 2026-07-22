@@ -179,13 +179,14 @@ class SiteProfile(BaseModel):
     # default (None / []) so older stored profiles still validate + export.
     animation_catalog: dict | None = None
     shaders: list[dict] = Field(default_factory=list)
-    # Phase 7: two-layer (network + DOM) video manifest — {videos:[{url, source,
-    # width, height, poster, download, preview}], meta:{discovered, downloaded,
-    # previews}}. Downloaded bodies + preview frames land as AssetRefs in `assets`
-    # (kind="video"/"video_preview"); the manifest carries the discovery record +
-    # per-video metadata. Kept alongside the URL-only `videos` descriptor catalog.
-    # Defaults to None so older stored profiles still validate + export (file omitted).
-    video_manifest: dict | None = None
+    # Phase 7: two-layer (network + DOM) video manifest. Downloaded bodies + preview
+    # frames land as AssetRefs in `assets` (kind="video"/"video_preview"). The manifest
+    # is the hyperframes reference BARE ARRAY: [{index, url, filename, width, height,
+    # sourceWidth, sourceHeight, heading, caption, ariaLabel, preview?, localPath?}] —
+    # entries with no usable artifact are dropped. Kept alongside the URL-only `videos`
+    # descriptor catalog. Defaults to None so older stored profiles still validate +
+    # export (file omitted).
+    video_manifest: list | None = None
     # Phase 8: lottie manifest — {lotties:[{file, url, name, width, height, duration,
     # frameRate, layers, preview?}], meta:{discovered, previews}}. The animation JSON
     # (dotLottie unzipped) lands as AssetRefs (kind="lottie_json") + best-effort
