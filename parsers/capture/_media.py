@@ -12,7 +12,6 @@ tracking-pixel filtering, dedup and srcset-variant collapse match hyperframes ex
 """
 from __future__ import annotations
 
-import hashlib
 import io
 import json
 import logging
