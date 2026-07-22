@@ -674,8 +674,12 @@ def _build_layout_tokens(raw: dict, shots: list, profile_shots: list, cfg):
                        for s in profile_shots if s.section_index is not None}
     sections = [SectionInfo(
         index=s["index"], heading=s.get("heading", ""),
-        type=section_type(s.get("heading", ""), s.get("classNames", []),
-                          s["index"], len(raw_sections)),
+        # Prefer the reference's inline classification (tokenExtractor.ts vocabulary:
+        # hero/footer/cta/logos/testimonials/features/content) so the hyperframes
+        # blueprint downstream recognizes it; fall back to the zh-aware section_type
+        # heuristic for old profiles captured before EXTRACT_JS emitted `type`.
+        type=s.get("type") or section_type(
+            s.get("heading", ""), s.get("classNames", []), s["index"], len(raw_sections)),
         bg_color=_safe_hex(s.get("bg", "")),
         screenshot_image_id=shot_by_section.get(s["index"]),
         layout=s.get("layout", ""),

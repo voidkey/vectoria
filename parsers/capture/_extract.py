@@ -5,6 +5,17 @@ EXTRACT_JS = r"""
 () => {
   const MAX_NODES = 4000;
   const abs = (u) => { try { return new URL(u, location.href).href; } catch(e){ return null; } };
+  // Simple rgb()->#RRGGBB used for headings + section backgrounds (tokenExtractor.ts
+  // rgbToHex parity). Returns the input unchanged when it can't parse (named colors,
+  // gradients) so callers can fall back to the raw value like the reference does.
+  const hexOf = (color) => {
+    if (!color) return "";
+    if (color.startsWith('#')) return color.toUpperCase();
+    const m = color.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
+    if (!m) return color;
+    return '#' + ((1<<24) + (parseInt(m[1])<<16) + (parseInt(m[2])<<8) + parseInt(m[3]))
+      .toString(16).slice(1).toUpperCase();
+  };
   const els = Array.from(document.querySelectorAll('*')).slice(0, MAX_NODES);
   const samples = [];
   for (const el of els) {
@@ -88,21 +99,60 @@ EXTRACT_JS = r"""
     return s.display !== 'none' && s.visibility !== 'hidden' && s.opacity !== '0'
       && el.getBoundingClientRect().height > 0;
   };
-  // Caps below mirror tokenExtractor.ts: sections ≤30, per-section ctas ≤8,
-  // assetUrls ≤10, section text ≤600; headings ≤40; svgs ≤50, outerHTML ≤10000.
-  let sectionEls = Array.from(document.querySelectorAll('body > section, main > section, main > div, body > div'));
-  sectionEls = sectionEls.filter(el => {
+  // Sections — verbatim port of tokenExtractor.ts's section model (find large visual
+  // blocks regardless of tag): a broad candidate set (deduped), skip too-small blocks
+  // and full-page wrappers, classify a `type` (hero/footer/cta/logos/testimonials/
+  // features/content) by position + class, resolve the background by walking up to the
+  // nearest non-transparent ancestor (default #FFFFFF, hex-normalized), and collect
+  // CTAs / in-section media / body text / a coarse layout hint. Sorted top->bottom,
+  // near-duplicates (<100px apart) dropped, and only sections carrying a heading kept.
+  // Per-section caps: ctas ≤8, assetUrls ≤10, section text ≤600, heading ≤80.
+  // `index`/`classNames` are internal (drive the section_type i18n fallback + the
+  // screenshot mapping downstream), not part of the reference DesignTokens shape.
+  let sectionCands = Array.from(document.querySelectorAll(
+    'section, main > div, main > section, article, ' +
+    'body > div > div, body > main > div, body > div, ' +
+    '[class*="hero"], [class*="Hero"], [class*="section"], [class*="Section"], ' +
+    '[class*="container"], [class*="wrapper"], [class*="block"], ' +
+    '[id*="section"], [id*="hero"], footer, [role="region"], [role="banner"]'));
+  const seenSecEls = new Set();
+  sectionCands = sectionCands.filter(el => {
+    if (seenSecEls.has(el)) return false;
+    seenSecEls.add(el);
+    return true;
+  });
+  const pageHeight = document.body.scrollHeight || document.documentElement.scrollHeight;
+  const sectionResults = [];
+  for (const el of sectionCands) {
     const r = el.getBoundingClientRect();
-    return r.height > 100 && r.width > 300;
-  }).slice(0, 30);
-  const sections = sectionEls.map((el, i) => {
-    const r = el.getBoundingClientRect();
-    const h = el.querySelector('h1,h2,h3');
-    const headingText = h ? h.textContent.trim().slice(0,200) : '';
-    // Inner content for faithful page-card recreation downstream (ports
-    // tokenExtractor.ts section model): background-image, CTAs, in-section media
-    // URLs, squeezed body text, and a coarse layout hint.
+    if (r.height < 200 || r.width < 400 || !isVisible(el)) continue;
+    if (r.height > pageHeight * 0.8) continue;   // skip page-level wrappers
+    const y = Math.round(r.top + scrollY);
+    const h = el.querySelector('h1, h2, h3, h4');
+    const headingText = h ? (h.innerText || h.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 80) : '';
+    const classes = (el.className || '').toString().toLowerCase();
+    let type = 'content';
+    if (y < 200 || classes.indexOf('hero') !== -1) type = 'hero';
+    else if (el.tagName === 'FOOTER' || classes.indexOf('footer') !== -1) type = 'footer';
+    else if (classes.indexOf('cta') !== -1) type = 'cta';
+    else if (classes.indexOf('logo') !== -1 || classes.indexOf('customer') !== -1) type = 'logos';
+    else if (classes.indexOf('testimonial') !== -1 || classes.indexOf('quote') !== -1) type = 'testimonials';
+    else if (classes.indexOf('feature') !== -1 || classes.indexOf('section') !== -1) type = 'features';
+    const selector = el.id ? '#' + el.id : el.tagName.toLowerCase();
     const cs = getComputedStyle(el);
+    let sectionBg = cs.backgroundColor;
+    // Walk up to the nearest non-transparent ancestor (don't report the transparent
+    // section fill); default to white when none is found.
+    if (!sectionBg || sectionBg === 'rgba(0, 0, 0, 0)' || sectionBg === 'transparent') {
+      let bgWalker = el.parentElement;
+      while (bgWalker) {
+        const parentBg = getComputedStyle(bgWalker).backgroundColor;
+        if (parentBg && parentBg !== 'rgba(0, 0, 0, 0)' && parentBg !== 'transparent') { sectionBg = parentBg; break; }
+        bgWalker = bgWalker.parentElement;
+      }
+      if (!sectionBg || sectionBg === 'rgba(0, 0, 0, 0)' || sectionBg === 'transparent') sectionBg = '#FFFFFF';
+    }
+    sectionBg = hexOf(sectionBg) || sectionBg;
     let backgroundImage = '';
     const rawBgImg = cs.backgroundImage;
     if (rawBgImg && rawBgImg !== 'none' && rawBgImg.indexOf('url(') !== -1) {
@@ -110,6 +160,7 @@ EXTRACT_JS = r"""
       const end = rawBgImg.indexOf(')', start);
       if (end > start) backgroundImage = abs(rawBgImg.slice(start, end).replace(/["']/g, '')) || '';
     }
+    const sectionText = (el.innerText || el.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 600);
     const ctas = [];
     const ctaNodes = el.querySelectorAll('a, button');
     for (let qi = 0; qi < ctaNodes.length && ctas.length < 8; qi++) {
@@ -134,20 +185,23 @@ EXTRACT_JS = r"""
     if (imgCount >= 3) layout = 'grid';
     else if (el.querySelector('img, video') && headingText) layout = 'split';
     else if (headingText && imgCount === 0) layout = 'centered';
-    return {index: i, heading: headingText,
-            selector: el.id ? '#' + el.id : el.tagName.toLowerCase(),
-            classNames: (el.className||'').toString().split(/\s+/).filter(Boolean),
-            bg: cs.backgroundColor,
-            backgroundImage: backgroundImage,
-            callsToAction: ctas,
-            assetUrls: assetUrls,
-            layout: layout,
-            text: (el.innerText || el.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 600),
-            // Full geometry (reference DesignTokens section shape): x/y are page-
-            // absolute (scroll-offset added), width/height the layout box.
-            rect: {x: Math.round(r.x + scrollX), y: Math.round(r.y + scrollY),
-                   width: Math.round(r.width), height: Math.round(r.height)}};
-  });
+    sectionResults.push({
+      selector: selector, type: type, heading: headingText,
+      classNames: (el.className || '').toString().split(/\s+/).filter(Boolean),
+      bg: sectionBg, backgroundImage: backgroundImage,
+      callsToAction: ctas, assetUrls: assetUrls, layout: layout, text: sectionText,
+      // Full geometry (reference DesignTokens section shape): x/y are page-absolute
+      // (scroll-offset added), width/height the layout box.
+      rect: {x: Math.round(r.left + scrollX), y: y,
+             width: Math.round(r.width), height: Math.round(r.height)}});
+  }
+  // Sort top->bottom, drop near-duplicates (<100px apart), keep only sections with a
+  // heading (reference filteredSections). Re-index post-filter for internal use.
+  sectionResults.sort((a, b) => a.rect.y - b.rect.y);
+  const sections = sectionResults
+    .filter((s, i) => i === 0 || Math.abs(s.rect.y - sectionResults[i-1].rect.y) > 100)
+    .filter(s => s.heading && s.heading.length > 0)
+    .map((s, i) => { s.index = i; return s; });
   const section_gaps = [];
   for (let i = 1; i < sections.length; i++)
     section_gaps.push(Math.abs(sections[i].rect.y - (sections[i-1].rect.y + sections[i-1].rect.height)));
@@ -185,20 +239,31 @@ EXTRACT_JS = r"""
     if (out.length > 30000) out = out.slice(0, 30000) + '\n[...truncated]';
     return out;
   })();
-  // CTAs with their href (hyperframes tokens.ctas is [{text, href?}]). Buttons have
-  // no href, so href is omitted for them. `ctas` (text-only) is derived from these
-  // for internal use (visible-text fallback / counts).
-  const ctaEls = Array.from(document.querySelectorAll('a,button'))
-    .filter(a => /btn|cta|button/i.test(a.className) || a.tagName === 'BUTTON');
-  const ctaLinks = [];
-  for (let ci = 0; ci < ctaEls.length && ctaLinks.length < 8; ci++) {
-    const cel = ctaEls[ci];
-    const ctxt = (cel.textContent || '').trim();
-    if (!ctxt || ctxt.length >= 40) continue;
-    const link = {text: ctxt};
-    if (cel.href) link.href = cel.href;
-    ctaLinks.push(link);
+  // CTAs — verbatim port of tokenExtractor.ts's two-pass selection (hyperframes
+  // tokens.ctas is [{text, href?}]). Pass 1: conservative class selectors, minus
+  // nav/menu/dropdown false positives. Pass 2: also catch class-less CTAs by matching
+  // concise action-verb text (get started / sign up / book a demo / ...), capped at
+  // 20 then sliced to 10. href omitted for buttons/role-button (no href). `ctas`
+  // (text-only) is derived from these for internal use (visible-text fallback / counts).
+  const ctaSelectors = 'a[class*="btn"], a[class*="button"], a[class*="cta"], button[class*="primary"], button[class*="cta"], [role="button"]';
+  let ctaEls = Array.from(document.querySelectorAll(ctaSelectors)).filter(function(el) {
+    return !el.closest('nav, [role="navigation"], [class*="nav"], [class*="menu"], [class*="dropdown"]');
+  });
+  const ctaTextPatterns = /^(get started|sign up|start free|try (it )?free|start (a )?trial|book a demo|request (a )?demo|contact (us|sales)|start for free|create account|register now)$/i;
+  const allButtons = Array.from(document.querySelectorAll('a, button'));
+  for (let cbi = 0; cbi < allButtons.length && ctaEls.length < 20; cbi++) {
+    const cbtnText = (allButtons[cbi].textContent || '').trim();
+    if (cbtnText.length > 30) continue;
+    if (allButtons[cbi].closest('nav, [role="navigation"], [class*="nav"], [class*="menu"]')) continue;
+    if (ctaTextPatterns.test(cbtnText) && ctaEls.indexOf(allButtons[cbi]) === -1)
+      ctaEls.push(allButtons[cbi]);
   }
+  ctaEls = ctaEls.slice(0, 10);
+  const ctaLinks = ctaEls.filter(isVisible).map(function(c) {
+    const link = {text: (c.textContent || '').trim().slice(0, 60)};
+    if (c.href) link.href = c.href;
+    return link;
+  }).filter(function(c) { return c.text.length > 1; });
   const text = {
     headline: meta('meta[property="og:title"]') || (h1 ? h1.textContent.trim() : document.title),
     tagline: meta('meta[name="description"]') || meta('meta[property="og:description"]'),
@@ -293,13 +358,14 @@ EXTRACT_JS = r"""
     has_canvas: !!document.querySelector('canvas'),
   };
 
-  // Headings — visible h1..h6, text squeezed to ~200 chars, cap 40.
-  const headings = Array.from(document.querySelectorAll('h1,h2,h3,h4,h5,h6'))
-    .filter(isVisible).slice(0, 40).map(h => {
+  // Headings — reference tokenExtractor.ts: h1..h4 (cap 20, sliced BEFORE the
+  // visibility filter), text squeezed to ~200 chars, color hex-normalized.
+  const headings = Array.from(document.querySelectorAll('h1, h2, h3, h4')).slice(0, 20)
+    .filter(isVisible).map(h => {
       const s = getComputedStyle(h);
       return {level: parseInt(h.tagName[1]) || 1,
               text: (h.innerText || h.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 200),
-              fontSize: s.fontSize, fontWeight: s.fontWeight, color: s.color};
+              fontSize: s.fontSize, fontWeight: s.fontWeight, color: hexOf(s.color) || s.color};
     });
 
   // SVGs — metadata + isLogo heuristic (ported from tokenExtractor.ts). outerHTML

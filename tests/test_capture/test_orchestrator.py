@@ -266,6 +266,39 @@ async def test_run_capture_maps_phase1_tokens_and_strips_svg_markup():
     # Reference geometry + selector threaded through from raw rect.
     assert sec["selector"] == "#hero"
     assert (sec["x"], sec["y"], sec["width"], sec["height"]) == (0, 0, 1280, 600)
+    # No raw `type` on this section -> zh-aware section_type fallback (index 0 -> hero).
+    assert sec["type"] == "hero"
+
+
+@pytest.mark.asyncio
+async def test_section_type_prefers_extractjs_classification():
+    """EXTRACT_JS now emits the reference `type` (hero/footer/cta/logos/testimonials/
+    features/content) inline; the orchestrator threads it through verbatim so the
+    hyperframes blueprint sees its own vocabulary. section_type stays a fallback."""
+    raw = {
+        "final_url": "https://x",
+        "colors": {"samples": [], "css_vars": {}, "theme_color": None},
+        "fonts": {"display": {}, "body": {}, "face_srcs": {}},
+        "spacing": {"margins": [], "paddings": [], "radii": [],
+                    "container_max_width": 1200, "section_gaps": []},
+        # Raw `type` present -> passthrough. "testimonials" is reference vocabulary the
+        # zh-aware section_type heuristic would never emit (it uses "testimonial").
+        "sections": [{"index": 0, "heading": "What people say", "classNames": [],
+                      "type": "testimonials", "selector": "section", "bg": "#fff",
+                      "rect": {"x": 0, "y": 900, "width": 1280, "height": 400}}],
+        "headings": [], "svgs": [],
+        "page": {"width": 1440, "height": 5000,
+                 "viewport": {"width": 1280, "height": 800}},
+        "text": {"headline": "Hi", "tagline": "", "ctas": [], "full_text": "Hi."},
+        "assets": {"logo": None, "hero": None, "og_image": None, "favicon": None,
+                   "video": None, "lottie": None},
+        "motion": {"libraries": [], "has_video_background": False, "has_canvas": False},
+    }
+    deps = _FakeDeps(_fake_page(raw), {})
+    from parsers.capture.orchestrator import run_capture
+    outcome = await run_capture("https://x", "kb", "d1", _settings(), deps)
+    prof = outcome.profile.model_dump()
+    assert prof["sections"][0]["type"] == "testimonials"   # verbatim, not "testimonial"
 
 
 @pytest.mark.asyncio
