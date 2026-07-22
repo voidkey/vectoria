@@ -45,6 +45,20 @@ class AntiBotBlockedError(PermanentParseError):
     error_code: ClassVar[int] = ErrorCode.LINK_ANTIBOT_BLOCKED
 
 
+class LoginRequiredError(PermanentParseError):
+    """Page needs login / access permission the fetcher doesn't have
+    (login wall, feishu 无权限 doc, private page).
+
+    Inherits PermanentParseError → worker skips fallback, skips queue retry,
+    and suppresses dead-task alerts (login/permission won't materialise
+    between attempts). Kept distinct from AntiBotBlockedError so the user is
+    told to log in / upload the file (1502) rather than "blocked by
+    verification" (1503) — and never mis-reported as "no readable text"
+    (EMPTY_CONTENT 1202). See vectoria-parse-error-contract.md §1.
+    """
+    error_code: ClassVar[int] = ErrorCode.LINK_LOGIN_REQUIRED
+
+
 class PageNotFoundError(PermanentParseError):
     """HTTP 404 / 410 — the resource is gone, not blocked.
 

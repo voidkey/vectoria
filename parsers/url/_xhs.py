@@ -40,9 +40,9 @@ import lxml.html
 from config import get_settings
 from infra.metrics import URL_IMAGES_TRUNCATED_TOTAL
 from api.errors import ErrorCode
-from parsers.base import AntiBotBlockedError, ParseResult
+from parsers.base import ParseResult
 from parsers.url._blacklist import UnparseableUrlError
-from parsers.url._handlers import detect_block_reason
+from parsers.url._handlers import raise_if_blocked
 
 log = logging.getLogger(__name__)
 
@@ -311,9 +311,7 @@ class XhsHandler:
         title = extract["title"]
         body = extract["body"]
 
-        reason = detect_block_reason(html, title)
-        if reason:
-            raise AntiBotBlockedError(f"{reason} at {url}")
+        raise_if_blocked(html, title, url)
 
         raw_imgs = extract["imgs"]
         if len(raw_imgs) > cap:

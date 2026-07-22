@@ -11,7 +11,12 @@ import trafilatura
 from config import get_settings
 from infra.metrics import URL_IMAGES_TRUNCATED_TOTAL
 from infra.ratelimit import acquire as rl_acquire
-from parsers.base import PageNotFoundError, ParseResult
+from parsers.base import (
+    AntiBotBlockedError,
+    LoginRequiredError,
+    PageNotFoundError,
+    ParseResult,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -127,6 +132,21 @@ _BLOCK_BODY_MARKERS = (
     "安全验证", "请完成下方验证", "人机验证", "滑动验证", "captcha",
     "verify you are human", "登录后查看", "sign in to continue",
 )
+
+# Login / access-permission walls. A page a real person could open only
+# after logging in or being granted access — semantically distinct from an
+# anti-bot/captcha challenge. Overlaps _BLOCK_BODY_MARKERS on the login
+# prompts on purpose: callers that classify (raise sites) check this FIRST so
+# a login wall maps to 1502 (LINK_LOGIN_REQUIRED), while detect_block_reason
+# stays unchanged so the return-empty gates keep their current behavior.
+_LOGIN_WALL_MARKERS = (
+    "登录后查看", "请登录", "登录以继续", "登录后继续", "登录查看",
+    "申请访问权限", "申请权限", "无权限访问", "没有访问权限", "暂无查看权限",
+    "无权限查看", "你暂时无法访问", "无法访问此文档", "访问受限",
+    "sign in to continue", "please sign in", "please log in", "log in to continue",
+    "request access", "you don't have access", "don't have permission",
+    "access denied", "no permission to",
+)
 _BLOCK_BODY_TEXT_CAP = 500  # beyond this length, rely on title signals only (prevents false positives on long articles)
 
 
@@ -162,6 +182,48 @@ def detect_block_reason(html: str, title: str = "") -> str | None:
             if m.lower() in low:
                 return f"anti-bot/verification page (body marker: {m})"
     return None
+
+
+def detect_login_wall(html: str, title: str = "") -> str | None:
+    """Detect a login / access-permission wall. Returns a short reason on
+    match, else None.
+
+    Callers that raise should check this BEFORE detect_block_reason so a
+    login wall becomes 1502 (LINK_LOGIN_REQUIRED) rather than 1503 (anti-bot).
+
+    Login/permission walls are short pages (a prompt, not an article), so the
+    whole match — title AND body — is gated behind the same short-body cap
+    detect_block_reason uses. This is deliberately stricter than matching the
+    title unconditionally: markers like ``访问受限`` / ``申请权限`` /
+    ``access denied`` are common substrings of legitimate article titles, and
+    a real doc with an unlucky title must ingest, not be failed as 1502.
+    """
+    text = _visible_text(html)
+    if len(text) >= _BLOCK_BODY_TEXT_CAP:
+        return None
+    haystack = ((title or "") + " " + text).lower()
+    for m in _LOGIN_WALL_MARKERS:
+        if m.lower() in haystack:
+            return f"login/permission wall (marker: {m})"
+    return None
+
+
+def raise_if_blocked(html: str, title: str, url: str) -> None:
+    """Classify a fetched page and raise the matching permanent error, or
+    return if the page is neither blocked nor walled.
+
+    Login/permission is checked BEFORE anti-bot so a login wall maps to 1502
+    (LINK_LOGIN_REQUIRED), not 1503 (LINK_ANTIBOT_BLOCKED). Single source of
+    truth for this ordering — handlers call it at the point they'd otherwise
+    accept content, instead of duplicating the two-step check (which risks
+    one call site silently regressing the order).
+    """
+    login = detect_login_wall(html, title)
+    if login:
+        raise LoginRequiredError(f"{login} at {url}")
+    reason = detect_block_reason(html, title)
+    if reason:
+        raise AntiBotBlockedError(f"{reason} at {url}")
 
 
 @runtime_checkable

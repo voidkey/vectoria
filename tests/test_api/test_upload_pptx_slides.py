@@ -32,7 +32,10 @@ async def test_pptx_with_too_many_slides_returns_413(client):
         )
 
     assert resp.status_code == 413, resp.text
-    assert resp.json()["code"] == 1209  # PPTX_TOO_MANY_SLIDES
+    body = resp.json()
+    assert body["code"] == 1209  # PPTX_TOO_MANY_SLIDES
+    # Structured over-limit numbers (contract §3).
+    assert body["error_data"] == {"current": 999, "limit": 200}
     mock_storage.return_value.put.assert_not_called()
 
 

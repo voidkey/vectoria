@@ -20,10 +20,14 @@ from urllib.parse import urlparse
 
 from config import get_settings
 from infra.metrics import URL_IMAGES_TRUNCATED_TOTAL
-from parsers.base import AntiBotBlockedError, ParseResult, PermanentParseError
+from parsers.base import LoginRequiredError, ParseResult
 from parsers.image_ref import BytesFactory, ImageRef
 from parsers.url._browser import parse_session
-from parsers.url._handlers import detect_block_reason, extract_html_title, extract_with_trafilatura
+from parsers.url._handlers import (
+    extract_html_title,
+    extract_with_trafilatura,
+    raise_if_blocked,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +50,13 @@ _FEISHU_UA = (
     "AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/130.0 Safari/537.36"
 )
+
+
+def _landed_on_login(page) -> bool:
+    """True iff the page's current host is the feishu login host. Match host
+    exactly — a substring match would false-positive on URLs that carry the
+    login host inside a query param (e.g. ``redirect_uri``)."""
+    return (urlparse(page.url or "").hostname or "").lower() == _LOGIN_HOST
 
 
 def is_feishu_docx_url(url: str) -> bool:
@@ -199,20 +210,28 @@ class FeishuHandler:
             try:
                 await page.goto(url, wait_until="networkidle", timeout=30000)
             except Exception:
+                # Feishu is a realtime SPA that holds connections open, so
+                # ``networkidle`` can time out AFTER a private doc already
+                # redirected to accounts.feishu.cn. Check the final host
+                # before giving up, else the doc is mis-classified 1202
+                # (empty) instead of 1502 (needs login) — the real behavior
+                # observed on a private /wiki/ link.
                 logger.warning("feishu page.goto failed: %s", url, exc_info=True)
+                if _landed_on_login(page):
+                    logger.info("feishu doc requires login (goto timed out "
+                                "post-redirect): %s", url)
+                    raise LoginRequiredError(f"feishu doc requires login: {url}")
                 return ParseResult(content="", title="")
 
             # Login wall: feishu redirects unauthorized requests to
-            # accounts.feishu.cn. Match host exactly (substring match
-            # would false-positive on URLs that happen to contain the
-            # login host in a query param). Raise PermanentParseError so
-            # the worker short-circuits immediately — login won't be
-            # added between attempts, retrying 3× wastes worker slots
-            # and creates dead-task alert noise.
-            current_host = (urlparse(page.url or "").hostname or "").lower()
-            if current_host == _LOGIN_HOST:
+            # accounts.feishu.cn. Raise LoginRequiredError so the worker
+            # short-circuits immediately (login won't be added between
+            # attempts — retrying 3× wastes slots and creates dead-task
+            # noise) AND the user gets the 1502 "log in / upload" guidance
+            # instead of "no readable text".
+            if _landed_on_login(page):
                 logger.info("feishu doc requires login: %s", url)
-                raise PermanentParseError(f"feishu doc requires login: {url}")
+                raise LoginRequiredError(f"feishu doc requires login: {url}")
 
             # Trigger lazy-loaded blocks (long docs paginate images on
             # scroll). Single-shot scroll-to-bottom; networkidle above
@@ -280,9 +299,14 @@ class FeishuHandler:
 
         title = extract_html_title(html, url)
 
-        reason = detect_block_reason(html, title)
-        if reason:
-            raise AntiBotBlockedError(f"{reason} at {url}")
+        # Defence-in-depth: a logged-in visitor who lacks permission on a
+        # specific doc can get an in-page "无权限 / 申请访问权限" page WITHOUT
+        # the login-host redirect the checks above catch. raise_if_blocked
+        # maps that to 1502 (login/permission wins over anti-bot); left
+        # unclassified it would fall through as empty content (1202). Note:
+        # an anonymous visitor is redirected to the login host instead, which
+        # is the common path handled earlier.
+        raise_if_blocked(html, title, url)
 
         return ParseResult(
             content=markdown,

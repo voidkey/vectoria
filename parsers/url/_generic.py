@@ -7,15 +7,17 @@ from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 import httpx
 
-from parsers.base import AntiBotBlockedError, ParseResult, PermanentParseError
+from parsers.base import ParseResult, PermanentParseError
 from parsers.url._fetch import acquire_page_token, fetch_impersonated
 from parsers.url._handlers import (
     DEFAULT_BROWSER_UA,
     detect_block_reason,
+    detect_login_wall,
     extract_html_title,
     extract_image_urls,
     extract_with_trafilatura,
     needs_browser_fallback,
+    raise_if_blocked,
     raise_if_gone,
 )
 
@@ -257,10 +259,13 @@ class GenericHandler:
         downloaded = body.decode(resp.encoding or "utf-8", errors="replace")
         final_url = str(resp.url)
         title = extract_html_title(downloaded, final_url)
-        # Block page: return empty so GenericHandler.parse's needs_browser_fallback
-        # triggers the Playwright fallback (browser may pass the challenge), and to
-        # prevent a verbose block page from being accepted as real content.
-        if detect_block_reason(downloaded, title):
+        # Block / login-wall page: return empty so GenericHandler.parse's
+        # needs_browser_fallback triggers the Playwright fallback (browser may
+        # pass the challenge or carry a session), and so a verbose wall page is
+        # never accepted as real content. The playwright tier re-detects and
+        # classifies (login → 1502, anti-bot → 1503); catching login here too
+        # keeps a non-SPA permission page from being scraped as garbage.
+        if detect_block_reason(downloaded, title) or detect_login_wall(downloaded, title):
             return ParseResult(content="", title="")
         text = extract_with_trafilatura(downloaded)
         img_urls = extract_image_urls(downloaded, final_url)
@@ -402,8 +407,6 @@ class GenericHandler:
             # try/except above.
             return ParseResult(content="", title="")
 
-        reason = detect_block_reason(html, title)
-        if reason:
-            raise AntiBotBlockedError(f"{reason} at {url}")
+        raise_if_blocked(html, title, url)
 
         return ParseResult(content=text, title=title, image_urls=img_urls)

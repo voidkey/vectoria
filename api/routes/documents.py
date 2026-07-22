@@ -323,6 +323,7 @@ def _run_upload_gates(kb_id: str, filename: str, raw: bytes) -> int | None:
         raise AppError(
             413, ErrorCode.UPLOAD_TOO_LARGE,
             f"File exceeds {cfg.max_upload_bytes} bytes",
+            error_data={"current": len(raw), "limit": cfg.max_upload_bytes},
         )
 
     # MIME sniff gate: reject cross-family magic/extension mismatch when
@@ -375,6 +376,7 @@ def _run_upload_gates(kb_id: str, filename: str, raw: bytes) -> int | None:
             raise AppError(
                 413, ErrorCode.PDF_TOO_MANY_PAGES,
                 f"PDF has {pages} pages; max allowed is {cfg.max_pdf_pages}",
+                error_data={"current": pages, "limit": cfg.max_pdf_pages},
             )
         page_count = pages
     elif ext == ".pptx":
@@ -389,6 +391,7 @@ def _run_upload_gates(kb_id: str, filename: str, raw: bytes) -> int | None:
             raise AppError(
                 413, ErrorCode.PPTX_TOO_MANY_SLIDES,
                 f"PPTX has {slides} slides; max allowed is {cfg.max_pptx_slides}",
+                error_data={"current": slides, "limit": cfg.max_pptx_slides},
             )
         page_count = slides
 
@@ -428,6 +431,7 @@ async def ingest_file(
         raise AppError(
             413, ErrorCode.UPLOAD_TOO_LARGE,
             f"File exceeds {cfg.max_upload_bytes} bytes",
+            error_data={"current": file.size, "limit": cfg.max_upload_bytes},
         )
 
     filename = file.filename or "upload"
@@ -500,6 +504,7 @@ async def create_upload(kb_id: str, body: CreateUploadRequest):
         raise AppError(
             413, ErrorCode.UPLOAD_TOO_LARGE,
             f"File exceeds {cfg.max_upload_bytes} bytes",
+            error_data={"current": body.size, "limit": cfg.max_upload_bytes},
         )
 
     # Pre-upload dedup: client-supplied sha256 trusted only to skip an upload.
@@ -598,6 +603,7 @@ async def complete_upload(
         raise AppError(
             413, ErrorCode.UPLOAD_TOO_LARGE,
             f"File exceeds {cfg.max_upload_bytes} bytes",
+            error_data={"current": size, "limit": cfg.max_upload_bytes},
         )
 
     # 3. Download once + run the shared gates (identical to /file).
@@ -782,6 +788,7 @@ async def ingest_text(
         raise AppError(
             413, ErrorCode.UPLOAD_TOO_LARGE,
             f"Text exceeds {cfg.max_upload_bytes} bytes",
+            error_data={"current": len(raw), "limit": cfg.max_upload_bytes},
         )
 
     # Per-KB sha256 dedup, same semantics as /file. Same text submitted

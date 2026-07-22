@@ -333,12 +333,15 @@ async def test_parse_returns_inline_image_refs():
 
 
 @pytest.mark.asyncio
-async def test_parse_login_redirect_raises_permanent_parse_error():
+async def test_parse_login_redirect_raises_login_required():
     """Non-public docs redirect to accounts.feishu.cn after page.goto.
-    The handler raises PermanentParseError so the worker fails the doc
-    immediately without 3× retry — login won't be added between attempts.
+    The handler raises LoginRequiredError (a PermanentParseError → worker
+    fails the doc immediately without 3× retry; login won't be added
+    between attempts) so the user is told to log in / upload, not that the
+    file has no readable text. See contract §1.
     """
-    from parsers.base import PermanentParseError
+    from api.errors import ErrorCode
+    from parsers.base import LoginRequiredError
 
     ctx, page = _make_ctx_mock(
         page_html="<html><body>login form</body></html>",
@@ -347,8 +350,78 @@ async def test_parse_login_redirect_raises_permanent_parse_error():
     )
     h = FeishuHandler()
     with _patch_parse_session(ctx):
-        with pytest.raises(PermanentParseError):
+        with pytest.raises(LoginRequiredError) as ei:
             await h.parse("https://whobotai.feishu.cn/docx/PRIVATE")
+    assert ei.value.error_code == ErrorCode.LINK_LOGIN_REQUIRED
+
+
+@pytest.mark.asyncio
+async def test_parse_login_redirect_timeout_still_raises_login_required():
+    """Feishu is a realtime SPA that holds connections open, so
+    goto(wait_until="networkidle") can TIME OUT *after* the redirect to
+    accounts.feishu.cn has already landed. The handler must still classify
+    1502 from the final URL — not swallow the timeout and fall through to
+    empty content (1202). Reproduces the real /wiki/ private-link behavior.
+    """
+    from api.errors import ErrorCode
+    from parsers.base import LoginRequiredError
+
+    ctx, page = _make_ctx_mock(
+        page_html="<html><body>login</body></html>",
+        page_url="https://accounts.feishu.cn/accounts/page/login?app_id=2&redirect_uri=x",
+        image_payloads={},
+    )
+    # goto raises (networkidle never settles), but the redirect already
+    # moved page.url onto the login host.
+    page.goto = AsyncMock(side_effect=TimeoutError("Page.goto: Timeout 30000ms exceeded"))
+    h = FeishuHandler()
+    with _patch_parse_session(ctx):
+        with pytest.raises(LoginRequiredError) as ei:
+            await h.parse("https://my.feishu.cn/wiki/PRIVATE")
+    assert ei.value.error_code == ErrorCode.LINK_LOGIN_REQUIRED
+
+
+@pytest.mark.asyncio
+async def test_parse_goto_timeout_non_login_returns_empty():
+    """A goto failure that did NOT land on the login host stays a soft
+    empty result (so the chain/worker classify it), not a login error."""
+    ctx, page = _make_ctx_mock(
+        page_html="<html><body>x</body></html>",
+        page_url="https://my.feishu.cn/wiki/SOMEDOC",
+        image_payloads={},
+    )
+    page.goto = AsyncMock(side_effect=TimeoutError("boom"))
+    h = FeishuHandler()
+    with _patch_parse_session(ctx):
+        result = await h.parse("https://my.feishu.cn/wiki/SOMEDOC")
+    assert result.content == ""
+    assert result.title == ""
+
+
+@pytest.mark.asyncio
+async def test_parse_in_page_permission_wall_raises_login_required():
+    """A doc that exists but the visitor can't open shows an in-page
+    "无权限 / 申请访问权限" page WITHOUT redirecting to accounts.feishu.cn.
+    Previously this fell through as empty content (1202, "no readable
+    text") — it must be 1502 instead. See contract §1.
+    """
+    from api.errors import ErrorCode
+    from parsers.base import LoginRequiredError
+
+    ctx, page = _make_ctx_mock(
+        page_html=(
+            "<html><head><title>飞书文档</title></head><body>"
+            "抱歉，你暂时无权限访问该文档，请向文档所有者申请访问权限。"
+            "</body></html>"
+        ),
+        page_url="https://whobotai.feishu.cn/docx/NOPERM",
+        image_payloads={},
+    )
+    h = FeishuHandler()
+    with _patch_parse_session(ctx):
+        with pytest.raises(LoginRequiredError) as ei:
+            await h.parse("https://whobotai.feishu.cn/docx/NOPERM")
+    assert ei.value.error_code == ErrorCode.LINK_LOGIN_REQUIRED
 
 
 @pytest.mark.asyncio

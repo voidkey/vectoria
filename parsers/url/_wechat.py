@@ -15,8 +15,12 @@ import lxml.html
 
 from config import get_settings
 from infra.metrics import URL_IMAGES_TRUNCATED_TOTAL
-from parsers.base import AntiBotBlockedError, ParseResult
-from parsers.url._handlers import detect_block_reason, extract_html_title, extract_with_trafilatura
+from parsers.base import ParseResult
+from parsers.url._handlers import (
+    extract_html_title,
+    extract_with_trafilatura,
+    raise_if_blocked,
+)
 
 log = logging.getLogger(__name__)
 
@@ -184,9 +188,7 @@ class WechatHandler:
         if not title:
             title = extract_html_title(html, url)
 
-        reason = detect_block_reason(html, title)
-        if reason:
-            raise AntiBotBlockedError(f"{reason} at {url}")
+        raise_if_blocked(html, title, url)
 
         cap = get_settings().url_image_cap
         if len(img_urls) > cap:
@@ -283,9 +285,7 @@ class WechatHandler:
 
             # Context closes automatically at async-with exit.
 
-        reason = detect_block_reason(html, title)
-        if reason:
-            raise AntiBotBlockedError(f"{reason} at {url}")
+        raise_if_blocked(html, title, url)
 
         wrapped = f"<html><body>{content_html}</body></html>"
         text = extract_with_trafilatura(wrapped)

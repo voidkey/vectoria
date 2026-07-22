@@ -44,7 +44,7 @@ from infra.ratelimit import acquire, get_window_stats
 
 # OpenAPI fragment for routes that wire the limiter. Splice into the
 # decorator's ``responses=`` so /docs documents the 429 contract
-# (status + ``code`` field + the standard headers).
+# (status + ``code``/``error_code`` fields + the standard headers).
 RATE_LIMITED_RESPONSE = {
     429: {
         "description": "Rate limit exceeded for this caller.",
@@ -70,6 +70,7 @@ RATE_LIMITED_RESPONSE = {
             "application/json": {
                 "example": {
                     "code": ErrorCode.RATE_LIMITED,
+                    "error_code": ErrorCode.RATE_LIMITED,
                     "detail": "Too many requests; retry after the window resets.",
                 }
             }

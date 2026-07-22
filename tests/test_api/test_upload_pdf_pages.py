@@ -34,7 +34,11 @@ async def test_pdf_with_too_many_pages_returns_413(client):
         )
 
     assert resp.status_code == 413, resp.text
-    assert resp.json()["code"] == 1208  # PDF_TOO_MANY_PAGES
+    body = resp.json()
+    assert body["code"] == 1208  # PDF_TOO_MANY_PAGES
+    # Structured over-limit numbers so the frontend can render "999 / 200"
+    # without parsing the English detail string (contract §3).
+    assert body["error_data"] == {"current": 999, "limit": 200}
     # No S3 write — the whole point of the gate is to reject before
     # spending bandwidth on a doc the worker can't process anyway.
     mock_storage.return_value.put.assert_not_called()

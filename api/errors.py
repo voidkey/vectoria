@@ -57,7 +57,7 @@ class ErrorCode:
 
     # Link retrieval (1501-1599) — async URL-fetch failures
     LINK_VIDEO_UNSUPPORTED = 1501   # 短视频/播放器链接
-    LINK_LOGIN_REQUIRED = 1502      # 需要登录 (generic detection reserved)
+    LINK_LOGIN_REQUIRED = 1502      # 需要登录 / 无权限 (feishu + generic login-wall detection)
     LINK_ANTIBOT_BLOCKED = 1503     # 风控/人机验证
     LINK_REGION_BLOCKED = 1504      # 区域不可达/需翻墙
     LINK_PAGE_GONE = 1505           # 页面已删除 404/410
@@ -163,6 +163,11 @@ class AppError(HTTPException):
         code: int,
         detail: str,
         headers: dict[str, str] | None = None,
+        error_data: dict | None = None,
     ):
         super().__init__(status_code=status_code, detail=detail, headers=headers)
         self.code = code
+        # Optional machine-readable payload (e.g. over-limit ``current``/
+        # ``limit``) so the frontend can render numbers without parsing the
+        # English ``detail`` string. Omitted from the response body when None.
+        self.error_data = error_data

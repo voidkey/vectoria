@@ -40,7 +40,11 @@ async def test_ingest_file_rejects_oversized_raw_upload(client):
         )
 
     assert resp.status_code == 413, resp.text
-    assert resp.json()["code"] == 1204  # UPLOAD_TOO_LARGE
+    body = resp.json()
+    assert body["code"] == 1204  # UPLOAD_TOO_LARGE
+    # Same structured over-limit contract as PDF-pages / PPTX-slides: give the
+    # frontend {current, limit} so it can render numbers without parsing detail.
+    assert body["error_data"] == {"current": limit + 1, "limit": limit}
     mock_storage.return_value.put.assert_not_called()
 
 

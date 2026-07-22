@@ -120,11 +120,17 @@ logger = logging.getLogger(__name__)
 async def app_error_handler(request: Request, exc: AppError):
     meta = error_meta(exc.code)
     content = {
+        # ``error_code`` mirrors ``code`` so this upload-reject path and the
+        # GET-document poll path (DocumentDetailResponse.error_code) expose
+        # the same field name. ``code`` kept for back-compat. See contract §2.
         "code": exc.code,
+        "error_code": exc.code,
         "detail": exc.detail,
         "retryable": meta.retryable if meta else None,
         "suggested_action": meta.action.value if meta else None,
     }
+    if exc.error_data is not None:
+        content["error_data"] = exc.error_data
     return JSONResponse(
         status_code=exc.status_code,
         content=content,
@@ -132,11 +138,18 @@ async def app_error_handler(request: Request, exc: AppError):
     )
 
 
+# All error responses carry ``error_code`` mirroring ``code`` — the frontend
+# keys on ``error_code`` for every failure, so these non-AppError paths must
+# expose it too, not just the upload-reject AppError handler. See contract §2.
 @app.exception_handler(RequestValidationError)
 async def validation_error_handler(request: Request, exc: RequestValidationError):
     return JSONResponse(
         status_code=422,
-        content={"code": ErrorCode.VALIDATION_ERROR, "detail": str(exc)},
+        content={
+            "code": ErrorCode.VALIDATION_ERROR,
+            "error_code": ErrorCode.VALIDATION_ERROR,
+            "detail": str(exc),
+        },
     )
 
 
@@ -144,7 +157,7 @@ async def validation_error_handler(request: Request, exc: RequestValidationError
 async def http_error_handler(request: Request, exc: HTTPException):
     return JSONResponse(
         status_code=exc.status_code,
-        content={"code": exc.status_code, "detail": exc.detail},
+        content={"code": exc.status_code, "error_code": exc.status_code, "detail": exc.detail},
     )
 
 
@@ -153,7 +166,11 @@ async def unhandled_error_handler(request: Request, exc: Exception):
     logger.exception("Unhandled error")
     return JSONResponse(
         status_code=500,
-        content={"code": ErrorCode.INTERNAL_ERROR, "detail": "Internal server error"},
+        content={
+            "code": ErrorCode.INTERNAL_ERROR,
+            "error_code": ErrorCode.INTERNAL_ERROR,
+            "detail": "Internal server error",
+        },
     )
 
 

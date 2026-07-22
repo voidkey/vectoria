@@ -116,6 +116,58 @@ async def test_handler_falls_back_to_playwright_on_js_challenge():
 
 
 @pytest.mark.asyncio
+async def test_httpx_login_wall_falls_back_to_playwright():
+    """A permission/login page served directly over httpx must not be
+    scraped as content — the httpx tier returns empty so the browser tier
+    (which may carry a session) retries and classifies. See contract §1."""
+    pw_result = ParseResult(content="Real content " * 25, title="ok")
+
+    with _patch_async_httpx(
+             html="<html><head><title>请登录</title></head><body>登录后查看完整内容</body></html>",
+             url="https://example.com/private",
+         ), \
+         patch("parsers.url._generic.fetch_impersonated", new=AsyncMock(return_value=None)), \
+         patch.object(GenericHandler, "_parse_with_playwright", new_callable=AsyncMock,
+                      return_value=pw_result):
+        result = await GenericHandler().parse("https://example.com/private")
+
+    assert result.content == pw_result.content
+
+
+@pytest.mark.asyncio
+async def test_playwright_login_wall_raises_login_required():
+    """A login/permission wall that only renders in the browser tier is
+    classified 1502 (LINK_LOGIN_REQUIRED), not 1503 anti-bot or 1202 empty.
+    Guards the login-first ordering at the raise site. See contract §1."""
+    from contextlib import asynccontextmanager
+    from api.errors import ErrorCode
+    from parsers.base import LoginRequiredError
+
+    page = MagicMock()
+    page.goto = AsyncMock()
+    page.wait_for_timeout = AsyncMock()
+    page.wait_for_load_state = AsyncMock()
+    page.url = "https://example.com/private"
+    page.title = AsyncMock(return_value="请登录")
+    page.content = AsyncMock(
+        return_value="<html><body>请登录后查看，你暂时无权限访问该文档。</body></html>"
+    )
+    ctx = MagicMock()
+    ctx.new_page = AsyncMock(return_value=page)
+
+    @asynccontextmanager
+    async def fake_session(**_kwargs):
+        yield ctx
+
+    with _patch_async_httpx(side_effect=Exception("connection failed")), \
+         patch("parsers.url._generic.fetch_impersonated", new=AsyncMock(return_value=None)), \
+         patch("parsers.url._browser.parse_session", fake_session):
+        with pytest.raises(LoginRequiredError) as ei:
+            await GenericHandler().parse("https://example.com/private")
+    assert ei.value.error_code == ErrorCode.LINK_LOGIN_REQUIRED
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("status", [404, 410])
 async def test_httpx_gone_status_raises_page_not_found(status):
     """A 404/410 from the httpx tier becomes a permanent PageNotFoundError —
