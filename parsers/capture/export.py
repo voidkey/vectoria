@@ -95,7 +95,10 @@ def _official_tokens(profile: dict) -> dict:
     out = {
         "title": text.get("headline", ""),
         "description": text.get("tagline", ""),
-        "ctas": text.get("ctas", []),  # extra (official schema ignores unknown keys); handy for downstream summaries
+        # Reference DesignTokens.ctas is [{text, href?}]; we capture cta text only, so
+        # href is omitted (the reference omits it too when falsy). Object shape, not
+        # bare strings, so a strict reader's `cta.text` works.
+        "ctas": [{"text": c} for c in (text.get("ctas") or []) if c],
         "colors": ranked,
         "fonts": _fonts_array(profile.get("fonts", {}) or {},
                               _font_variable_map(profile.get("font_files") or [])),

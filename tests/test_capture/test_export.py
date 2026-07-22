@@ -528,6 +528,14 @@ def test_official_tokens_omits_og_image_when_absent():
     assert "ogImage" not in tokens
 
 
+def test_official_tokens_ctas_are_objects_not_strings():
+    """Reference tokens.ctas is [{text, href?}] — objects, not bare strings."""
+    from parsers.capture.export import _official_tokens
+    tokens = _official_tokens({"colors_ranked": ["#000"], "fonts": {},
+                               "text": {"headline": "T", "ctas": ["Get started", "Docs"]}})
+    assert tokens["ctas"] == [{"text": "Get started"}, {"text": "Docs"}]
+
+
 def test_official_tokens_no_synthetic_color_stats_helper():
     """The synthetic _color_stats projection is gone."""
     import parsers.capture.export as export_mod
