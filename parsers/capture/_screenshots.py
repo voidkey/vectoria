@@ -1,4 +1,4 @@
-"""Screenshot capture — 1:1 with hyperframes ``screenshotCapture.ts``.
+"""Screenshot capture — 1:1 with the reference screenshot capture.
 
 Modern marketing sites reveal below-fold content on scroll (IntersectionObserver
 / scroll-linked animations, ``loading="lazy"`` images), so a single static
@@ -30,7 +30,7 @@ NEUTRALIZE_ANIMATION_CSS = (
 
 # Runs in-page: dismiss cookie/consent/GDPR banners before we screenshot, so a
 # consent modal can't block the shot. Scoped to cookie/consent/gdpr *containers*
-# (ported from hyperframes screenshotCapture.ts) and only clicks a VISIBLE
+# (ported from the reference screenshot capture) and only clicks a VISIBLE
 # accept/agree button inside such a container — never reject/manage/random
 # buttons elsewhere on the page. Accept-text set = the reference English terms
 # plus common zh terms (同意 / 接受 / 同意并继续) as a documented vectoria
@@ -110,7 +110,7 @@ async ({stepFrac, stepMs, maxSteps, imgWaitMs}) => {
     ]);
   }
   // Hide fixed/sticky overlays (cookie bars, chat widgets) that aren't header/
-  // nav, matching hyperframes screenshotCapture.ts: a bounded TreeWalker
+  // nav, matching the reference: a bounded TreeWalker
   // (<=5000 nodes) with a cheap getBoundingClientRect size prefilter before the
   // expensive getComputedStyle, hiding only z-index>100 fixed/sticky elements.
   try {
@@ -169,12 +169,12 @@ async def prepare_page(page, *, step_frac: float, step_ms: int, max_steps: int,
 
 async def capture_screenshots(page, *, max_screenshots: int, max_height: int,
                               settle_ms: int = 400) -> list[dict]:
-    """Reference scroll-position capture (screenshotCapture.ts::captureScrollScreenshots).
+    """Reference scroll-position capture (the reference scroll screenshotter).
 
     Step down the page in 70%-of-viewport increments (30% overlap), screenshot the
     viewport at each stop, and label each by its scroll PERCENTAGE — so the exported
     files are ``scroll-000.png`` (top) … ``scroll-100.png`` (bottom), exactly as
-    hyperframes. Always includes the top and the bottom; downsamples to
+    the reference. Always includes the top and the bottom; downsamples to
     ``max_screenshots`` positions on very long pages (keeping first + last, striding
     the middle); collapses positions that round to the same percentage to one shot
     (the reference overwrites the same filename). Sticky/fixed overlays were already

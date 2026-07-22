@@ -1,14 +1,14 @@
 """Site media catalog — images / videos / backgrounds / icons / fonts as URL-only refs.
 
-Ported from hyperframes' asset cataloger (packages/cli/src/capture/assetCataloger.ts)
-and its DOM video descriptor scan (mediaCapture.ts) so the OUTPUT SHAPE matches
-hyperframes (zero schema drift): each catalog item is a ``CatalogedAsset`` dict, each
+Ported from the reference asset cataloger
+and its DOM video descriptor scan so the OUTPUT SHAPE matches
+the reference (zero schema drift): each catalog item is a ``CatalogedAsset`` dict, each
 video a ``VideoDescriptor`` dict.
 
 URL-only by design — nothing is downloaded here. Downloading (and preview frames,
 network-intercepted streaming URLs, GIF header parsing) is downstream's call, mirroring
-hyperframes' split between the catalog pass and the download pass. Absolutizing,
-tracking-pixel filtering, dedup and srcset-variant collapse match hyperframes exactly.
+the reference split between the catalog pass and the download pass. Absolutizing,
+tracking-pixel filtering, dedup and srcset-variant collapse match the reference exactly.
 """
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 # A dotLottie file is a ZIP archive — same local-file-header magic bytes.
 _ZIP_MAGIC = b"PK\x03\x04"
-# Lottie JSON structure keys (mediaCapture.ts validates by these). We require the
+# Lottie JSON structure keys (the reference validates by these). We require the
 # core set so a random JSON download isn't mistaken for an animation.
 _LOTTIE_KEYS = ("v", "ip", "op", "layers", "w", "h", "fr")
 
@@ -110,7 +110,7 @@ def lottie_json_from_bytes(
 def lottie_manifest_entry(name: str, url: str, parsed: dict) -> dict:
     """Build one lottie-manifest entry from a parsed lottie dict.
 
-    Reference manifest shape (mediaCapture.ts::renderLottiePreviews) is exactly
+    Reference manifest shape (the reference lottie-preview renderer) is exactly
     ``{file, preview, name, width, height, duration, frameRate, layers}`` — no
     ``url``. ``preview`` is added later by the preview pass. ``url`` stays a
     parameter (the caller passes the source URL for AssetRef provenance) but is
@@ -134,9 +134,9 @@ def lottie_manifest_entry(name: str, url: str, parsed: dict) -> dict:
 
 
 # Real browser JS (an IIFE returning CatalogedAsset[]). Ported verbatim from
-# hyperframes assetCataloger.ts's page.evaluate body with the TS-template escaping
+# the reference asset cataloger's page.evaluate body with the TS-template escaping
 # unwound (\\s -> \s, \\/ -> /, \\( -> \( ...) so it runs unchanged in Playwright.
-# The GIF byte-header annotation (a ranged fetch in hyperframes) is intentionally
+# The GIF byte-header annotation (a ranged fetch in the reference) is intentionally
 # dropped — it is a download, which is out of scope here; ``notes`` stays null.
 ASSET_CATALOG_JS = r"""(() => {
   var assetMap = {};
@@ -336,7 +336,7 @@ ASSET_CATALOG_JS = r"""(() => {
 
 
 # DOM-only video descriptors (VideoDescriptor shape). No network interception, no
-# preview frames, no download — those are hyperframes' download-pass concerns.
+# preview frames, no download — those are the reference's download-pass concerns.
 VIDEO_DESCRIPTORS_JS = r"""(() => {
   function absUrl(u) { try { return new URL(u, document.baseURI).href; } catch(e) { return ''; } }
   function nearestHeading(el) {
@@ -421,7 +421,7 @@ _LOTTIE_LOAD_JS = """(args) => {
 async def render_lottie_previews(page, entries: list, *, max_bytes: int) -> dict:
     """Best-effort mid-frame preview PNGs for parsed lottie entries.
 
-    Port of mediaCapture.ts::renderLottiePreviews: for each entry (carrying its
+    Port of the reference lottie-preview renderer: for each entry (carrying its
     parsed lottie under ``_parsed``), inject lottie-web into a shell page, load the
     animation data, seek to ~30% of (op-ip), and screenshot a transparent PNG.
     Returns ``{entry_name: png_bytes}``. Skips a lottie whose JSON is larger than
@@ -504,7 +504,7 @@ _SVG_RASTER_JS = """async (args) => {
 async def rasterize_svgs(page, svgs: list, *, cap: int, thumb: int = 200) -> list:
     """Best-effort rasterize captured SVG markup to PNG thumbnails via the browser.
 
-    Port of contactSheet.ts createSvgContactSheet's per-SVG raster step, done in the
+    Port of the reference SVG contact-sheet's per-SVG raster step, done in the
     live page (Pillow has no SVG rasterizer + we add no cairosvg): each ``svgs[i]``
     (an extractor SVG dict with ``outerHTML``) is drawn onto a ``thumb``×``thumb``
     canvas and read back as a PNG. Deduped by a basename derived from the SVG's label/
@@ -553,7 +553,7 @@ def _width_param(url: str) -> int:
 def dedupe_srcset_variants(items: list[dict]) -> list[dict]:
     """Collapse srcset / Next.js ``_next/image`` size variants of the same image.
 
-    Python port of hyperframes' deduplicateSrcsetVariants: group by base URL (with
+    Python port of the reference srcset-variant dedup: group by base URL (with
     ``w=`` / ``q=`` stripped), merge contexts + boolean signals, keep the highest-``w=``
     URL. First-seen order is preserved.
     """
@@ -564,7 +564,7 @@ def dedupe_srcset_variants(items: list[dict]) -> list[dict]:
         try:
             parts = urlsplit(url)
             qs = parse_qsl(parts.query, keep_blank_values=True)
-            # Exact key match (mirrors hyperframes' searchParams.has("w")) — a raw
+            # Exact key match (mirrors the reference searchParams.has("w")) — a raw
             # "w=" substring would false-positive on params like ?show=/?flow=.
             if "_next/image" in parts.path or any(k == "w" for k, _ in qs):
                 kept = [(k, v) for (k, v) in qs if k not in ("w", "q")]
@@ -602,7 +602,7 @@ def cap_items(items: list[dict], cap: int) -> tuple[list[dict], bool]:
 async def catalog_assets(page, *, cap: int = 200) -> list[dict]:
     """Catalog every referenced asset on the rendered page as CatalogedAsset dicts.
 
-    URL-only; matches hyperframes' ``catalogAssets`` output shape. ``page`` is a
+    URL-only; matches the reference catalog output shape. ``page`` is a
     Playwright page. Non-mutating (safe to run before the DOM-mutating page.html pass).
     """
     raw = await page.evaluate(ASSET_CATALOG_JS)
@@ -625,7 +625,7 @@ async def video_descriptors(page, *, cap: int = 20) -> list[dict]:
 
 # Direct-file video extensions we're willing to download. Streaming manifests
 # (HLS .m3u8 / DASH .mpd) and blob:/data: pseudo-URLs are NEVER downloaded — they
-# aren't a single fetchable body (mirrors mediaCapture.ts DOWNLOADABLE_VIDEO_EXTS).
+# aren't a single fetchable body (mirrors the reference DOWNLOADABLE_VIDEO_EXTS).
 DOWNLOADABLE_VIDEO_EXTS = (".mp4", ".webm", ".mov", ".m4v")
 # Streaming-manifest extensions: DISCOVERED (recorded in the manifest so downstream
 # knows the site streams video) but flagged download=False — not a fetchable body.
@@ -679,7 +679,7 @@ def make_video_response_handler(discovered: set):
     exception-safe (a malformed response object can never bubble into the page's
     event loop), and cheap (header read + string checks, no body fetch). A tiny
     response (<100 bytes when the length is known) is skipped as a likely error/
-    tracking blob. Mirrors mediaCapture.ts's network-URL Set."""
+    tracking blob. Mirrors the reference network-URL Set."""
     def _handler(response) -> None:
         try:
             url = getattr(response, "url", "") or ""
@@ -719,7 +719,7 @@ def _video_url_basename(url: str) -> str:
 def merge_video_manifest(network_urls: set, dom_videos: list, cap: int) -> list[dict]:
     """Merge two-layer video discovery into capped manifest entries.
 
-    Port of mediaCapture.ts::captureVideoManifest's merge step. Layer 2 (DOM, rich
+    Port of the reference video-manifest merge step. Layer 2 (DOM, rich
     — carries dims + nearby heading/caption/aria) is kept ahead of Layer 1 (network-
     only, thin) so a clip seen in both lands once as the richer DOM entry. Deduped by
     URL, then capped (DOM entries first so the cap never drops a rich entry).

@@ -1,6 +1,6 @@
 """Self-contained page.html recreation — the high-fidelity STRUCTURAL reference.
 
-Ported from hyperframes' htmlExtractor (packages/cli/src/capture/htmlExtractor.ts):
+Ported from the reference HTML extractor:
 external stylesheets are fetched server-side (bypasses CORS) and inlined as <style>,
 url()/img src are absolutized, and framework bootstrap scripts (Next.js / React
 hydration) are stripped while visual-library scripts are kept. Images are left as
@@ -41,7 +41,7 @@ def _rewrite_css_urls(css: str, base: str) -> str:
 
 def _strip_framework_scripts(body: str) -> str:
     """Drop Next.js/React bootstrap payloads (huge + useless as reference); keep
-    visual-library scripts. Mirrors hyperframes index.ts script-strip."""
+    visual-library scripts. Mirrors the reference script-strip."""
     body = re.sub(r'<script\s+id="__NEXT_DATA__"[^>]*>[\s\S]*?</script>', "",
                   body, flags=re.IGNORECASE)
     body = re.sub(r'\s*data-reactroot(?:="[^"]*")?', "", body)

@@ -87,7 +87,7 @@ class SectionInfo(BaseModel):
     asset_urls: list[str] = Field(default_factory=list)
     text: str = ""
     # Reference DesignTokens section shape: a CSS selector + page-absolute geometry
-    # (hyperframes tokenExtractor.ts). Default so old stored profiles still validate.
+    # (reference token shape). Default so old stored profiles still validate.
     selector: str = ""
     x: int = 0
     y: int = 0
@@ -103,7 +103,7 @@ class TextInfo(BaseModel):
     # above stays text-only for internal use. Default [] keeps old profiles valid.
     cta_links: list[dict] = Field(default_factory=list)
     # visible-text.txt body: DOM text nodes in reading order, each `[tag] text`
-    # (hyperframes contentExtractor.ts parity). full_text (innerText) is retained as
+    # (reference content-extractor parity). full_text (innerText) is retained as
     # a fallback for old profiles captured before visible_text existed.
     visible_text: str = ""
     full_text: str = ""
@@ -158,17 +158,17 @@ class SiteProfile(BaseModel):
     colors: list[ColorToken] = Field(default_factory=list)
     # Phase 2 — reference-shaped color parity (kept alongside the role-tagged
     # `colors`): `colors_ranked` is the top-20 usage-ranked hex strings and
-    # `color_stats` the top-48 raw per-hex stat dicts (hyperframes DesignTokens
+    # `color_stats` the top-48 raw per-hex stat dicts (reference DesignTokens
     # `colorStats`: {hex,count,bgCount,interactiveBg,areaBg,textCount,maxArea}).
     # Stored as raw dicts (like asset_catalog/videos) for verbatim output parity;
     # both default to [] so older stored profiles still validate.
     colors_ranked: list[str] = Field(default_factory=list)
     color_stats: list[dict] = Field(default_factory=list)
     theme_color: str | None = None
-    # og:image URL (hyperframes DesignTokens `ogImage`) — surfaced verbatim in
+    # og:image URL (reference DesignTokens `ogImage`) — surfaced verbatim in
     # tokens.json. Empty when the page has no og:image. Defaults to "" for old profiles.
     og_image: str = ""
-    # Phase 1: hyperframes DesignTokens parity — :root custom properties,
+    # Phase 1: reference DesignTokens parity — :root custom properties,
     # heading typography, SVG (logo) metadata, and full-page/viewport geometry.
     css_variables: dict[str, str] = Field(default_factory=dict)
     headings: list[Heading] = Field(default_factory=list)
@@ -187,21 +187,21 @@ class SiteProfile(BaseModel):
     screenshots: list[ScreenshotRef] = Field(default_factory=list)
     motion_hints: MotionHints
     # asset_catalog / videos: URL-only site media (images/videos/backgrounds/icons/
-    # fonts) discovered on the page, aligned with hyperframes' asset cataloger.
+    # fonts) discovered on the page, aligned with the reference asset cataloger.
     # Nothing is downloaded — downstream decides which URLs to fetch. Kept as raw
-    # hyperframes-shaped dicts (CatalogedAsset / VideoDescriptor) for output parity.
+    # reference-shaped dicts (CatalogedAsset / VideoDescriptor) for output parity.
     asset_catalog: list[dict] = Field(default_factory=list)
     videos: list[dict] = Field(default_factory=list)
     # Phase 6: animation catalog + captured WebGL shaders (only collected when
     # capture_quality == "full"). animation_catalog is the raw AnimationCatalog
-    # dict (types.ts verbatim: webAnimations/cssDeclarations/scrollTargets/
+    # dict (reference shape, verbatim: webAnimations/cssDeclarations/scrollTargets/
     # cdpAnimations/summary); shaders is the deduped [{type, source}] list. Both
     # default (None / []) so older stored profiles still validate + export.
     animation_catalog: dict | None = None
     shaders: list[dict] = Field(default_factory=list)
     # Phase 7: two-layer (network + DOM) video manifest. Downloaded bodies + preview
     # frames land as AssetRefs in `assets` (kind="video"/"video_preview"). The manifest
-    # is the hyperframes reference BARE ARRAY: [{index, url, filename, width, height,
+    # is the reference BARE ARRAY: [{index, url, filename, width, height,
     # sourceWidth, sourceHeight, heading, caption, ariaLabel, preview?, localPath?}] —
     # entries with no usable artifact are dropped. Kept alongside the URL-only `videos`
     # descriptor catalog. Defaults to None so older stored profiles still validate +

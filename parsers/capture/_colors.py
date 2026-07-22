@@ -111,7 +111,7 @@ def _saturation(rgb: tuple[int, int, int]) -> float:
 
 def dominant_screenshot_hex(png_bytes: bytes) -> str | None:
     """Most common color in a downscaled screenshot — the pixel-sampling half
-    of hyperframes-style extraction, used to cross-check the computed-style
+    of reference-style extraction, used to cross-check the computed-style
     background (and to catch gradient/image backgrounds the DOM misses).
     Returns None if PIL can't decode the bytes."""
     try:
@@ -147,7 +147,7 @@ class _Cluster:
         self.text_area = area if text else 0.0
         self.bg_area = 0.0 if text else area
         # Fill area that landed on an interactive element (a/button/[role]/btn-cta
-        # class) — hyperframes' `interactiveBg`, the strongest usage signal that a
+        # class) — the reference `interactiveBg`, the strongest usage signal that a
         # color is the brand action color.
         self.interactive_area = area if (interactive and not text) else 0.0
         self.sources = {"computed"}
@@ -230,7 +230,7 @@ def process_colors(raw: dict, *, delta_e_threshold: float = 10.0,
 
     remaining = [c for c in clusters if c not in assigned]
 
-    # Sequential role picks (mirrors hyperframes' pickAccent(exclude=...) chaining),
+    # Sequential role picks (mirrors the reference pickAccent(exclude=...) chaining),
     # replacing the old saturation-dominated sort that mislabeled a bright speck as
     # primary over a muted, heavily-used brand color:
     #   1. PRIMARY — strongest *declared* brand signal (theme-color / --*primary var)

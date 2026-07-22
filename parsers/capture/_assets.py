@@ -18,7 +18,7 @@ _DIGITS_RE = re.compile(r"^\d+$")
 
 def _slugify(text: str) -> str:
     """Lowercase, collapse non-alphanumerics to single dashes, trim, cap at 40
-    chars. Mirrors hyperframes assetDownloader.ts::slugify."""
+    chars. Mirrors the reference slugify."""
     s = re.sub(r"[^a-z0-9]+", "-", text.lower())
     return s.strip("-")[:40]
 
@@ -26,7 +26,7 @@ def _slugify(text: str) -> str:
 def derive_asset_name(cat: dict, used: set[str]) -> str:
     """Human-readable slug for a downloaded catalog image, from its context.
 
-    Port of hyperframes assetDownloader.ts::deriveAssetName. Priority:
+    Port of the reference deriveAssetName. Priority:
     alt/description -> nearestHeading -> meaningful URL-path segment ->
     sectionClasses. Prefix: ``poster`` (video[poster]), ``hero`` (aboveFold),
     else ``image``. Falls back to ``<prefix>-<idx>`` and numeric-dedups against

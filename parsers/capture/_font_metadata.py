@@ -1,11 +1,11 @@
 """Font-metadata extraction via fonttools — the fontkit port.
 
-Ported from hyperframes `fontMetadataExtractor.ts`. Modern build tools hash-rename
+Ported from the reference font-metadata extractor. Modern build tools hash-rename
 font files (``19cfc7226ec3afaa-s.woff2``), stripping human-readable identity from
 the filename. Every OpenType/WOFF/WOFF2 file still embeds a ``name`` table with the
 family, subfamily, PostScript name, weight class, and variation axes; subsetting and
 hashing don't strip it. This module reads that table from the captured bytes and
-produces a manifest in the reference ``types.ts::FontsManifest`` shape.
+produces a manifest in the reference ``FontsManifest`` shape.
 
 All functions are pure (bytes/str in, plain dicts out) — no I/O. Parse failures are
 non-fatal: ``font_file_metadata`` never raises, returning an ``identified: False``

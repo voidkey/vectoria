@@ -39,7 +39,7 @@ _IMG_EXT = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp",
             "image/svg+xml": ".svg", "image/gif": ".gif",
             "image/x-icon": ".ico", "image/vnd.microsoft.icon": ".ico"}
 _BIN_EXT = {"video/mp4": ".mp4", "video/webm": ".webm", "application/json": ".json"}
-# Catalog-image download gate (ported from hyperframes assetDownloader.ts): only
+# Catalog-image download gate (ported from the reference asset downloader): only
 # real content images (Image/Background) reached through a standard image context,
 # minus obvious tracking/junk URLs and favicons (handled separately above).
 _CATALOG_IMAGE_TYPES = ("Image", "Background")
@@ -73,8 +73,8 @@ _HASHED_BASENAME_RE = re.compile(r"[A-Za-z0-9]{8,}")
 def _is_latin_subset(url: str) -> bool:
     """True when a font URL looks like a Latin subset or an opaque hashed-filename
     face, so it sorts ahead of explicitly non-latin (CJK/Arabic/...) unicode-range
-    subsets. Mirrors the reference sort key in assetDownloader.ts::
-    downloadAndRewriteFonts. A ``latin`` token in the path wins; a hashed/opaque
+    subsets. Mirrors the reference sort key in the asset downloader. A ``latin``
+    token in the path wins; a hashed/opaque
     basename (e.g. ``19cfc7226ec3afaa-s.woff2``) is treated as NEUTRAL — still
     True so it outranks a named non-latin subset — because we can't tell its
     coverage from the name alone. Pure helper."""
@@ -113,7 +113,7 @@ async def _capture_video_previews(page, entries: list, out: dict) -> None:
     Screenshots each on-page <video> element (element_handle.screenshot()) and maps
     it back to its manifest entry by src. A network-only entry has no element, so it
     gets no preview; an unscreenshotable video is simply omitted. One failure never
-    aborts — mirrors mediaCapture.ts's per-video preview guard. Non-mutating (runs
+    aborts — mirrors the reference per-video preview guard. Non-mutating (runs
     before the DOM-mutating page.html pass)."""
     by_url = {e["url"]: e for e in entries if e.get("_source") == "dom"}
     if not by_url:
@@ -141,7 +141,7 @@ async def _capture_video_previews(page, entries: list, out: dict) -> None:
 async def _save_lotties(urls: list, kb_id: str, doc_id: str, cfg, storage) -> tuple[list, list]:
     """Download + validate discovered lottie sources; store the animation JSON.
 
-    Port of mediaCapture.ts::saveLottieAnimations: for up to ``capture_max_lotties``
+    Port of the reference lottie save step: for up to ``capture_max_lotties``
     sources, fetch (SSRF/size-capped via fetch_asset_bytes), unzip a dotLottie ZIP to
     its animation JSON, validate lottie structure (v/ip/op/layers/w/h/fr), dedup by
     content hash, and store to ``captures/{kb}/{doc}/assets/lottie/animation-N.json``.
@@ -351,7 +351,7 @@ async def _store_videos(video_entries: list, video_previews: dict, capture_quali
     Returns ``(profile_asset_refs, video_manifest_list_or_None)`` — the manifest is
     the reference BARE ARRAY: entries ``{index, url, filename, width, height,
     sourceWidth, sourceHeight, heading, caption, ariaLabel}`` plus optional
-    ``preview``/``localPath`` (relative paths). Mirroring mediaCapture.ts, an entry
+    ``preview``/``localPath`` (relative paths). Mirroring the reference, an entry
     that yields NEITHER a preview NOR a downloaded body is dropped (it carries nothing
     usable downstream), and the internal ``_``-prefixed control keys never serialize.
     Best-effort per video."""
@@ -439,7 +439,7 @@ async def _download_catalog_images(asset_catalog: list, seen_urls: set, kb_id: s
                                    doc_id: str, cfg, storage) -> tuple[list, list]:
     """Download good-context catalog images (beyond the 4 named kinds).
 
-    Port of hyperframes assetDownloader.ts's catalog-image pass: keep only real
+    Port of the reference catalog-image pass: keep only real
     content images reached through a standard image context, drop tracking/junk +
     favicons, fetch (SSRF+size-capped) and gate on a min-size threshold, then name by
     page context (derive_asset_name). Dedups by URL against ``seen_urls`` (mutated in
@@ -513,7 +513,7 @@ async def _build_contact_sheets(shots: list, asset_sheet_items: list, svg_raster
                                 kb_id: str, doc_id: str, url: str, storage) -> list:
     """Build + store the scroll / asset / SVG contact sheets (pure Pillow).
 
-    Port of contactSheet.ts createScrollContactSheet / createAssetContactSheet. Built
+    Port of the reference contact-sheet builders. Built
     from bytes already in hand (screenshot ``shots`` + downloaded raster catalog images
     + in-page SVG rasters), so no browser + no re-fetch. Scroll: 3 cols, 9/page,
     kind/section labels. Asset: 4 cols, 12/page, filename labels. SVG: 5 cols, 15/page,
@@ -534,7 +534,7 @@ async def _build_contact_sheets(shots: list, asset_sheet_items: list, svg_raster
                 logger.info("capture: contact sheet store failed for %s", skey, exc_info=True)
 
     # Reference scroll sheet: only the scroll strips, labelled "N% scroll"
-    # (contactSheet.ts::createScrollContactSheet). The internal full_page shot is
+    # (the reference scroll contact-sheet builder). The internal full_page shot is
     # excluded.
     scroll_items = [(s["bytes"], f"{s['pct']}% scroll")
                     for s in shots
@@ -608,7 +608,7 @@ async def _build_fonts(raw: dict, kb_id: str, doc_id: str, cfg, storage):
     fonts = Fonts(display=await _font_role(raw_fonts.get("display", {})),
                   body=await _font_role(raw_fonts.get("body", {})))
 
-    # Bounded site face set (port of hyperframes downloadAndRewriteFonts): download
+    # Bounded site face set (port of the reference font downloader): download
     # the page's @font-face woff2 URLs, Latin subsets first, capped per-family and
     # in total, best-effort per face. Role fonts already stored above are counted
     # (content-hash dedup) so the manifest covers everything without double-storing.
@@ -674,9 +674,9 @@ def _build_layout_tokens(raw: dict, shots: list, profile_shots: list, cfg):
                        for s in profile_shots if s.section_index is not None}
     sections = [SectionInfo(
         index=s["index"], heading=s.get("heading", ""),
-        # Prefer the reference's inline classification (tokenExtractor.ts vocabulary:
-        # hero/footer/cta/logos/testimonials/features/content) so the hyperframes
-        # blueprint downstream recognizes it; fall back to the zh-aware section_type
+        # Prefer the reference's inline classification (vocabulary:
+        # hero/footer/cta/logos/testimonials/features/content) so the downstream
+        # renderer recognizes it; fall back to the zh-aware section_type
         # heuristic for old profiles captured before EXTRACT_JS emitted `type`.
         type=s.get("type") or section_type(
             s.get("heading", ""), s.get("classNames", []), s["index"], len(raw_sections)),
@@ -694,7 +694,7 @@ def _build_layout_tokens(raw: dict, shots: list, profile_shots: list, cfg):
         height=(s.get("rect") or {}).get("height", 0),
     ) for s in raw_sections]
 
-    # Phase 1 tokens: headings / svgs / page geometry (hyperframes parity).
+    # Phase 1 tokens: headings / svgs / page geometry (reference parity).
     headings = [Heading(level=h.get("level", 1), text=h.get("text", ""),
                         font_size=h.get("fontSize", ""),
                         font_weight=h.get("fontWeight", ""),
@@ -839,7 +839,7 @@ async def run_capture(url: str, kb_id: str, doc_id: str, cfg, deps: CaptureDeps)
                 logger.warning("capture: quality=%s (%s) for %s — brand-only, no page.html/"
                                "design-styles", capture_quality, blocked_reason, url)
             # URL-only site media catalog (images/videos/backgrounds/icons/fonts),
-            # aligned with hyperframes' asset cataloger. Collected for ALL quality
+            # aligned with the reference asset cataloger. Collected for ALL quality
             # levels (even a partial page carries real media) and BEFORE the page.html
             # pass mutates the DOM. Best-effort: a failure here never fails the capture.
             asset_catalog = []

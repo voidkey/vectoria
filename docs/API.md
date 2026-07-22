@@ -204,14 +204,14 @@
 |------|------|------|--------|
 | POST | `/knowledgebases/{kb_id}/captures` | 建抓取任务并入队 | 202 |
 | GET | `/knowledgebases/{kb_id}/captures/{id}` | 轮询状态 + SiteProfile（素材/截图为预签名 URL） | 200 |
-| GET | `/knowledgebases/{kb_id}/captures/{id}/export?format=hyperframes` | 导出 hyperframes 兼容 `capture/` 目录 zip | 200 |
+| GET | `/knowledgebases/{kb_id}/captures/{id}/export?format=hyperframes` | 导出目标格式的 `capture/` 目录 zip（见下） | 200 |
 
 **请求 - CreateCaptureRequest**
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `url` | string | 目标页面 URL（入队前做格式 + SSRF 校验） |
-| `max_screenshots` | int \| null | 可选，覆盖本次截图上限 |
+| `max_screenshots` | int \| null | 可选，覆盖本次截图上限。**当前未接线**（被忽略）；实际上限由服务端 `CAPTURE_MAX_SCREENSHOTS`（默认 10）控制 |
 
 **响应 - CaptureResponse**
 
@@ -224,6 +224,19 @@
 
 > **字体复用**：抓到的 `font-family` 命中部署方注入的字体目录（`FONT_CATALOG_PATH`）时，profile 里引用该目录的 CDN URL（`renderable=true`，不重存）；未命中则把 WOFF2 下载进本部署的对象存储并标 `renderable=false`。
 > **导出未完成**返回 `409`；未知 `format` 返回 `422`；抓取不存在返回 `404`（`1213` `CAPTURE_NOT_FOUND`）。截图/素材存放在本部署桶的 `captures/` 前缀，建议给该前缀配生命周期规则。
+
+#### 导出 zip 目录（`?format=hyperframes`）
+
+产出与目标 `capture/` 格式 **1:1 对齐**。条件产出的文件在无内容时整体省略：
+
+- `capture/meta.json` — `{id, name}`
+- `capture/AGENTS.md` · `CLAUDE.md` · `.cursorrules` — 同一份 agent 导引（数据清单 + 品牌摘要）
+- `capture/screenshots/scroll-NNN.png` — 逐屏滚动截图（NNN = 滚动百分比）；可选 `contact-sheet*.jpg` 缩略拼图
+- `capture/assets/` — 命名品牌素材（logo/hero/og_image/favicon）、整站图片、`svgs/`、`videos/`（+预览）、`lottie/`（+预览）、`fonts/`（woff2 + `fonts.css`）
+- `capture/extracted/tokens.json` — 目标格式 DesignTokens（colors/colorStats/fonts/spacing/ctas/headings/svgs/sections/cssVariables/page/ogImage）
+- `capture/extracted/` 其余 — `visible-text.txt`、`asset-descriptions.md`，以及条件产出 `fonts-manifest.json` / `design-styles.json` / `page.html` / `animations.json` / `shaders.json` / `video-manifest.json` / `lottie-manifest.json`
+
+> `asset_catalog[]` / `videos[]`（URL-only 整站素材清单）只在 profile JSON 里，**不进 zip**——下游按 URL 自取。逐字段说明与可跑示例见 [`docs/internal/capture-vtest-usage.md`](internal/capture-vtest-usage.md)。
 
 ---
 

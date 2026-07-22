@@ -2,7 +2,7 @@
 / tabs / spacing / radius / shadows / gradient-backgrounds / frosted-glass from ~50
 key elements.
 
-Ported verbatim from hyperframes' designStyleExtractor.ts EXTRACT_DESIGN_STYLES_SCRIPT
+Ported verbatim from the reference design-style extractor
 (reuse the exact page.evaluate script → zero schema drift). Output is a compact,
 pre-clustered design summary (not raw per-element dumps). Feeds DESIGN.md authoring.
 
@@ -10,7 +10,7 @@ Only produced for capture_quality == "full" (gated by the caller).
 """
 from __future__ import annotations
 
-# Real browser JS (an IIFE returning a plain dict). Kept as the hyperframes script
+# Real browser JS (an IIFE returning a plain dict). Kept as the reference script
 # with TS-template escaping unwound (\\s → \s etc.) so it runs unchanged in Playwright.
 EXTRACT_DESIGN_STYLES_SCRIPT = r"""(() => {
   var isVisible = (el) => {
@@ -35,7 +35,7 @@ EXTRACT_DESIGN_STYLES_SCRIPT = r"""(() => {
   }
 
   // keep only gradient background-images (drop url() sprites + "none"); gradients are a core
-  // brand signal (Stripe/ElevenLabs/Snowflake mesh washes) that a flat background-color misses.
+  // brand signal (mesh gradient washes) that a flat background-color misses.
   function gradientOf(v) {
     return v && v.indexOf("gradient") >= 0 ? v.trim() : "";
   }
@@ -124,7 +124,7 @@ EXTRACT_DESIGN_STYLES_SCRIPT = r"""(() => {
     var cs = getComputedStyle(el);
     var bg = cs.backgroundColor;
     var solid = !!bg && bg !== "transparent" && !/rgba?\([^)]*,\s*0\s*\)/.test(bg);
-    // a gradient-filled CTA (e.g. Snowflake's blue pill = background: var(--ui-background-03)) has a
+    // a gradient-filled CTA (e.g. a blue pill using background: var(--ui-background-03)) has a
     // transparent background-COLOR but a gradient background-IMAGE — count it as filled too.
     return solid || (cs.backgroundImage || "").indexOf("gradient") >= 0;
   };
@@ -377,7 +377,7 @@ EXTRACT_DESIGN_STYLES_SCRIPT = r"""(() => {
     .map(function(e) { return { value: e[0], count: e[1] }; });
 
   // ── 8. Dominant gradient / mesh backgrounds ──
-  // A site's signature color wash (Stripe/ElevenLabs/Snowflake) lives in gradient background-images
+  // A site's signature color wash lives in gradient background-images
   // on large blocks — often on a pseudo-element (::before glow orbs) rather than the block itself.
   // Weight each distinct gradient by the total on-screen area it covers; return the top few.
   var gradientArea = {};
@@ -423,7 +423,7 @@ EXTRACT_DESIGN_STYLES_SCRIPT = r"""(() => {
     .map(function(e) { return { value: e.value, area: e.area }; });
 
   // ── 9. Frosted-glass panels (backdrop-filter) ──
-  // A defining material on modern hero UIs (HeyGen's prompt box, Stripe's floating chrome): a
+  // A defining material on modern hero UIs (frosted prompt boxes, floating glass chrome): a
   // translucent surface with a backdrop blur. Capture the RAW fill (rgba/gradient — alpha preserved,
   // unlike rgbToHex) + the blur, ranked by area. This is what lets a frame render a real frosted card.
   var glassSamples = Array.from(document.querySelectorAll(

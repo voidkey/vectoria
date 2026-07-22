@@ -1,4 +1,4 @@
-"""Build a hyperframes-compatible capture/ zip from a stored SiteProfile."""
+"""Build a capture/ zip in the target format from a stored SiteProfile."""
 from __future__ import annotations
 
 import asyncio
@@ -28,7 +28,7 @@ def _font_variable_map(font_files: list) -> dict:
     """family(lower) -> {"variable": bool, "weights": sorted[int]} from the captured
     fonttools metadata. A family is `variable` when any of its faces exposes a `wght`
     variation axis; the weight span across its faces gives `weightRange`. Used to fill
-    the reference tokens.json `fonts[].variable`/`weightRange` (which hyperframes reads
+    the reference tokens.json `fonts[].variable`/`weightRange` (which the reference reads
     from CSS @font-face weight ranges — we recover the same signal from the faces)."""
     m: dict[str, dict] = {}
     for f in font_files or []:
@@ -46,8 +46,8 @@ def _font_variable_map(font_files: list) -> dict:
 
 
 def _fonts_array(fonts: dict, var_map: dict | None = None) -> list[dict]:
-    """Flatten the role-keyed Fonts object ({display, body}) into the official
-    hyperframes tokens.json `fonts` array, deduped by family (display first so it wins
+    """Flatten the role-keyed Fonts object ({display, body}) into the reference
+    tokens.json `fonts` array, deduped by family (display first so it wins
     the display role in build-frame). Reference entry shape is exactly
     ``{family, weights, variable, weightRange?}`` — `variable` is always present;
     `weightRange` [lo, hi] only when variable. (No `css_url` — the reference has no
@@ -101,7 +101,7 @@ def _ctas_out(text: dict) -> list[dict]:
 
 
 def _official_tokens(profile: dict) -> dict:
-    """tokens.json in the official hyperframes shape build-frame.mjs reads:
+    """tokens.json in the reference shape the downstream renderer reads:
     {title, description, colors, fonts[], colorStats, spacing}. `colors` is the
     top-20 usage-ranked hex STRING list (reference shape) and `colorStats` the
     REAL top-48 per-hex stats (Phase 2 — was synthetic object-colors + a stats
@@ -123,14 +123,14 @@ def _official_tokens(profile: dict) -> dict:
                               _font_variable_map(profile.get("font_files") or [])),
         "colorStats": profile.get("color_stats") or [],
         "spacing": profile.get("spacing", {}),
-        # Phase 1 — hyperframes DesignTokens parity. Vectoria's profile is
+        # Phase 1 — the reference DesignTokens parity. Vectoria's profile is
         # snake_case; project back to the verbatim camelCase keys build-frame reads.
         "cssVariables": profile.get("css_variables", {}) or {},
         "headings": _headings_out(profile.get("headings", []) or []),
         "svgs": _svgs_out(profile.get("svgs", []) or []),
         "sections": _sections_out(profile.get("sections", []) or [],
                                   _asset_paths_by_url(profile)),
-        # extra: lets downstream (go-figlens) gate structural rebuild on fidelity.
+        # extra: lets downstream renderer gate structural rebuild on fidelity.
         "capture_quality": profile.get("capture_quality", "full"),
     }
     og_image = profile.get("og_image") or ""
@@ -145,14 +145,14 @@ def _official_tokens(profile: dict) -> dict:
 
 
 def _headings_out(headings: list[dict]) -> list[dict]:
-    """snake_case Heading -> hyperframes camelCase (fontSize/fontWeight)."""
+    """snake_case Heading -> the reference camelCase (fontSize/fontWeight)."""
     return [{"level": h["level"], "text": h.get("text", ""),
              "fontSize": h.get("font_size", ""), "fontWeight": h.get("font_weight", ""),
              "color": h.get("color", "")} for h in headings]
 
 
 def _svgs_out(svgs: list[dict]) -> list[dict]:
-    """snake_case SvgInfo -> hyperframes camelCase (viewBox/isLogo). Metadata only —
+    """snake_case SvgInfo -> the reference camelCase (viewBox/isLogo). Metadata only —
     outerHTML was never persisted to the profile (DB-bloat guard)."""
     return [{"label": s.get("label", ""), "viewBox": s.get("view_box", ""),
              "width": s.get("width", 0), "height": s.get("height", 0),
@@ -160,13 +160,13 @@ def _svgs_out(svgs: list[dict]) -> list[dict]:
 
 
 def _sections_out(sections: list[dict], asset_paths: dict | None = None) -> list[dict]:
-    """snake_case SectionInfo -> the full hyperframes DesignTokens `sections` shape:
+    """snake_case SectionInfo -> the full reference DesignTokens `sections` shape:
     ``{selector, type, x, y, width, height, heading, backgroundColor,
     backgroundImage?, callsToAction, text, layout, assetUrls, assets?}``.
     ``backgroundImage`` is emitted only when present (reference omits it otherwise);
     ``assets`` are the section's remote assetUrls resolved to their local capture-
-    relative paths (``asset_paths`` = {url: "assets/..."}), matching index.ts joining
-    downloaded bodies back onto each section."""
+    relative paths (``asset_paths`` = {url: "assets/..."}), matching the reference's
+    joining downloaded bodies back onto each section."""
     asset_paths = asset_paths or {}
     out: list[dict] = []
     for s in sections:
@@ -230,8 +230,8 @@ def _asset_descriptions_md(profile: dict, sizes: dict | None = None) -> str:
     reads it off the written file, so we compute it from the same S3 fetch. An asset
     with no fetched bytes isn't in the zip, so it's skipped (reference walks the dir).
     Lottie / contact sheets / preview frames are excluded, matching the reference. The
-    header is source-neutral (vectoria's captions aren't Gemini's, so copying the
-    reference's Gemini-specific wording would misattribute them)."""
+    header is source-neutral (vectoria's captions aren't the upstream tool's, so copying
+    the reference's upstream-specific wording would misattribute them)."""
     sizes = sizes or {}
     video_lines: list[str] = []
     captioned: list[str] = []
@@ -314,7 +314,7 @@ def _asset_paths_by_url(profile: dict) -> dict:
 
 def _lean_animations(catalog: dict) -> dict:
     """Project the raw AnimationCatalog into the LEAN animations.json shape the
-    agent reads (ported from index.ts): summary + the unique named CSS animations
+    agent reads (ported from the reference): summary + the unique named CSS animations
     + a scroll-trigger count + ≤10 keyframed Web Animations (the entries most
     useful for recreation). Avoids dumping hundreds of raw CSS declarations."""
     named: list[str] = []
@@ -332,7 +332,7 @@ def _lean_animations(catalog: dict) -> dict:
     }
 
 
-# Cap on synthesized @font-face rules (mirrors hyperframes MAX_TOTAL_FONTS).
+# Cap on synthesized @font-face rules (mirrors the reference MAX_TOTAL_FONTS).
 _MAX_TOTAL_FONTS = 30
 
 
@@ -428,7 +428,7 @@ def _asset_zip_path(a: dict, storage_key: str) -> str:
 
 def infer_color_role(hex_str: str) -> str:
     """Human-readable role hint from a hex color via luminance + saturation.
-    Ported verbatim (thresholds) from agentPromptGenerator.ts::inferColorRole —
+    Ported verbatim (thresholds) from the reference color-role heuristic —
     just orients an agent scanning the brand summary; not a substitute for real
     design analysis. Returns "color" for anything that can't be parsed as #RRGGBB."""
     try:
@@ -467,7 +467,7 @@ def _hostname(url: str) -> str:
 def _meta_json(profile: dict) -> dict:
     """Project metadata (capture/meta.json) — the exact reference shape.
 
-    scaffolding.ts writes ONLY ``{id: hostname + "-video", name: tokens.title ||
+    the reference scaffolding writes ONLY ``{id: hostname + "-video", name: tokens.title ||
     hostname}`` (it deliberately never writes index.html; a downstream agent owns
     that). We match it verbatim: no url/capturedAt/counts/generatedBy superset —
     that data already lives in tokens.json / the manifests."""
@@ -478,7 +478,7 @@ def _meta_json(profile: dict) -> dict:
 
 # Contact-sheet rows: match `contact-sheet.jpg` + digit-suffixed paginated pages
 # (`contact-sheet-2.jpg`) under a dir, but NOT the `contact-sheet-svgs.jpg` fallback
-# sheet — the "-N" suffix is digits only (ported from agentPromptGenerator.ts).
+# sheet — the "-N" suffix is digits only (ported from the reference).
 _PAGINATED_RE = re.compile(r"^contact-sheet(?:-(\d+))?\.jpg$")
 
 
@@ -507,7 +507,7 @@ def _contact_sheet_rows(written: set[str], dir_: str, label: str) -> list[str]:
 def _agent_prompt(profile: dict, written: set[str]) -> str:
     """Build the AGENTS.md / CLAUDE.md / .cursorrules body (identical content) from
     the assembled profile + the set of capture/ paths ACTUALLY written to this zip.
-    Ported from agentPromptGenerator.ts::buildPrompt: a data-inventory table listing
+    Ported from the reference prompt generator: a data-inventory table listing
     only the artifacts present (incl. paginated contact sheets), a brand summary with
     infer_color_role hints + fonts, and a pointer to the product-launch-video skill."""
     url = profile.get("url", "")
@@ -613,8 +613,8 @@ async def build_hyperframes_zip(doc) -> bytes:
     keys = await _image_keys(doc.id)
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        # extracted/tokens.json — official hyperframes shape (title/description/
-        # colors[str]/fonts[]/colorStats/spacing) so build-frame.mjs remixes
+        # extracted/tokens.json — the reference shape (title/description/
+        # colors[str]/fonts[]/colorStats/spacing) so the downstream renderer remixes
         # brand colors AND fonts onto the preset. `colors` is the top-20 ranked
         # hex list and `colorStats` the REAL per-hex stats that drive role
         # detection (no longer projected from role tokens/luminance fallback).
@@ -623,7 +623,7 @@ async def build_hyperframes_zip(doc) -> bytes:
         # No extracted/fonts.json — the reference emits only fonts-manifest.json
         # (fonttools/fontkit metadata); the role-keyed Fonts object has no reference
         # counterpart, so writing it broke 1:1. Role fonts still live in tokens.json.
-        # extracted/fonts-manifest.json — the REAL types.ts::FontsManifest built from
+        # extracted/fonts-manifest.json — the REAL reference FontsManifest built from
         # captured font bytes (fonttools). Written ONLY when faces were captured
         # (reference emits it only if the fonts/ dir exists) — no empty-manifest file.
         font_files = profile.get("font_files") or []
@@ -662,7 +662,7 @@ async def build_hyperframes_zip(doc) -> bytes:
             zf.writestr("capture/extracted/shaders.json",
                         json.dumps(shaders, ensure_ascii=False, indent=2))
         # extracted/video-manifest.json — the reference BARE ARRAY of video entries
-        # (mediaCapture.ts): [{index, url, filename, width, height, sourceWidth,
+        # (reference video manifest): [{index, url, filename, width, height, sourceWidth,
         # sourceHeight, heading, caption, ariaLabel, preview?, localPath?}] from two-
         # layer (network + DOM) discovery; the binaries are routed below (kind==
         # "video"/"video_preview"). Omitted for old profiles / pages with no videos.
@@ -671,7 +671,7 @@ async def build_hyperframes_zip(doc) -> bytes:
             zf.writestr("capture/extracted/video-manifest.json",
                         json.dumps(video_manifest, ensure_ascii=False, indent=2))
         # extracted/lottie-manifest.json — Phase 8 lottie manifest. Written as the
-        # bare `lotties` array (mediaCapture.ts renderLottiePreviews parity: file/url/
+        # bare `lotties` array (reference lottie-preview parity: file/url/
         # name/width/height/duration/frameRate/layers/preview?). The animation JSON +
         # preview binaries are routed below (kind=="lottie_json"/"lottie_preview").
         # Omitted for old profiles / pages with no discovered lotties.
@@ -712,8 +712,8 @@ async def build_hyperframes_zip(doc) -> bytes:
                 label = (s.get("kind") if s.get("section_index") is None
                          else f"section-{s['section_index']:02d}")
             members.append((f"capture/screenshots/{label}.png", key))
-        # Captured woff2 faces -> capture/assets/fonts/ (where build-frame.mjs globs
-        # to stage @font-face faces). Phase 4: the bounded face set (font_files) plus
+        # Captured woff2 faces -> capture/assets/fonts/ (where the downstream renderer
+        # globs to stage @font-face faces). Phase 4: the bounded face set (font_files) plus
         # the role-font files; deduped by storage key so a role font that's also in
         # font_files isn't written twice. Old profiles carry only role-font files.
         seen_font_keys: set[str] = set()

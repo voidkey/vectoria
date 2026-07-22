@@ -5,8 +5,8 @@ EXTRACT_JS = r"""
 () => {
   const MAX_NODES = 4000;
   const abs = (u) => { try { return new URL(u, location.href).href; } catch(e){ return null; } };
-  // Simple rgb()->#RRGGBB used for headings + section backgrounds (tokenExtractor.ts
-  // rgbToHex parity). Returns the input unchanged when it can't parse (named colors,
+  // Simple rgb()->#RRGGBB used for headings + section backgrounds (reference hexOf
+  // helper). Returns the input unchanged when it can't parse (named colors,
   // gradients) so callers can fall back to the raw value like the reference does.
   const hexOf = (color) => {
     if (!color) return "";
@@ -26,7 +26,7 @@ EXTRACT_JS = r"""
     if (cs.display === 'none' || cs.visibility === 'hidden') continue;
     const bg = cs.backgroundColor;
     if (bg && bg !== 'rgba(0, 0, 0, 0)' && bg !== 'transparent') {
-      // Mark fills on interactive elements (hyperframes' interactiveBg signal) so
+      // Mark fills on interactive elements (the reference interactiveBg signal) so
       // the brand action color wins the primary role by USAGE, not by saturation.
       const tag = el.tagName.toLowerCase();
       const role = (el.getAttribute('role') || '').toLowerCase();
@@ -99,7 +99,7 @@ EXTRACT_JS = r"""
     return s.display !== 'none' && s.visibility !== 'hidden' && s.opacity !== '0'
       && el.getBoundingClientRect().height > 0;
   };
-  // Sections — verbatim port of tokenExtractor.ts's section model (find large visual
+  // Sections — verbatim port of the reference section model (find large visual
   // blocks regardless of tag): a broad candidate set (deduped), skip too-small blocks
   // and full-page wrappers, classify a `type` (hero/footer/cta/logos/testimonials/
   // features/content) by position + class, resolve the background by walking up to the
@@ -210,7 +210,7 @@ EXTRACT_JS = r"""
   const meta = (n) => { const m = document.querySelector(n); return m ? (m.getAttribute('content')||'').trim() : ''; };
   const h1 = document.querySelector('h1');
   // visible-text.txt: DOM text nodes in reading order, each line prefixed with its
-  // parent tag ([h1]/[p]/[a]/...). Verbatim port of contentExtractor.ts's
+  // parent tag ([h1]/[p]/[a]/...). Verbatim port of the reference content extractor's
   // extractVisibleText (cookie/consent filter, hidden-element skip, single-word
   // nav/footer link skip <8 chars), truncated to 30K + a marker. This is what the
   // reference writes to visible-text.txt; `full_text` (innerText) is kept as an
@@ -239,7 +239,7 @@ EXTRACT_JS = r"""
     if (out.length > 30000) out = out.slice(0, 30000) + '\n[...truncated]';
     return out;
   })();
-  // CTAs — verbatim port of tokenExtractor.ts's two-pass selection (hyperframes
+  // CTAs — verbatim port of the reference two-pass selection (the reference
   // tokens.ctas is [{text, href?}]). Pass 1: conservative class selectors, minus
   // nav/menu/dropdown false positives. Pass 2: also catch class-less CTAs by matching
   // concise action-verb text (get started / sign up / book a demo / ...), capped at
@@ -285,7 +285,7 @@ EXTRACT_JS = r"""
   const favicon = document.querySelector('link[rel~="icon"]');
   const video = document.querySelector('video source, video[src]');
   const lottie = document.querySelector('lottie-player[src], [data-animation-path]');
-  // Multi-source lottie discovery (ported from index.ts DOM scan + mediaCapture.ts):
+  // Multi-source lottie discovery (ported from the reference DOM scan + media capture):
   // web components (dotlottie-wc / lottie-player / dotlottie-player [src] +
   // [data-animation-path]), lottie-web's registered animations, and .lottie/.json
   // anchors. Absolutized, deduped, bounded — Python does the download + validate.
@@ -322,8 +322,8 @@ EXTRACT_JS = r"""
   const libs = [];
   for (const [lib, pat] of [['gsap','gsap'],['lottie','lottie'],['framer-motion','framer'],['aos','aos.'],['three','three']])
     if (scriptsHref.includes(pat)) libs.push(lib);
-  // DOM + window-global fingerprints (ported from contentExtractor.ts::
-  // detectLibraries). Booleans only — Python's detect_libraries maps these to
+  // DOM + window-global fingerprints (ported from the reference library
+  // detector). Booleans only — Python's detect_libraries maps these to
   // library names + merges with the script-src `libs` + shader fingerprints.
   // Fully guarded: a probe throwing must not abort the extract.
   let fingerprints = {};
@@ -358,7 +358,7 @@ EXTRACT_JS = r"""
     has_canvas: !!document.querySelector('canvas'),
   };
 
-  // Headings — reference tokenExtractor.ts: h1..h4 (cap 20, sliced BEFORE the
+  // Headings — reference: h1..h4 (cap 20, sliced BEFORE the
   // visibility filter), text squeezed to ~200 chars, color hex-normalized.
   const headings = Array.from(document.querySelectorAll('h1, h2, h3, h4')).slice(0, 20)
     .filter(isVisible).map(h => {
@@ -368,7 +368,7 @@ EXTRACT_JS = r"""
               fontSize: s.fontSize, fontWeight: s.fontWeight, color: hexOf(s.color) || s.color};
     });
 
-  // SVGs — metadata + isLogo heuristic (ported from tokenExtractor.ts). outerHTML
+  // SVGs — metadata + isLogo heuristic (ported from the reference). outerHTML
   // stays here for later phases (SVG download) but is dropped before persisting.
   const titleBrand = (document.title || '').split(/[-|—]/)[0].trim();
   const svgs = Array.from(document.querySelectorAll('svg')).map(svg => {
@@ -430,9 +430,9 @@ EXTRACT_JS = r"""
                 height: Math.round(document.documentElement.scrollHeight),
                 viewport: {width: window.innerWidth, height: window.innerHeight}};
 
-  // ── Phase 2: reference color parity (tokenExtractor.ts) ──────────────────
+  // ── Phase 2: reference color parity ──────────────────
   // Real top-20 usage-ranked `ranked` (hex strings) + top-48 `stats`
-  // (hyperframes DesignTokens colorStats). Fully guarded: runs inside
+  // (the reference DesignTokens colorStats). Fully guarded: runs inside
   // page.evaluate with no caller try/except, so it must degrade to empty
   // arrays rather than throw.
   let colors_ranked = [], colors_stats = [];

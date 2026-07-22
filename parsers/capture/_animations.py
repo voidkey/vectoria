@@ -1,5 +1,5 @@
-"""Animation catalog + WebGL shader capture (ported from hyperframes'
-animationCataloger.ts + index.ts GLSL hook + contentExtractor.ts::detectLibraries).
+"""Animation catalog + WebGL shader capture (ported from the reference
+animation cataloger + GLSL hook + library detector).
 
 Two pieces run PRE-navigation (injected via page.add_init_script in the
 orchestrator, before page.goto):
@@ -192,7 +192,7 @@ COLLECT_ANIMATIONS_JS = r"""
 async def collect_animation_catalog(page, cdp_entries: list) -> dict:
     """Run COLLECT_ANIMATIONS_JS, attach the CDP entries, and build the summary.
 
-    Returns an AnimationCatalog dict (verbatim field names from types.ts):
+    Returns an AnimationCatalog dict (verbatim reference field names):
     ``webAnimations``, ``cssDeclarations``, ``scrollTargets``, ``cdpAnimations``,
     ``summary``. The in-page JS is guarded, so this is a plain evaluate."""
     result = await page.evaluate(COLLECT_ANIMATIONS_JS) or {}
@@ -216,7 +216,7 @@ async def collect_animation_catalog(page, cdp_entries: list) -> dict:
 
 
 async def collect_shaders(page) -> list[dict]:
-    """Read window.__capturedShaders and dedupe by source (matches index.ts)."""
+    """Read window.__capturedShaders and dedupe by source (matches the reference)."""
     shaders = await page.evaluate("window.__capturedShaders || []")
     if not isinstance(shaders, list):
         return []
@@ -276,7 +276,7 @@ async def start_cdp_animation_capture(page):
     return session, entries
 
 
-# ── Library detection (ported from contentExtractor.ts::detectLibraries) ──────
+# ── Library detection (ported from the reference library detector) ──────
 
 def detect_libraries(raw_libs: list, shaders: list, dom_fingerprints: dict) -> list[str]:
     """Merge script-src library sniff + DOM fingerprints + WebGL shader

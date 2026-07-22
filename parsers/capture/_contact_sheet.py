@@ -1,6 +1,6 @@
 """Pure-Pillow contact sheets — stitch labeled image grids into JPEG pages.
 
-Port of hyperframes' contactSheet.ts (createContactSheet / createContactSheetPages),
+Port of the reference contact-sheet builder,
 implemented with Pillow instead of sharp+SVG-overlay so it is UNIT-TESTABLE without a
 browser: bytes in, JPEG page bytes out. A contact sheet packs many screenshots/assets
 into one numbered grid with a label under each cell, which is far cheaper for an agent
@@ -19,7 +19,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 logger = logging.getLogger(__name__)
 
-# Reference palette (contactSheet.ts): near-black canvas, white bold labels.
+# Reference palette: near-black canvas, white bold labels.
 _BG = (26, 26, 26)
 _LABEL_BG = (26, 26, 26)
 _LABEL_FG = (255, 255, 255)

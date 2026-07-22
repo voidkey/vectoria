@@ -283,7 +283,7 @@ class Settings(BaseSettings):
     capture_max_asset_bytes: int = 25 * 1024 * 1024   # per non-image binary (video/lottie/woff2)
     capture_asset_catalog_cap: int = 200          # max URL-only media catalog entries (after dedup)
     capture_video_cap: int = 20                   # max DOM video descriptors
-    # Phase 7 video manifest (ported from hyperframes mediaCapture.ts): two-layer
+    # Phase 7 video manifest (ported from the reference media capture): two-layer
     # (network + DOM) discovery -> manifest at all quality levels; direct-ext bodies
     # (skip HLS .m3u8 / DASH .mpd / blob / data) downloaded only when quality==full,
     # bounded by a count cap AND a cumulative wall-clock budget so a throttled host
@@ -294,7 +294,7 @@ class Settings(BaseSettings):
     capture_video_download_budget_s: float = 180.0  # cumulative download wall-clock cap (s)
     # Phase 3 asset-download parity. SVGs come from the already-extracted markup
     # (no fetch); catalog images are fetched via SSRF-checked fetch_asset_bytes.
-    # Phase 8 lottie (ported from hyperframes mediaCapture.ts saveLottieAnimations /
+    # Phase 8 lottie (ported from the reference media capture /
     # renderLottiePreviews): discover multiple lottie sources (DOM + .lottie/.json
     # links), download + dotLottie-unzip up to capture_max_lotties, dedup by content
     # hash, emit lottie-manifest.json, and render best-effort mid-frame previews (skip
@@ -309,7 +309,7 @@ class Settings(BaseSettings):
     capture_min_image_bytes: int = 10000          # min-size gate for raster catalog images (junk/spacer filter)
     capture_min_svg_bytes: int = 200              # min SVG markup length to bother storing
     capture_max_screenshot_height: int = 20000    # clamp full-page height (DoS guard)
-    # Bounded site-font face download (Phase 4, ported from hyperframes
+    # Bounded site-font face download (Phase 4, ported from the reference
     # downloadAndRewriteFonts): per-family and total caps keep Google-Fonts-style
     # 20+ unicode-range subsets from bloating the capture. Latin subsets prioritized.
     capture_max_fonts_per_family: int = 6         # MAX_FONTS_PER_FAMILY
