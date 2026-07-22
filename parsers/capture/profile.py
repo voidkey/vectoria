@@ -92,6 +92,10 @@ class TextInfo(BaseModel):
     headline: str = ""
     tagline: str = ""
     ctas: list[str] = Field(default_factory=list)
+    # visible-text.txt body: DOM text nodes in reading order, each `[tag] text`
+    # (hyperframes contentExtractor.ts parity). full_text (innerText) is retained as
+    # a fallback for old profiles captured before visible_text existed.
+    visible_text: str = ""
     full_text: str = ""
 
 

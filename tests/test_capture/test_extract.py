@@ -19,6 +19,14 @@ def test_extract_js_collects_phase1_tokens():
         assert needle in EXTRACT_JS, needle
 
 
+def test_extract_js_collects_visible_text_tag_dump():
+    # visible-text.txt parity: a TreeWalker dump of DOM text nodes, each `[tag] text`,
+    # with the cookie/consent filter and the 30K truncation marker.
+    for needle in ("visible_text", "createTreeWalker", "SHOW_TEXT",
+                   "[' + tag + '] ", "cookieRe", "[...truncated]"):
+        assert needle in EXTRACT_JS, needle
+
+
 def test_extract_js_collects_phase2_colors():
     # Phase 2: real top-20 ranked colors + top-48 colorStats. The extractor must
     # keep `samples` (process_colors consumes it) AND add the reference-shaped

@@ -151,14 +151,45 @@ EXTRACT_JS = r"""
 
   const meta = (n) => { const m = document.querySelector(n); return m ? (m.getAttribute('content')||'').trim() : ''; };
   const h1 = document.querySelector('h1');
+  // visible-text.txt: DOM text nodes in reading order, each line prefixed with its
+  // parent tag ([h1]/[p]/[a]/...). Verbatim port of contentExtractor.ts's
+  // extractVisibleText (cookie/consent filter, hidden-element skip, single-word
+  // nav/footer link skip <8 chars), truncated to 30K + a marker. This is what the
+  // reference writes to visible-text.txt; `full_text` (innerText) is kept as an
+  // internal fallback for older stored profiles.
+  const visibleText = (() => {
+    if (!document.body) return '';
+    const cookieRe = /^(accept|cookie|privacy|that's fine|got it|i agree|reject all|accept all|manage cookies|consent)$/i;
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null);
+    const texts = [];
+    let node;
+    while ((node = walker.nextNode())) {
+      const t = (node.textContent || '').trim();
+      if (t.length < 3) continue;
+      const el = node.parentElement;
+      if (!el) continue;
+      const st = getComputedStyle(el);
+      if (st.display === 'none' || st.visibility === 'hidden' || st.opacity === '0') continue;
+      const tag = el.tagName.toLowerCase();
+      if (tag === 'script' || tag === 'style' || tag === 'noscript') continue;
+      const inNavOrFooter = el.closest('nav, footer, [role="navigation"]');
+      if (inNavOrFooter && t.length < 8) continue;
+      if (cookieRe.test(t)) continue;
+      texts.push('[' + tag + '] ' + t);
+    }
+    let out = texts.join('\n');
+    if (out.length > 30000) out = out.slice(0, 30000) + '\n[...truncated]';
+    return out;
+  })();
   const text = {
     headline: meta('meta[property="og:title"]') || (h1 ? h1.textContent.trim() : document.title),
     tagline: meta('meta[name="description"]') || meta('meta[property="og:description"]'),
     ctas: Array.from(document.querySelectorAll('a,button'))
       .filter(a => /btn|cta|button/i.test(a.className) || a.tagName === 'BUTTON')
       .map(a => a.textContent.trim()).filter(t => t && t.length < 40).slice(0, 8),
-    // All visible DOM text in reading order (matches hyperframes visible-text).
-    // Capped so a huge page can't bloat the profile JSON column.
+    visible_text: visibleText,
+    // Internal fallback (innerText); not written to visible-text.txt when
+    // visible_text is present. Capped so a huge page can't bloat the profile JSON.
     full_text: (document.body ? document.body.innerText : '').slice(0, 100000),
   };
 

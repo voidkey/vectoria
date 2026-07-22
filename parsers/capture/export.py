@@ -361,8 +361,9 @@ def _agent_prompt(profile: dict, written: set[str]) -> str:
                     "Primary source for DESIGN.md. |")
     rows.append("| `extracted/asset-descriptions.md` | One-line description of every "
                 "downloaded asset. Read before opening individual files. |")
-    rows.append("| `extracted/visible-text.txt` | Page text in DOM order. Use as "
-                "context — rephrase freely. |")
+    rows.append("| `extracted/visible-text.txt` | Page text in DOM order, prefixed "
+                "with HTML tag (`[h1]`, `[p]`, `[a]`). Use as context — rephrase "
+                "freely. |")
     if present("extracted/page.html"):
         rows.append("| `extracted/page.html` | Self-contained structural recreation "
                     "of the page. |")
@@ -432,9 +433,12 @@ async def build_hyperframes_zip(doc) -> bytes:
         manifest = build_fonts_manifest(font_files, profile.get("captured_at", ""))
         zf.writestr("capture/extracted/fonts-manifest.json",
                     json.dumps(manifest, ensure_ascii=False, indent=2))
-        # extracted/visible-text.txt
+        # extracted/visible-text.txt — the reference format: DOM text nodes in
+        # reading order, each `[tag] text` (captured as text.visible_text). Old
+        # profiles (pre-visible_text) fall back to the headline/tagline/ctas/innerText
+        # concatenation so they still export a non-empty file.
         t = profile.get("text", {})
-        text_body = "\n\n".join(filter(None, [
+        text_body = t.get("visible_text") or "\n\n".join(filter(None, [
             t.get("headline", ""), t.get("tagline", ""),
             "\n".join(t.get("ctas", [])), t.get("full_text", "")]))
         zf.writestr("capture/extracted/visible-text.txt", text_body)

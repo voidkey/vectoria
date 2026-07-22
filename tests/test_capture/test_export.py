@@ -157,6 +157,57 @@ async def test_asset_descriptions_fallback_when_all_blank():
 
 
 @pytest.mark.asyncio
+async def test_visible_text_uses_tag_dump_when_present():
+    """visible-text.txt is the reference [tag]-prefixed DOM dump when the profile
+    carries text.visible_text (not the headline/tagline concatenation)."""
+    doc = type("D", (), {})()
+    doc.id, doc.kb_id = "d1", "kb"
+    doc.profile = {
+        "fonts": {}, "screenshots": [], "spacing": {}, "assets": [],
+        "text": {"headline": "Acme", "tagline": "Ship faster",
+                 "ctas": ["Get started"],
+                 "visible_text": "[h1] Acme\n[p] Ship faster\n[a] Get started",
+                 "full_text": "Acme Ship faster Get started"},
+    }
+    storage = AsyncMock()
+    storage.get = AsyncMock(return_value=b"BYTES")
+    with (
+        patch("parsers.capture.export.get_storage", new=AsyncMock(return_value=storage)),
+        patch("parsers.capture.export._image_keys", new=AsyncMock(return_value={})),
+    ):
+        from parsers.capture.export import build_hyperframes_zip
+        data = await build_hyperframes_zip(doc)
+    body = zipfile.ZipFile(io.BytesIO(data)).read(
+        "capture/extracted/visible-text.txt").decode()
+    assert body == "[h1] Acme\n[p] Ship faster\n[a] Get started"
+
+
+@pytest.mark.asyncio
+async def test_visible_text_falls_back_for_old_profiles():
+    """A profile captured before visible_text existed still emits a non-empty file
+    from the headline/tagline/ctas/full_text concatenation."""
+    doc = type("D", (), {})()
+    doc.id, doc.kb_id = "d1", "kb"
+    doc.profile = {
+        "fonts": {}, "screenshots": [], "spacing": {}, "assets": [],
+        "text": {"headline": "Acme", "tagline": "Ship faster", "ctas": [],
+                 "full_text": "body copy"},   # no visible_text key
+    }
+    storage = AsyncMock()
+    storage.get = AsyncMock(return_value=b"BYTES")
+    with (
+        patch("parsers.capture.export.get_storage", new=AsyncMock(return_value=storage)),
+        patch("parsers.capture.export._image_keys", new=AsyncMock(return_value={})),
+    ):
+        from parsers.capture.export import build_hyperframes_zip
+        data = await build_hyperframes_zip(doc)
+    body = zipfile.ZipFile(io.BytesIO(data)).read(
+        "capture/extracted/visible-text.txt").decode()
+    assert body == "Acme\n\nShip faster\n\nbody copy"
+    assert "[h1]" not in body
+
+
+@pytest.mark.asyncio
 async def test_build_zip_routes_downloaded_svgs_by_basename():
     """Downloaded SVGs (format=svg, storage_key under assets/svgs/) go to
     capture/assets/svgs/<basename> — keyed by the unique content-hash basename,
