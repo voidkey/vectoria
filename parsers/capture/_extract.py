@@ -135,6 +135,7 @@ EXTRACT_JS = r"""
     else if (el.querySelector('img, video') && headingText) layout = 'split';
     else if (headingText && imgCount === 0) layout = 'centered';
     return {index: i, heading: headingText,
+            selector: el.id ? '#' + el.id : el.tagName.toLowerCase(),
             classNames: (el.className||'').toString().split(/\s+/).filter(Boolean),
             bg: cs.backgroundColor,
             backgroundImage: backgroundImage,
@@ -142,7 +143,10 @@ EXTRACT_JS = r"""
             assetUrls: assetUrls,
             layout: layout,
             text: (el.innerText || el.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 600),
-            rect: {y: r.y + scrollY, height: r.height}};
+            // Full geometry (reference DesignTokens section shape): x/y are page-
+            // absolute (scroll-offset added), width/height the layout box.
+            rect: {x: Math.round(r.x + scrollX), y: Math.round(r.y + scrollY),
+                   width: Math.round(r.width), height: Math.round(r.height)}};
   });
   const section_gaps = [];
   for (let i = 1; i < sections.length; i++)

@@ -41,7 +41,8 @@ async def test_build_hyperframes_zip_layout():
                       "bg_color": "#0b0b0f", "layout": "split",
                       "background_image": "https://x/bg.png",
                       "cta_texts": ["Start"], "asset_urls": ["https://x/a.png"],
-                      "text": "hero body"}],
+                      "text": "hero body", "selector": "#hero",
+                      "x": 0, "y": 0, "width": 1280, "height": 720}],
     }
     storage = AsyncMock()
     storage.get = AsyncMock(return_value=b"BYTES")
@@ -89,6 +90,8 @@ async def test_build_hyperframes_zip_layout():
                               "viewport": {"width": 1280, "height": 800}}
     sec = tokens["sections"][0]
     assert sec["type"] == "hero" and sec["heading"] == "Hero"
+    assert sec["selector"] == "#hero"
+    assert (sec["x"], sec["y"], sec["width"], sec["height"]) == (0, 0, 1280, 720)
     assert sec["backgroundColor"] == "#0b0b0f"
     assert sec["backgroundImage"] == "https://x/bg.png"
     assert sec["callsToAction"] == ["Start"]
@@ -483,6 +486,37 @@ def test_official_tokens_fonts_variable_weightrange_and_og_image():
     assert set(disp) == {"family", "weights", "variable", "weightRange"}
     assert set(body) == {"family", "weights", "variable"}
     assert tokens["ogImage"] == "https://x/og.png"
+
+
+def test_official_tokens_sections_resolve_assets_to_local_paths():
+    """A section's remote assetUrls resolve to the local capture-relative paths of
+    the downloaded bodies (reference joins them back onto the section)."""
+    from parsers.capture.export import _official_tokens
+    tokens = _official_tokens({
+        "colors_ranked": ["#000"], "fonts": {}, "text": {"headline": "T"},
+        "sections": [{"index": 0, "type": "hero", "heading": "H", "selector": "#h",
+                      "x": 0, "y": 0, "width": 1280, "height": 600,
+                      "asset_urls": ["https://x/hero.jpg", "https://x/missing.png"]}],
+        "assets": [
+            {"kind": "image", "url": "https://x/hero.jpg",
+             "storage_key": "captures/kb/d1/assets/hero-shot.jpg", "format": "jpg"},
+        ],
+    })
+    sec = tokens["sections"][0]
+    # Only the downloaded url resolves; the un-downloaded one is dropped.
+    assert sec["assets"] == ["assets/hero-shot.jpg"]
+    assert sec["assetUrls"] == ["https://x/hero.jpg", "https://x/missing.png"]
+
+
+def test_official_tokens_section_omits_background_image_when_blank():
+    from parsers.capture.export import _official_tokens
+    tokens = _official_tokens({
+        "colors_ranked": ["#000"], "fonts": {}, "text": {"headline": "T"},
+        "sections": [{"index": 0, "type": "content", "heading": "H",
+                      "background_image": "", "asset_urls": []}],
+    })
+    assert "backgroundImage" not in tokens["sections"][0]
+    assert "assets" not in tokens["sections"][0]      # no resolved assets
 
 
 def test_official_tokens_omits_og_image_when_absent():

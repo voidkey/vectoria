@@ -681,6 +681,11 @@ def _build_layout_tokens(raw: dict, shots: list, profile_shots: list, cfg):
         cta_texts=s.get("callsToAction", []),
         asset_urls=s.get("assetUrls", []),
         text=s.get("text", ""),
+        selector=s.get("selector", ""),
+        x=(s.get("rect") or {}).get("x", 0),
+        y=(s.get("rect") or {}).get("y", 0),
+        width=(s.get("rect") or {}).get("width", 0),
+        height=(s.get("rect") or {}).get("height", 0),
     ) for s in raw_sections]
 
     # Phase 1 tokens: headings / svgs / page geometry (hyperframes parity).

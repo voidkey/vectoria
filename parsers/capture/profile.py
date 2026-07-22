@@ -86,6 +86,13 @@ class SectionInfo(BaseModel):
     cta_texts: list[str] = Field(default_factory=list)
     asset_urls: list[str] = Field(default_factory=list)
     text: str = ""
+    # Reference DesignTokens section shape: a CSS selector + page-absolute geometry
+    # (hyperframes tokenExtractor.ts). Default so old stored profiles still validate.
+    selector: str = ""
+    x: int = 0
+    y: int = 0
+    width: int = 0
+    height: int = 0
 
 
 class TextInfo(BaseModel):

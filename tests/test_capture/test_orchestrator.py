@@ -204,12 +204,12 @@ async def test_run_capture_maps_phase1_tokens_and_strips_svg_markup():
         "spacing": {"margins": [8], "paddings": [16], "radii": [8],
                     "container_max_width": 1200, "section_gaps": []},
         "sections": [{"index": 0, "heading": "Hero", "classNames": ["hero"],
-                      "bg": "#0b0b0f", "backgroundImage": "https://x/bg.png",
+                      "selector": "#hero", "bg": "#0b0b0f",
+                      "backgroundImage": "https://x/bg.png",
                       "callsToAction": ["Start", "Learn"],
                       "assetUrls": ["https://x/a.png"], "layout": "split",
-                      "text": "hero body text", "x": 0, "y": 0,
-                      "width": 1280, "height": 600,
-                      "rect": {"y": 0, "height": 600}}],
+                      "text": "hero body text",
+                      "rect": {"x": 0, "y": 0, "width": 1280, "height": 600}}],
         "headings": [{"level": 1, "text": "Hero", "fontSize": "48px",
                       "fontWeight": "700", "color": "rgb(17, 17, 17)"}],
         "svgs": [{"label": "logo", "viewBox": "0 0 24 24", "width": 24, "height": 24,
@@ -247,6 +247,9 @@ async def test_run_capture_maps_phase1_tokens_and_strips_svg_markup():
     assert sec["cta_texts"] == ["Start", "Learn"]
     assert sec["asset_urls"] == ["https://x/a.png"]
     assert sec["text"] == "hero body text"
+    # Reference geometry + selector threaded through from raw rect.
+    assert sec["selector"] == "#hero"
+    assert (sec["x"], sec["y"], sec["width"], sec["height"]) == (0, 0, 1280, 600)
 
 
 @pytest.mark.asyncio

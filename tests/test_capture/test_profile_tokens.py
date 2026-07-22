@@ -37,7 +37,8 @@ def test_new_token_fields_roundtrip():
                               background_image="https://x/bg.png",
                               cta_texts=["Start", "Learn"],
                               asset_urls=["https://x/a.png"],
-                              text="hero body text")],
+                              text="hero body text", selector="#hero",
+                              x=0, y=10, width=1280, height=600)],
     )
     d = p.model_dump()
 
@@ -58,6 +59,8 @@ def test_new_token_fields_roundtrip():
     assert sec["cta_texts"] == ["Start", "Learn"]
     assert sec["asset_urls"] == ["https://x/a.png"]
     assert sec["text"] == "hero body text"
+    assert sec["selector"] == "#hero"
+    assert (sec["x"], sec["y"], sec["width"], sec["height"]) == (0, 10, 1280, 600)
 
 
 def test_colors_ranked_and_color_stats_roundtrip():

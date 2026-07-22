@@ -106,7 +106,8 @@ def _official_tokens(profile: dict) -> dict:
         "cssVariables": profile.get("css_variables", {}) or {},
         "headings": _headings_out(profile.get("headings", []) or []),
         "svgs": _svgs_out(profile.get("svgs", []) or []),
-        "sections": _sections_out(profile.get("sections", []) or []),
+        "sections": _sections_out(profile.get("sections", []) or [],
+                                  _asset_paths_by_url(profile)),
         # extra: lets downstream (go-figlens) gate structural rebuild on fidelity.
         "capture_quality": profile.get("capture_quality", "full"),
     }
@@ -136,16 +137,49 @@ def _svgs_out(svgs: list[dict]) -> list[dict]:
              "isLogo": bool(s.get("is_logo", False))} for s in svgs]
 
 
-def _sections_out(sections: list[dict]) -> list[dict]:
-    """snake_case SectionInfo -> hyperframes DesignTokens `sections` shape
-    (backgroundColor/backgroundImage/callsToAction/assetUrls)."""
-    return [{"type": s.get("type", "generic"), "heading": s.get("heading", ""),
-             "backgroundColor": s.get("bg_color", ""),
-             "backgroundImage": s.get("background_image", ""),
-             "callsToAction": s.get("cta_texts", []) or [],
-             "assetUrls": s.get("asset_urls", []) or [],
-             "layout": s.get("layout", ""), "text": s.get("text", "")}
-            for s in sections]
+def _sections_out(sections: list[dict], asset_paths: dict | None = None) -> list[dict]:
+    """snake_case SectionInfo -> the full hyperframes DesignTokens `sections` shape:
+    ``{selector, type, x, y, width, height, heading, backgroundColor,
+    backgroundImage?, callsToAction, text, layout, assetUrls, assets?}``.
+    ``backgroundImage`` is emitted only when present (reference omits it otherwise);
+    ``assets`` are the section's remote assetUrls resolved to their local capture-
+    relative paths (``asset_paths`` = {url: "assets/..."}), matching index.ts joining
+    downloaded bodies back onto each section."""
+    asset_paths = asset_paths or {}
+    out: list[dict] = []
+    for s in sections:
+        asset_urls = s.get("asset_urls", []) or []
+        entry = {"selector": s.get("selector", ""), "type": s.get("type", "generic"),
+                 "x": s.get("x", 0), "y": s.get("y", 0),
+                 "width": s.get("width", 0), "height": s.get("height", 0),
+                 "heading": s.get("heading", ""),
+                 "backgroundColor": s.get("bg_color", ""),
+                 "callsToAction": s.get("cta_texts", []) or [],
+                 "text": s.get("text", ""), "layout": s.get("layout", ""),
+                 "assetUrls": asset_urls}
+        bg_img = s.get("background_image", "")
+        if bg_img:
+            entry["backgroundImage"] = bg_img
+        assets = [asset_paths[u] for u in asset_urls if u in asset_paths]
+        if assets:
+            entry["assets"] = assets
+        out.append(entry)
+    return out
+
+
+def _asset_paths_by_url(profile: dict) -> dict:
+    """Map each downloaded asset's original URL -> its capture-relative ZIP path
+    ("assets/..."), so section assetUrls can be resolved to local ``assets`` (the
+    reference joins downloaded bodies back onto each section). Only assets carrying
+    both a url and a storage_key participate."""
+    paths: dict = {}
+    for a in profile.get("assets", []) or []:
+        u = a.get("url")
+        sk = a.get("storage_key")
+        if u and sk:
+            zp = _asset_zip_path(a, sk)
+            paths[u] = zp[len("capture/"):] if zp.startswith("capture/") else zp
+    return paths
 
 
 def _lean_animations(catalog: dict) -> dict:
