@@ -37,9 +37,17 @@ services:
     # absent (VectoriaApiAbsent). --timeout-graceful-shutdown forces exit after
     # the deadline so the recycle completes in seconds; restart cost is low
     # because heavy imports are warmed in the image's model cache.
+    #
+    # Size the limit against request RATE, not gut feel: each recycle costs a
+    # few seconds of refused connections, and up to the full graceful-shutdown
+    # deadline (plus a 5xx for the in-flight request) if an upload is midway.
+    # A busy environment polling document status runs ~1k req/min, so the old
+    # 1000 recycled the process every ~60s — a self-inflicted restart loop that
+    # read to users as the API hanging. 100k keeps the leak ceiling while
+    # putting the recycle interval in the hours.
     command:
       ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000",
-       "--limit-max-requests", "1000", "--timeout-graceful-shutdown", "30"]
+       "--limit-max-requests", "100000", "--timeout-graceful-shutdown", "30"]
     ports:
       - "8000:8000"
     depends_on:
