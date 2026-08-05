@@ -10,6 +10,7 @@ from sqlalchemy import select
 from api.errors import AppError, ErrorCode, error_fields
 from api.schemas import CaptureResponse, CreateCaptureRequest
 from api.url_validation import validate_url
+from api.doc_title import title_from_url
 from db.base import get_session
 from db.models import Document, DocumentImage, KnowledgeBase
 from storage import get_storage
@@ -43,8 +44,12 @@ async def create_capture(kb_id: str, body: CreateCaptureRequest) -> CaptureRespo
     await validate_url(body.url)          # format + SSRF; raises AppError(400)
     doc_id = str(uuid.uuid4())
     async with get_session() as session:
+        # Placeholder until run_capture reports the page's own title;
+        # the raw URL is both unreadable and (for share links) wider
+        # than the title column.
         doc = Document(id=doc_id, kb_id=kb_id, kind="site_capture",
-                       title=body.url, source=body.url, status="queued",
+                       title=title_from_url(body.url), source=body.url,
+                       status="queued",
                        index_status="skipped", image_status="none")
         session.add(doc)
         enqueue_in_session(session, "capture_site",

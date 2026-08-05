@@ -95,3 +95,40 @@ async def test_export_not_completed_409(client):
     with patch("api.routes.captures._load_capture", new=AsyncMock(return_value=doc)):
         resp = await client.get("/v1/knowledgebases/kb/captures/c1/export?format=hyperframes")
     assert resp.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_create_capture_seeds_readable_title(client):
+    """``title`` is varchar(500); a raw share URL with tracking
+    parameters overflows it and used to fail the INSERT outright. The
+    seeded placeholder is host + path, with the full URL kept in
+    ``source`` so the capture still fetches the exact link.
+    """
+    long_url = (
+        "https://mp.weixin.qq.com/s/P2HDXN-FK89R5iQP7vrkwA"
+        "?xtrack=1&scene=90&subscene=93&sessionid=1785720292"
+        + "&pad=" + "x" * 600
+    )
+    captured: dict = {}
+    sess = MagicMock()
+    sess.add = MagicMock(side_effect=lambda d: captured.update(doc=d))
+    sess.commit = AsyncMock()
+    sess.refresh = AsyncMock(
+        side_effect=lambda d: setattr(d, "created_at", __import__("datetime").datetime(2026, 8, 5)),
+    )
+    cm = MagicMock()
+    cm.__aenter__ = AsyncMock(return_value=sess)
+    cm.__aexit__ = AsyncMock(return_value=False)
+    with (
+        patch("api.routes.captures._validate_kb", new=AsyncMock()),
+        patch("api.routes.captures.validate_url", new=AsyncMock()),
+        patch("api.routes.captures.enqueue_in_session", return_value="t1"),
+        patch("api.routes.captures.get_session", return_value=cm),
+    ):
+        resp = await client.post("/v1/knowledgebases/kb-x/captures",
+                                 json={"url": long_url})
+
+    assert resp.status_code == 202, resp.text
+    doc = captured["doc"]
+    assert doc.title == "mp.weixin.qq.com/s/P2HDXN-FK89R5iQP7vrkwA"
+    assert doc.source == long_url

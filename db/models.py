@@ -2,12 +2,18 @@ import uuid
 from datetime import datetime
 from typing import Optional
 from sqlalchemy import JSON, String, Text, DateTime, Integer, ForeignKey, func
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.orm import Mapped, mapped_column, relationship, validates
 from db.base import Base
 
 
 def _uuid() -> str:
     return str(uuid.uuid4())
+
+
+# Width of ``Document.title``. Exported so callers that build a title
+# from unbounded input (URLs, parser output) share one number with the
+# column instead of hardcoding 500 in a handful of places.
+TITLE_MAX_LEN = 500
 
 
 class KnowledgeBase(Base):
@@ -30,7 +36,7 @@ class Document(Base):
     kb_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("knowledge_bases.id", ondelete="CASCADE"), nullable=False
     )
-    title: Mapped[str] = mapped_column(String(500), default="", server_default="")
+    title: Mapped[str] = mapped_column(String(TITLE_MAX_LEN), default="", server_default="")
     source: Mapped[str] = mapped_column(Text, default="", server_default="")
     storage_key: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
     # Legacy MD5 hash kept as read-only fallback during the W5-4
@@ -102,6 +108,19 @@ class Document(Base):
     images: Mapped[list["DocumentImage"]] = relationship(
         back_populates="document", cascade="all, delete-orphan"
     )
+
+    @validates("title")
+    def _clamp_title(self, _key: str, value):
+        """Titles come from unbounded input — a raw URL when the caller
+        gave no filename, or whatever a parser pulled out of a page —
+        and Postgres hard-errors on overflow instead of truncating, so
+        one long URL used to fail the whole INSERT with a 500. Enforced
+        here rather than at each call site because ``update_doc`` writes
+        via setattr, which routes every worker update through this too.
+        """
+        if value is None:
+            return None
+        return value[:TITLE_MAX_LEN]
 
 
 class DocumentImage(Base):

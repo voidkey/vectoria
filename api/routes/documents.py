@@ -20,6 +20,7 @@ from api.schemas import (
 from api.errors import AppError, ErrorCode, error_fields
 from api.rate_limit import RATE_LIMITED_RESPONSE, rate_limit
 from api.url_validation import validate_url
+from api.doc_title import title_from_url
 from db.base import get_session
 from db.models import Document, KnowledgeBase
 from parsers.registry import registry
@@ -155,6 +156,7 @@ async def _enqueue_ingest(
     doc_id: str | None = None,
     wait: bool = False,
     page_count: int | None = None,
+    title: str | None = None,
 ) -> DocumentIngestResponse:
     """Create a Document row in ``queued`` state and enqueue parse work.
 
@@ -163,6 +165,9 @@ async def _enqueue_ingest(
     parsed content inline. The wait window intentionally covers *parse*
     only (``status in indexing|completed|failed``) — embedding and image
     analysis keep running in the background regardless.
+
+    ``title`` overrides the ``filename or source`` placeholder for
+    callers whose source isn't presentable as-is (URL ingest).
     """
     doc_id = doc_id or str(uuid.uuid4())
 
@@ -174,7 +179,7 @@ async def _enqueue_ingest(
         # values only materialise on refresh from a real DB.
         doc = Document(
             id=doc_id, kb_id=kb_id,
-            title=filename or source,
+            title=title or filename or source,
             source=source, parse_engine=selected_engine,
             status="queued",
             storage_key=storage_key,
@@ -740,6 +745,10 @@ async def ingest_url(
         source=body.url, storage_key=None,
         filename="", selected_engine=selected_engine,
         file_hash=None, file_hash_sha256=url_sha256, wait=wait,
+        # Placeholder only — the worker overwrites it with the page's
+        # own title once the fetch succeeds. ``source`` keeps the full
+        # URL, so the fetch and the dedup hash are unaffected.
+        title=title_from_url(body.url),
     )
 
 

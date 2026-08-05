@@ -26,6 +26,7 @@ from infra.metrics import (
     DOCUMENT_OUTCOMES, PARSE_EMPTY_TOTAL, PARSE_FALLBACK_TOTAL, observe_parse,
 )
 from api.errors import ErrorCode
+from api.doc_title import title_from_url
 from parsers.base import PermanentParseError
 from parsers.image_metadata import extract_metadata_into_refs
 from parsers.registry import registry
@@ -159,6 +160,13 @@ async def handle_parse_document(payload: dict) -> None:
         raw: bytes | str = await obj_storage.get(storage_key)
     else:
         raw = source
+
+    # Last-resort title when no parser reports one. For uploads the
+    # source is already a filename; for URL ingest it's the raw URL,
+    # which for mobile share links is mostly tracking parameters —
+    # strip those back down to host + path (matches the placeholder the
+    # API seeded at enqueue time).
+    source_title = source if storage_key else title_from_url(source)
 
     # Per-attempt engine fallback. selected_engine is just the upload-time
     # preference; on *any* exception we try the next engine in
@@ -358,7 +366,7 @@ async def handle_parse_document(payload: dict) -> None:
             # error_type here is a terminal-outcome label (matches
             # DOCUMENT_OUTCOMES labels), not an error; status stays completed.
             image_only_fields: dict = dict(
-                title=parse_result.title or source,
+                title=parse_result.title or source_title,
                 content=content,
                 status="completed",
                 index_status="skipped",
@@ -419,7 +427,7 @@ async def handle_parse_document(payload: dict) -> None:
     # value (PDF/PPTX gates) with None when the parser didn't produce
     # one (PDF parsers don't currently emit it).
     update_fields: dict = dict(
-        title=parse_result.title or filename or source,
+        title=parse_result.title or filename or source_title,
         content=content,
         status="indexing" if do_index else "completed",
         index_status="pending" if do_index else "skipped",
@@ -743,7 +751,7 @@ async def _capture_core(payload: dict) -> None:
 
     await update_doc(doc_id, status="completed", index_status="skipped",
                      image_status=("completed" if outcome.has_images else "none"),
-                     title=outcome.title[:500], profile=outcome.profile.model_dump(),
+                     title=outcome.title, profile=outcome.profile.model_dump(),
                      error_msg="", error_type=None, error_trace=None, error_code=None)
     if outcome.enqueue_image_analysis:
         await enqueue("analyze_images", {"kb_id": kb_id, "doc_id": doc_id})
