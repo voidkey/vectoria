@@ -156,6 +156,9 @@ async def test_detail_endpoint_returns_page_count(client):
     fake_doc.images = []
     fake_doc.image_status = "completed"
     fake_doc.page_count = 23
+    fake_doc.edited_storage_key = None
+    fake_doc.edited_revision = 0
+    fake_doc.edited_at = None
 
     with patch("api.routes.documents.get_session") as mock_sess:
         session = AsyncMock()
@@ -187,6 +190,9 @@ async def test_detail_endpoint_returns_null_when_unset(client):
     fake_doc.images = []
     fake_doc.image_status = "none"
     fake_doc.page_count = None
+    fake_doc.edited_storage_key = None
+    fake_doc.edited_revision = 0
+    fake_doc.edited_at = None
 
     with patch("api.routes.documents.get_session") as mock_sess:
         session = AsyncMock()

@@ -12,6 +12,7 @@ def test_doc_to_response_passes_through_index_status():
         status="completed", index_status="failed", error_msg="",
         error_code=None,
         created_at=datetime(2026, 1, 1),
+        edited_storage_key=None, edited_revision=0, edited_at=None,
     )
     resp = _doc_to_response(doc)
     assert resp.index_status == "failed"

@@ -46,6 +46,9 @@ class ErrorCode:
     FILE_ENCRYPTED = 1214           # reserved: detection deferred
     FILE_CORRUPTED = 1215           # reserved: detection deferred
     SCANNED_NEEDS_OCR = 1216        # reserved: detection deferred
+    EDIT_NOT_FOUND = 1217           # 文档没有编辑版本
+    EDIT_NOT_SUPPORTED = 1218       # 该文档类型不支持编辑（site_capture）
+    EDIT_REVISION_CONFLICT = 1219   # base_revision 与当前不符（并发写）
     PARSE_UNRESOLVABLE = 1299       # permanent fallback (no specific code)
 
     # Resource not found (1301-1399)
@@ -109,6 +112,12 @@ ERROR_META: dict[int, ErrorMeta] = {
     ErrorCode.FILE_ENCRYPTED:        _R(False, Action.REMOVE_PASSWORD),
     ErrorCode.FILE_CORRUPTED:        _R(False, Action.REPLACE_FILE),
     ErrorCode.SCANNED_NEEDS_OCR:     _R(False, Action.NONE),  # TODO: pick a real action when OCR detection lands
+    # Edited content. NOT_FOUND/NOT_SUPPORTED are terminal facts about the
+    # document, so no action the caller can take. REVISION_CONFLICT *is*
+    # retryable: re-read the current revision and re-apply the edit on top.
+    ErrorCode.EDIT_NOT_FOUND:        _R(False, Action.NONE),
+    ErrorCode.EDIT_NOT_SUPPORTED:    _R(False, Action.NONE),
+    ErrorCode.EDIT_REVISION_CONFLICT: _R(True, Action.RETRY_LATER),
     ErrorCode.PARSE_UNRESOLVABLE:    _R(False, Action.CONTACT_SUPPORT),
     # Not found
     ErrorCode.NOT_FOUND:             _R(False, Action.NONE),

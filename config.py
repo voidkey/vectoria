@@ -333,6 +333,11 @@ class Settings(BaseSettings):
     # as ingest. Retune via env without redeploy.
     ratelimit_kb_create_per_min: int = 20
     ratelimit_doc_ingest_per_min: int = 20
+    # Storing an edited rendition costs one object-storage PUT and one
+    # UPDATE — no parse, no embedding — so it can run looser than ingest.
+    # It gets its own bucket rather than sharing doc_ingest's so a
+    # downstream batch re-upload campaign can't starve normal ingestion.
+    ratelimit_doc_edit_per_min: int = 60
     # /query is the most expensive endpoint (embedding + 1-2 LLM calls +
     # rerank per request); capped tightest. 0 disables (kill-switch).
     ratelimit_query_per_min: int = 15

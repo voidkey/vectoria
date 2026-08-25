@@ -71,6 +71,9 @@
 | 1214 | `FILE_ENCRYPTED` 加密/带密码 | ✗ | `remove_password` | ⏸ 预留 |
 | 1215 | `FILE_CORRUPTED` 文件损坏 | ✗ | `replace_file` | ⏸ 预留 |
 | 1216 | `SCANNED_NEEDS_OCR` 纯图扫描件 | ✗ | `none` | ⏸ 预留 |
+| 1217 | `EDIT_NOT_FOUND` 文档无编辑版本 | ✗ | `none` | ✅ |
+| 1218 | `EDIT_NOT_SUPPORTED` 该类型不支持编辑 | ✗ | `none` | ✅ |
+| 1219 | `EDIT_REVISION_CONFLICT` base_revision 过期 | ✓ | `retry_later` | ✅ |
 | 1299 | `PARSE_UNRESOLVABLE` permanent 兜底 | ✗ | `contact_support` | ✅ |
 
 ## 资源 / 查询类 (1301–1499)
@@ -107,4 +110,5 @@
 - **`indexing_error`（向量化/索引失败）不进错误码体系**：文档仍 `status="completed"`、内容可读可搜，只在 `index_status="failed"` 上体现，不给 `error_code`。
 - **域名反爬冷却**：`parsers/url/__init__.py` 把“域名冷却中”也抛成 `AntiBotBlockedError`→`1503`（标不可重试）。冷却其实会过期，属软性可重试，本轮维持现状。
 - **`1216 SCANNED_NEEDS_OCR` 的 action = `none`** 是占位（代码里有 TODO），待扫描件/OCR 探测落地后改成合适的动作。
+- **`1219 EDIT_REVISION_CONFLICT` 是唯一可重试的编辑类错误**，但重试方式不是原样重发：应先 `GET .../edited` 读到当前 `revision`，把编辑重新应用在当前版本之上再写。`1217`/`1218` 描述的是文档的既成事实，重试没有意义。
 - **预留码**（1205 / 1206 / 1212 / 1214 / 1215 / 1216 / 1506 / 1502 通用探测）目前无对应 raise 点，前端可先纳入映射表，后续增量接线时即生效，无需前端改动。

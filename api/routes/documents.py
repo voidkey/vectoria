@@ -45,6 +45,21 @@ _ingest_limiter = Depends(rate_limit(
 ))
 
 
+def _edit_fields(doc: Document) -> dict:
+    """The three public edited-content fields, for spreading into a response.
+
+    Only the read paths (list / detail) use this. The ingest-time builders
+    deliberately keep the schema defaults: a document being created cannot
+    already carry an edit, and a dedup hit's edit state is not part of what
+    that response promises (same reasoning as its empty ``content``).
+    """
+    return {
+        "has_edit": bool(doc.edited_storage_key),
+        "edited_revision": doc.edited_revision or 0,
+        "edited_at": doc.edited_at.isoformat() if doc.edited_at else None,
+    }
+
+
 def _doc_to_response(doc: Document) -> DocumentResponse:
     return DocumentResponse(
         id=doc.id, kb_id=doc.kb_id, title=doc.title, source=doc.source,
@@ -52,6 +67,7 @@ def _doc_to_response(doc: Document) -> DocumentResponse:
         status=doc.status, index_status=doc.index_status, error_msg=doc.error_msg,
         created_at=doc.created_at.isoformat(),
         **error_fields(doc.error_code),
+        **_edit_fields(doc),
     )
 
 
@@ -881,6 +897,7 @@ async def get_document(kb_id: str, doc_id: str):
             image_status=doc.image_status,
             page_count=doc.page_count,
             **error_fields(doc.error_code),
+            **_edit_fields(doc),
         )
 
 
@@ -922,6 +939,11 @@ async def delete_document(kb_id: str, doc_id: str):
         if doc.storage_key:
             await obj_storage.delete(doc.storage_key)
         await obj_storage.delete_prefix(f"images/{kb_id}/{doc_id}/")
+        # Every edited rendition, including superseded and withdrawn ones —
+        # those keep their objects on purpose (see api/routes/edited.py), so
+        # deleting the document is the only point they get reclaimed. Must
+        # stay in sync with ``edited._edit_prefix``.
+        await obj_storage.delete_prefix(f"edits/{kb_id}/{doc_id}/")
 
         await session.delete(doc)
         await session.commit()

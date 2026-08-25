@@ -91,6 +91,14 @@ class DocumentResponse(BaseModel):
     retryable: bool | None = None
     suggested_action: str | None = None
     created_at: str
+    # Caller-supplied edited rendition, orthogonal to ``content``.
+    # ``has_edit`` is the field to branch on — ``edited_revision`` is
+    # monotonic and stays non-zero after a withdrawn edit, so it is NOT a
+    # "has an edit" signal. Defaults here mean the ingest-time builders
+    # (which can never have an edit yet) need no extra plumbing.
+    has_edit: bool = False
+    edited_revision: int = 0
+    edited_at: str | None = None
 
 
 class DocumentIngestResponse(DocumentResponse):
@@ -151,6 +159,37 @@ class DocumentImageResponse(BaseModel):
 class DocumentImagesListResponse(BaseModel):
     doc_id: str
     images: list[DocumentImageResponse] = []
+
+
+class EditedContentRequest(BaseModel):
+    """Body for ``PUT /documents/{id}/edited`` — the text/markdown form.
+
+    ``base_revision`` is an optional optimistic lock: when supplied it must
+    equal the document's current ``edited_revision`` or the write is
+    rejected with 409. Batch callers should always send it; ad-hoc callers
+    can omit it and accept last-writer-wins.
+    """
+    content: str = Field(..., min_length=1)
+    filename: str | None = None
+    base_revision: int | None = None
+
+
+class EditedContentResponse(BaseModel):
+    """Metadata for a document's current edited rendition.
+
+    ``url`` is a freshly-minted presigned GET — short-lived by design, so
+    treat it as a download handle, not something to persist. ``content`` is
+    populated only when the caller asked for it AND the artifact decodes as
+    UTF-8 (binary uploads leave it null; fetch ``url`` instead).
+    """
+    doc_id: str
+    kb_id: str
+    revision: int
+    filename: str
+    object_key: str
+    url: str
+    edited_at: str | None = None
+    content: str | None = None
 
 
 class DocumentSourceURLResponse(BaseModel):

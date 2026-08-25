@@ -31,6 +31,17 @@ def test_new_link_codes_exist():
     assert ErrorCode.PARSE_UNRESOLVABLE == 1299
 
 
+def test_edited_content_codes_exist():
+    # Numeric values are part of the public API contract — pinned on purpose.
+    assert ErrorCode.EDIT_NOT_FOUND == 1217
+    assert ErrorCode.EDIT_NOT_SUPPORTED == 1218
+    assert ErrorCode.EDIT_REVISION_CONFLICT == 1219
+    # A stale base_revision is worth re-attempting on top of the current
+    # revision; the other two are terminal facts about the document.
+    assert ERROR_META[ErrorCode.EDIT_REVISION_CONFLICT].retryable is True
+    assert ERROR_META[ErrorCode.EDIT_NOT_FOUND].retryable is False
+
+
 def test_error_fields_known_code():
     f = error_fields(ErrorCode.LINK_FETCH_TIMEOUT)
     assert f == {"error_code": 1507, "retryable": True,

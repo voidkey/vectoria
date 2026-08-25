@@ -47,6 +47,9 @@
 | `content` | string | 解析后的 Markdown 内容 |
 | `outline` | OutlineItem[] | 文档大纲 |
 | `image_count` | int | 图片数量 |
+| `has_edit` | bool | 是否存在编辑版本。判断有无编辑请用这个字段，不要用 `edited_revision` |
+| `edited_revision` | int | 编辑版本号（单调递增，撤回后不归零，故非 0 不代表当前有编辑版本） |
+| `edited_at` | string \| null | 当前编辑版本的写入时间（ISO 8601） |
 | `images` | ImageInfo[] | 图片列表 |
 
 **OutlineItem**
@@ -105,6 +108,10 @@
 | GET | `/knowledgebases/{kb_id}/documents` | 列出知识库下所有文档 | 200 |
 | GET | `/knowledgebases/{kb_id}/documents/{doc_id}` | 查询单个文档状态 | 200 |
 | DELETE | `/knowledgebases/{kb_id}/documents/{doc_id}` | 删除文档及其向量数据 | 204 |
+| PUT | `/knowledgebases/{kb_id}/documents/{doc_id}/edited` | 存入编辑后的正文（JSON） | 200 |
+| POST | `/knowledgebases/{kb_id}/documents/{doc_id}/edited/file` | 存入编辑后的文件（multipart） | 200 |
+| GET | `/knowledgebases/{kb_id}/documents/{doc_id}/edited` | 取回编辑后的内容 | 200 |
+| DELETE | `/knowledgebases/{kb_id}/documents/{doc_id}/edited` | 撤回编辑版本 | 204 |
 
 > **注意**: 文档入库是**异步处理**的，接口立即返回 `status: "indexing"`，需轮询单文档接口 `GET /knowledgebases/{kb_id}/documents/{doc_id}` 检查进度。
 
@@ -180,11 +187,78 @@
 | `index_status` | string | `pending` / `completed` / `failed` / `skipped`（见下方说明） |
 | `error_msg` | string | 错误信息 |
 | `created_at` | string | 创建时间（ISO 8601 格式） |
+| `has_edit` | bool | 是否存在编辑版本 |
+| `edited_revision` | int | 编辑版本号（单调递增） |
+| `edited_at` | string \| null | 当前编辑版本的写入时间 |
 
 > **注意**: 查询单个文档详情 `GET /knowledgebases/{kb_id}/documents/{doc_id}` 返回的是 `DocumentIngestResponse`，包含 `content`、`outline`、`image_count` 等额外字段。
 
 ---
 
+
+### 4.5 编辑后内容（edited content）
+
+下游拿到我们的解析结果后，往往还要再做一轮整理（LLM 清洗、重排版、把图片描述并回正文），产出一份"真正能用"的版本，需要存回我们这边以便后续取用。这组接口就是这份编辑版本的存放位置。
+
+**核心语义：编辑版本与解析结果是两份独立的内容，互不覆盖。**
+
+| | 存放位置 | 谁写 |
+|---|---|---|
+| 解析结果 | `documents.content`（`GET /documents/{doc_id}` 的 `content` 字段） | 我们的解析管线 |
+| 编辑版本 | 对象存储 `edits/{kb_id}/{doc_id}/{revision}/{filename}` | 调用方 |
+
+正因为两者正交，重新解析（含 `retry_dead_docs` 对失败文档的自动重试）不会破坏已存入的编辑版本，反过来存编辑版本也不会影响文档的解析状态机。
+
+> ⚠️ **编辑版本不参与检索。** `POST /knowledgebases/{kb_id}/query` 的 RAG 召回仍然基于原始解析结果 `documents.content`。把编辑版本接入索引需要重新分块和 embedding，是独立的一期工作，当前**未实现**。
+
+#### 请求 - EditedContentRequest（`PUT .../edited`，文本形式）
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `content` | string | 是 | 编辑后的正文（UTF-8）。全空白视为非法；受 `max_content_chars` 字符上限约束 |
+| `filename` | string | 否 | 存入对象存储时使用的文件名，默认 `content.md`。会被规约为单个路径片段（去掉目录成分），无法越出本文档的前缀 |
+| `base_revision` | int | 否 | 乐观锁：传了就必须等于当前 `edited_revision`，否则返回 409。批量写入的调用方建议总是传 |
+
+#### 请求 - `POST .../edited/file`（文件形式）
+
+`multipart/form-data`，字段名 `file`；`base_revision` 作为 query 参数传递。
+
+字节原样存储，**不做 MIME 嗅探、不解析、不做页数闸** —— 那些闸是为保护解析管线而存在的，而这里的产物不进解析管线，只是调用方之后自取的一份不透明文件。仅校验大小（`max_upload_bytes`）与非空。
+
+#### 响应 - EditedContentResponse
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `doc_id` / `kb_id` | string | 所属文档 / 知识库 |
+| `revision` | int | 本次编辑版本号 |
+| `filename` | string | 文件名 |
+| `object_key` | string | 对象存储 key |
+| `url` | string | 预签名下载地址，**会过期**，当作一次性下载句柄用，不要持久化 |
+| `edited_at` | string \| null | 写入时间（ISO 8601） |
+| `content` | string \| null | 仅当 `GET` 时带 `?include_content=true` 且产物是合法 UTF-8 才有值；二进制产物为 `null`，改用 `url` 下载 |
+
+#### 版本号与并发
+
+`edited_revision` 在写入前被原子地自增并占位，随后才上传对象——因此并发写入的两个调用方拿到的是不同的版本号，绝不会写到同一个 key 上。最后完成的写入者取得指针；先前版本的字节仍留在各自的 key 上。
+
+指针更新带 `edited_revision` 条件：一个占了较早版本号但完成较晚的写入者不会把文档回退到旧内容。
+
+`DELETE .../edited` 是**解除引用**而非清除：对象保留，`edited_revision` 计数器也不归零（归零会让下一次写入复用已撤回版本的 key）。所有版本的对象在文档被删除时统一回收。
+
+#### 错误码
+
+| 场景 | HTTP | code |
+|------|------|------|
+| 文档不存在 | 404 | `1301` NOT_FOUND |
+| 文档没有编辑版本（GET / DELETE） | 404 | `1217` EDIT_NOT_FOUND |
+| 文档类型不支持编辑（`site_capture`） | 400 | `1218` EDIT_NOT_SUPPORTED |
+| `base_revision` 过期（并发写） | 409 | `1219` EDIT_REVISION_CONFLICT（`retryable: true`，重读当前版本后重新应用） |
+| 正文为空 / 全空白 | 400 | `1202` EMPTY_CONTENT |
+| 正文超长 | 413 | `1203` CONTENT_TOO_LARGE |
+| 上传文件为空 | 400 | `1210` EMPTY_UPLOAD |
+| 上传文件超限 | 413 | `1204` UPLOAD_TOO_LARGE |
+
+---
 
 #### 响应 - DocumentSourceURLResponse
 
@@ -245,6 +319,9 @@
 | 方法 | 路径 | 说明 | 状态码 |
 |------|------|------|--------|
 | GET | `/knowledgebases/{kb_id}/documents/{doc_id}/images` | 获取文档中提取的图片列表 | 200 |
+| GET | `/knowledgebases/{kb_id}/documents/{doc_id}/images/{image_id}` | 单张图片的稳定访问地址（307 跳转到实时签名） | 307 |
+
+> **持久化图片链接请用带 `{image_id}` 的这个路径。** 列表接口返回的 `url` 是预签名地址、**会过期**，只适合当下渲染；把它写进要长期保存的内容（例如整理后经 `PUT .../edited` 存回的 Markdown）会在签名失效后变成死链。`/images/{image_id}` 每次请求现签一次，因此永不失效。响应带 `Cache-Control: no-store`，避免中间层把跳转缓存到签名过期之后。
 
 #### 响应 - DocumentImagesListResponse
 
@@ -258,7 +335,7 @@
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `id` | string | 图片 UUID |
-| `url` | string | 预签名访问 URL |
+| `url` | string | 预签名访问 URL（会过期；需长期保存请改用 `/images/{image_id}`） |
 | `filename` | string | 文件名 |
 | `index` | int | 在文档中的顺序（从 0 开始） |
 | `width` | int \| null | 宽度（px） |

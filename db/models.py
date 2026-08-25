@@ -102,6 +102,28 @@ class Document(Base):
     # SiteProfile JSON for site_capture kind; NULL otherwise. Stores storage
     # keys (not presigned URLs) — the API hydrates fresh URLs at read time.
     profile: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
+    # Pointer to a caller-supplied *edited* rendition of this document —
+    # downstream consumers clean up our parse output and store the result
+    # back. Deliberately orthogonal to ``content``: ``content`` remains our
+    # parse output and stays the only input to chunking/embedding, so an
+    # edit can never be clobbered by a re-parse (and never silently changes
+    # retrieval). The body lives in object storage under
+    # ``edits/{kb_id}/{doc_id}/{revision}/{filename}``; only the key is
+    # persisted here.
+    #
+    # ``edited_revision`` is monotonic and bumped atomically per write, so
+    # concurrent writers never collide on a key. DELETE .../edited clears
+    # the key and timestamp but deliberately leaves the counter alone —
+    # resetting it would let a later write reuse a withdrawn revision's key.
+    edited_storage_key: Mapped[str | None] = mapped_column(
+        Text, nullable=True, default=None,
+    )
+    edited_revision: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False,
+    )
+    edited_at: Mapped[datetime | None] = mapped_column(
+        DateTime, nullable=True, default=None,
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     knowledge_base: Mapped["KnowledgeBase"] = relationship(back_populates="documents")

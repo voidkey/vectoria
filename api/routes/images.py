@@ -1,6 +1,7 @@
 import asyncio
 
 from fastapi import APIRouter
+from fastapi.responses import RedirectResponse
 from sqlalchemy import select
 
 from api.errors import AppError, ErrorCode
@@ -60,3 +61,45 @@ async def get_document_images(kb_id: str, doc_id: str):
 
     images = await asyncio.gather(*(_presign(img) for img in db_images))
     return DocumentImagesListResponse(doc_id=doc_id, images=list(images))
+
+
+@router.get(
+    "/{kb_id}/documents/{doc_id}/images/{image_id}",
+    status_code=307,
+    response_class=RedirectResponse,
+)
+async def get_document_image(kb_id: str, doc_id: str, image_id: str):
+    """Stable, non-expiring handle for one image; 307s to a fresh presign.
+
+    The list endpoint above hands out presigned URLs, which expire. That
+    is fine for a UI rendering a document right now, but it breaks the
+    edited-content flow: a caller who cleans up our markdown will embed
+    whatever image URLs they were given, store that markdown back via
+    ``PUT .../edited``, and end up with a document full of dead links
+    once the signatures lapse. This route is the URL that is safe to
+    persist — it re-signs on every request, so it never goes stale.
+
+    307 rather than 302 so the method is preserved verbatim, and
+    ``no-store`` so an intermediary can't cache the redirect past the
+    lifetime of the signature it points at.
+    """
+    async with get_session() as session:
+        result = await session.execute(
+            select(DocumentImage)
+            .join(Document, Document.id == DocumentImage.doc_id)
+            # kb_id is filtered on the Document, not the denormalised copy
+            # on DocumentImage, so tenant isolation holds even if the two
+            # ever drift.
+            .where(
+                DocumentImage.id == image_id,
+                DocumentImage.doc_id == doc_id,
+                Document.kb_id == kb_id,
+            )
+        )
+        img = result.scalar_one_or_none()
+    if img is None:
+        raise AppError(404, ErrorCode.NOT_FOUND, "Image not found")
+
+    obj_storage = await get_storage()
+    url = await obj_storage.presign_url(img.storage_key)
+    return RedirectResponse(url, status_code=307, headers={"Cache-Control": "no-store"})
