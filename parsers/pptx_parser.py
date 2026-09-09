@@ -45,6 +45,7 @@ _MIME_EXT_MAP = {
     "image/bmp":   ".bmp",
     "image/tiff":  ".tiff",
     "image/x-emf": ".emf",
+    "image/x-wmf": ".wmf",
     "image/webp":  ".webp",
 }
 
@@ -176,22 +177,36 @@ def _extract_slide_body(slide, *, skip_title: str = "") -> str:
     frame (already emitted as the ``## Slide N: Title`` header) and
     empty frames. Groups recurse.
     """
+    from pptx.shapes.group import GroupShape
+
     parts: list[str] = []
 
     def _walk_shapes(shapes):
         for shape in shapes:
-            if shape.shape_type == 6:  # GROUP
-                _walk_shapes(shape.shapes)
-                continue
-            # Title placeholder already in header — skip.
-            if shape == getattr(slide.shapes, "title", None):
-                continue
-            if shape.has_text_frame:
-                txt = _text_frame_to_str(shape.text_frame)
-                if txt and txt != skip_title:
-                    parts.append(txt)
-            if shape.has_table:
-                parts.append(_table_to_markdown(shape.table))
+            # isinstance, not shape_type: python-pptx raises
+            # NotImplementedError from ``shape_type`` on shapes it
+            # can't classify — a `<p:sp>` with no geometry element
+            # (WPS-flavored decks) or an unknown XML element wrapped
+            # as BaseShape. Classification can fail on shapes whose
+            # text is perfectly readable.
+            try:
+                if isinstance(shape, GroupShape):
+                    _walk_shapes(shape.shapes)
+                    continue
+                # Title placeholder already in header — skip.
+                if shape == getattr(slide.shapes, "title", None):
+                    continue
+                if shape.has_text_frame:
+                    txt = _text_frame_to_str(shape.text_frame)
+                    if txt and txt != skip_title:
+                        parts.append(txt)
+                if shape.has_table:
+                    parts.append(_table_to_markdown(shape.table))
+            except Exception as exc:
+                # One unreadable shape must not cost the whole deck.
+                logger.warning(
+                    "pptx text walk: skipping unreadable shape (%r)", exc,
+                )
 
     _walk_shapes(slide.shapes)
     return "\n\n".join(p for p in parts if p)
@@ -240,6 +255,34 @@ def _extract_notes_text(notes_slide) -> str:
     return _text_frame_to_str(tf)
 
 
+def _sniff_image_mime(blob: bytes) -> str | None:
+    """Magic-byte MIME sniff for blobs python-pptx/PIL can't classify.
+
+    Covers the raster formats we already map in ``_MIME_EXT_MAP`` plus
+    the metafile formats PowerPoint embeds (EMF/WMF). Returns None for
+    anything unrecognized — caller skips the image.
+    """
+    if blob.startswith(b"\x89PNG"):
+        return "image/png"
+    if blob.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if blob.startswith(b"GIF8"):
+        return "image/gif"
+    if blob.startswith(b"BM"):
+        return "image/bmp"
+    if blob.startswith((b"II*\x00", b"MM\x00*")):
+        return "image/tiff"
+    if blob[:4] == b"RIFF" and blob[8:12] == b"WEBP":
+        return "image/webp"
+    # EMF: EMR_HEADER record (type 1), " EMF" signature at offset 40.
+    if blob.startswith(b"\x01\x00\x00\x00") and blob[40:44] == b" EMF":
+        return "image/x-emf"
+    # WMF: placeable header, or bare header (memory/disk variants).
+    if blob.startswith((b"\xd7\xcd\xc6\x9a", b"\x01\x00\x09\x00", b"\x02\x00\x09\x00")):
+        return "image/x-wmf"
+    return None
+
+
 def _collect_picture_refs(
     shapes, out: list[ImageRef], *, name_prefix: str,
 ) -> None:
@@ -250,43 +293,70 @@ def _collect_picture_refs(
     ``parser_isolation``, and nested closures capturing pptx objects
     would fail to unpickle in the parent.
     """
+    from pptx.shapes.group import GroupShape
+
     for shape in shapes:
-        if shape.shape_type == 6:  # MSO_SHAPE_TYPE.GROUP
-            _collect_picture_refs(shape.shapes, out, name_prefix=name_prefix)
-            continue
-        # Picture.image is a property that raises ValueError("no embedded
-        # image") when the picture placeholder has no rId yet (e.g. an
-        # unfilled "Picture with Caption" layout). getattr-with-default
-        # only swallows AttributeError, not ValueError, so that path used
-        # to bubble out and kill the whole slide walk. Wrap the access
-        # itself; AttributeError covers shapes without .image at all
-        # (text frames, tables, lines, ...).
         try:
-            image = shape.image
-            blob = image.blob
-            content_type = image.content_type or "image/png"
-        except (AttributeError, ValueError):
-            continue
+            # isinstance, not shape_type — see _extract_slide_body.
+            if isinstance(shape, GroupShape):
+                _collect_picture_refs(shape.shapes, out, name_prefix=name_prefix)
+                continue
+            # Picture.image is a property that raises ValueError("no embedded
+            # image") when the picture placeholder has no rId yet (e.g. an
+            # unfilled "Picture with Caption" layout). getattr-with-default
+            # only swallows AttributeError, not ValueError, so that path used
+            # to bubble out and kill the whole slide walk. Wrap the access
+            # itself; AttributeError covers shapes without .image at all
+            # (text frames, tables, lines, ...) — silent: that's the normal
+            # case for every non-picture shape, not an anomaly worth logging.
+            try:
+                image = shape.image
+                blob = image.blob
+            except (AttributeError, ValueError):
+                continue
 
-        n = len(out)
-        suffix = _MIME_EXT_MAP.get(content_type, ".png")
-        # Width/height from the slide geometry when available (EMU:
-        # 914400 per inch; px assumes 96 DPI).
-        w = h = None
-        try:
-            if shape.width and shape.height:
-                w = int(shape.width / 914400 * 96)
-                h = int(shape.height / 914400 * 96)
-        except Exception:
-            pass
+            # Image.content_type sniffs the blob through PIL
+            # (content_type → ext → PIL.Image.open), which raises
+            # UnidentifiedImageError — an OSError, not ValueError — on
+            # anything PIL can't read (odd vector/metafile payloads,
+            # corrupt streams). Fall back to our own magic-byte sniff;
+            # a blob neither PIL nor we can identify gets skipped, and
+            # the rest of the deck keeps parsing.
+            try:
+                content_type = image.content_type or "image/png"
+            except Exception:
+                content_type = _sniff_image_mime(blob)
+                if content_type is None:
+                    logger.warning(
+                        "pptx picture walk: skipping unidentifiable image "
+                        "blob (%d bytes)", len(blob),
+                    )
+                    continue
 
-        out.append(ImageRef(
-            name=f"{name_prefix}_{n}{suffix}",
-            mime=content_type,
-            width=w,
-            height=h,
-            _factory=BytesFactory(blob),
-        ))
+            n = len(out)
+            suffix = _MIME_EXT_MAP.get(content_type, ".png")
+            # Width/height from the slide geometry when available (EMU:
+            # 914400 per inch; px assumes 96 DPI).
+            w = h = None
+            try:
+                if shape.width and shape.height:
+                    w = int(shape.width / 914400 * 96)
+                    h = int(shape.height / 914400 * 96)
+            except Exception:
+                pass
+
+            out.append(ImageRef(
+                name=f"{name_prefix}_{n}{suffix}",
+                mime=content_type,
+                width=w,
+                height=h,
+                _factory=BytesFactory(blob),
+            ))
+        except Exception as exc:
+            # One bad shape must not cost the whole deck's images.
+            logger.warning(
+                "pptx picture walk: skipping unreadable shape (%r)", exc,
+            )
 
 
 def _pptx_parse_worker(source: bytes | str, filename: str) -> ParseResult:

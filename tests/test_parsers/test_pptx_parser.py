@@ -237,6 +237,138 @@ async def test_parse_handles_picture_shape_without_embedded_image():
     assert "## Slide 1" in result.content
 
 
+@pytest.mark.asyncio
+async def test_parse_survives_unrecognized_shape_type():
+    """Regression: WPS-flavored decks carry `<p:sp>` elements with no
+    geometry element (no a:prstGeom / a:custGeom) and no txBox
+    attribute. python-pptx classifies those lazily in
+    ``Shape.shape_type`` and raises NotImplementedError("Shape
+    instance of unrecognized shape type") — even though the shape's
+    text frame is perfectly readable. Pre-fix, the slide walk compared
+    ``shape.shape_type == 6`` for group detection, so one such shape
+    killed text extraction for the whole deck (and markitdown, built
+    on the same library, died identically → terminal empty_content).
+    The isinstance-based walk must extract BOTH texts.
+    """
+    from lxml import etree
+    from pptx import Presentation
+    from pptx.util import Inches
+    from parsers.pptx_parser import PptxParser
+
+    prs = Presentation()
+    slide = prs.slides.add_slide(prs.slide_layouts[6])  # blank
+    tb = slide.shapes.add_textbox(Inches(1), Inches(1), Inches(4), Inches(1))
+    tb.text_frame.text = "healthy textbox"
+
+    # Clone the textbox sp, then strip the txBox attribute and all
+    # geometry — reproducing the unclassifiable shape byte-for-byte.
+    ns = {
+        "a": "http://schemas.openxmlformats.org/drawingml/2006/main",
+        "p": "http://schemas.openxmlformats.org/presentationml/2006/main",
+    }
+    sp = tb._element
+    bad = etree.fromstring(etree.tostring(sp))
+    cnv = bad.find(".//p:nvSpPr/p:cNvSpPr", ns)
+    cnv.attrib.pop("txBox", None)
+    for geom in bad.findall(".//a:prstGeom", ns) + bad.findall(".//a:custGeom", ns):
+        geom.getparent().remove(geom)
+    bad.find(".//a:t", ns).text = "text inside unclassifiable shape"
+    sp.getparent().append(bad)
+
+    buf = io.BytesIO()
+    prs.save(buf)
+
+    result = await PptxParser().parse(buf.getvalue(), filename="wps.pptx")
+    assert "healthy textbox" in result.content
+    assert "text inside unclassifiable shape" in result.content
+
+
+@pytest.mark.asyncio
+async def test_parse_recurses_into_group_shapes():
+    """Group recursion moved from ``shape_type == 6`` to
+    ``isinstance(shape, GroupShape)`` — pin that grouped text and
+    grouped pictures still surface.
+    """
+    from pptx import Presentation
+    from pptx.util import Inches
+    from PIL import Image
+    from parsers.pptx_parser import PptxParser
+
+    png = io.BytesIO()
+    Image.new("RGB", (8, 8), color="blue").save(png, format="PNG")
+    png.seek(0)
+
+    prs = Presentation()
+    slide = prs.slides.add_slide(prs.slide_layouts[6])  # blank
+    group = slide.shapes.add_group_shape()
+    tb = group.shapes.add_textbox(Inches(1), Inches(1), Inches(2), Inches(1))
+    tb.text_frame.text = "grouped text"
+    group.shapes.add_picture(png, Inches(1), Inches(2), Inches(1), Inches(1))
+    buf = io.BytesIO()
+    prs.save(buf)
+
+    result = await PptxParser().parse(buf.getvalue(), filename="grouped.pptx")
+    assert "grouped text" in result.content
+    assert len(result.image_refs) == 1
+
+
+@pytest.mark.asyncio
+async def test_parse_survives_pil_unidentifiable_image_blob():
+    """Regression: ``Image.content_type`` sniffs the blob through PIL
+    (content_type → ext → PIL.Image.open), which raises
+    UnidentifiedImageError — an OSError — on payloads PIL can't read.
+    The old ``except (AttributeError, ValueError)`` missed it, so one
+    corrupt/exotic image killed the whole deck's extraction. Corrupt
+    the media part in the saved zip to reproduce; the deck must still
+    parse and the junk image must be skipped, not crash.
+    """
+    import zipfile
+    from pptx import Presentation
+    from pptx.util import Inches
+    from PIL import Image
+    from parsers.pptx_parser import PptxParser
+
+    png = io.BytesIO()
+    Image.new("RGB", (8, 8), color="red").save(png, format="PNG")
+    png.seek(0)
+
+    prs = Presentation()
+    slide = prs.slides.add_slide(prs.slide_layouts[6])  # blank
+    tb = slide.shapes.add_textbox(Inches(1), Inches(1), Inches(4), Inches(1))
+    tb.text_frame.text = "text survives corrupt image"
+    slide.shapes.add_picture(png, Inches(1), Inches(2), Inches(1), Inches(1))
+    buf = io.BytesIO()
+    prs.save(buf)
+
+    # Rewrite the package with the media part replaced by junk bytes
+    # no sniffer (PIL's or ours) can identify.
+    out = io.BytesIO()
+    with zipfile.ZipFile(buf) as zin, zipfile.ZipFile(out, "w") as zout:
+        for item in zin.infolist():
+            data = zin.read(item.filename)
+            if item.filename.startswith("ppt/media/"):
+                data = b"\x00JUNK-NOT-AN-IMAGE" * 4
+            zout.writestr(item, data)
+
+    result = await PptxParser().parse(out.getvalue(), filename="corrupt_img.pptx")
+    assert "text survives corrupt image" in result.content
+    assert result.image_refs == []
+
+
+def test_sniff_image_mime_magic_bytes():
+    """The fallback sniffer must recognize the formats we map (so a
+    PIL-rejected but well-formed blob keeps its image) and return None
+    on junk (so the caller skips it).
+    """
+    from parsers.pptx_parser import _sniff_image_mime
+
+    emf = b"\x01\x00\x00\x00" + b"\x00" * 36 + b" EMF" + b"\x00" * 16
+    assert _sniff_image_mime(emf) == "image/x-emf"
+    assert _sniff_image_mime(b"\x00JUNK") is None
+    assert _sniff_image_mime(b"\x89PNG\r\n\x1a\n") == "image/png"
+    assert _sniff_image_mime(b"RIFF\x00\x00\x00\x00WEBPVP8 ") == "image/webp"
+
+
 # ---------------------------------------------------------------------------
 # Registry dispatch
 # ---------------------------------------------------------------------------
