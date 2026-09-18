@@ -2,14 +2,16 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
 import re
+import time
 from typing import Protocol, runtime_checkable
 from urllib.parse import urljoin, urlparse
 
 import trafilatura
 
 from config import get_settings
-from infra.metrics import URL_IMAGES_TRUNCATED_TOTAL
+from infra.metrics import URL_IMAGES_DROPPED_TOTAL, URL_IMAGES_TRUNCATED_TOTAL
 from infra.ratelimit import acquire as rl_acquire
 from parsers.base import (
     AntiBotBlockedError,
@@ -74,6 +76,28 @@ _DEFAULT_IMAGE_RATE = (10, 1)
 # the distributed rate gate (`_gate`), so raising this won't hammer one CDN.
 _IMAGE_DOWNLOAD_CONCURRENCY = 5
 
+# How long `_gate` is willing to wait for a token before giving up on an image.
+#
+# The limiter is a *moving window* (`rate` hits per `per_seconds`), so a full
+# bucket is a wait, not a denial: capacity returns as old hits age out, and the
+# longest wait for the next token is one window. Dropping an image because the
+# window is momentarily full throws away content we can simply wait for.
+#
+# This budget has to cover a saturated window, not a single refill. Downloads
+# run `_IMAGE_DOWNLOAD_CONCURRENCY`-wide and every worker shares one bucket per
+# CDN, so for an image-heavy document the window is *expected* to be full most
+# of the time — draining N images from a `rate`/s bucket takes ~N/rate seconds
+# no matter how the waiting is arranged. 10 s covers a 100-image document at
+# the default 10/s while still bounding a genuinely stuck bucket.
+#
+# Waiting is safe for liveness: the worker heartbeat is its own coroutine
+# (`worker/runner.py:_heartbeat_loop`), so sleeping here yields the event loop
+# and keeps the healthcheck green.
+_GATE_WAIT_BUDGET_S = 10.0
+# Cap per-sleep backoff at roughly one window so a waiter re-checks promptly
+# once capacity frees up instead of oversleeping past it.
+_GATE_MAX_BACKOFF_S = 1.0
+
 
 def _rate_for_host(host: str) -> tuple[int, int]:
     """Return (rate, per_seconds) for an image CDN host."""
@@ -83,25 +107,43 @@ def _rate_for_host(host: str) -> tuple[int, int]:
     return _DEFAULT_IMAGE_RATE
 
 
-async def _gate(url: str, *, retries: int = 2) -> bool:
+async def _gate(url: str, *, budget: float = _GATE_WAIT_BUDGET_S) -> bool:
     """Wait-or-give-up wrapper around the distributed rate limiter.
 
-    Tries up to ``retries`` extra times with linear back-off when
-    blocked. Returns True when a token was acquired, False when we
-    should give up and skip this image.
+    Retries with jittered exponential back-off until ``budget`` seconds
+    have elapsed. Returns True when a token was acquired, False when we
+    give up and skip this image.
+
+    Giving up costs content: a skipped image is never fetched, never
+    stored, and the document still completes (see ``download_images``).
+    So the budget is deliberately generous — see ``_GATE_WAIT_BUDGET_S``.
     """
     host = urlparse(url).hostname or ""
     if not host:
         return False
     rate, per = _rate_for_host(host)
-    for attempt in range(retries + 1):
+    deadline = time.monotonic() + budget
+    delay = 0.1
+    waited = 0.0
+    while True:
         if await rl_acquire(host, rate=rate, per_seconds=per):
             return True
-        if attempt < retries:
-            await asyncio.sleep(0.25 * (attempt + 1))
-    logger.info(
-        "rate limit exhausted for %s after %d retries; skipping image",
-        host, retries,
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        # Jitter: the concurrent fetchers of one document — and every other
+        # worker sharing this CDN's bucket — get blocked at the same instant,
+        # so an unjittered back-off marches them into the next window in
+        # lockstep and they collide again.
+        sleep_for = min(delay * (0.5 + random.random()), _GATE_MAX_BACKOFF_S, remaining)
+        await asyncio.sleep(sleep_for)
+        waited += sleep_for
+        delay = min(delay * 2, _GATE_MAX_BACKOFF_S)
+    URL_IMAGES_DROPPED_TOTAL.labels(key=host, reason="rate_limit").inc()
+    logger.warning(
+        "rate limit budget of %.1fs exhausted for %s (waited %.1fs); "
+        "skipping image — document will be missing it",
+        budget, host, waited,
     )
     return False
 

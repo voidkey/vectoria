@@ -225,3 +225,82 @@ def test_raise_if_gone_raises_on_404_and_410():
 
     for status in (200, 301, 403, 401, 429, 500, 503):
         raise_if_gone(status, "https://example.com/x")  # must not raise
+
+
+# --- rate gate wait budget -------------------------------------------------
+#
+# Regression cover for the 2026-09-18 vprod2 incident: image downloads went
+# from serial to 5-wide concurrent, which made a *full* moving window the
+# normal case rather than an exception. The gate's give-up budget was still
+# the serial-era ~0.75 s, so it dropped images the bucket would have admitted
+# a moment later — silently, since a dropped image still leaves the document
+# `completed`.
+
+
+async def test_gate_waits_out_a_saturated_window(monkeypatch):
+    """A bucket that frees up after several blocked checks must not cost an
+    image. The old 2-retry budget gave up on the 3rd block."""
+    import parsers.url._handlers as h
+
+    calls = {"n": 0}
+
+    async def _fake_acquire(host, *, rate, per_seconds):
+        calls["n"] += 1
+        return calls["n"] > 6  # blocked well past the old 3-attempt ceiling
+
+    slept: list[float] = []
+
+    async def _fake_sleep(s):
+        slept.append(s)
+
+    monkeypatch.setattr(h, "rl_acquire", _fake_acquire)
+    monkeypatch.setattr(h.asyncio, "sleep", _fake_sleep)
+
+    assert await h._gate("https://mmbiz.qpic.cn/img1.jpg") is True
+    assert calls["n"] == 7
+    # Back-off is capped so a waiter re-checks promptly when capacity frees.
+    assert slept and max(slept) <= h._GATE_MAX_BACKOFF_S
+
+
+async def test_gate_gives_up_after_budget_and_records_the_loss(monkeypatch):
+    """When the budget really is exhausted the image is lost — that has to be
+    counted, not just logged, so the loss is alertable."""
+    import parsers.url._handlers as h
+    from infra import metrics
+
+    async def _always_blocked(host, *, rate, per_seconds):
+        return False
+
+    monkeypatch.setattr(h, "rl_acquire", _always_blocked)
+
+    before = _counter_sum(
+        metrics.URL_IMAGES_DROPPED_TOTAL, key="mmbiz.qpic.cn", reason="rate_limit",
+    )
+    assert await h._gate("https://mmbiz.qpic.cn/img1.jpg", budget=0.05) is False
+    after = _counter_sum(
+        metrics.URL_IMAGES_DROPPED_TOTAL, key="mmbiz.qpic.cn", reason="rate_limit",
+    )
+
+    assert after - before == 1  # one per lost image
+
+
+async def test_gate_budget_covers_a_real_full_window():
+    """End-to-end against the real limiter: rate=1/s means the second image
+    has to wait out a full window. It must arrive, not be dropped."""
+    from limits.aio.storage import MemoryStorage
+    from infra import ratelimit
+    import parsers.url._handlers as h
+
+    ratelimit._reset_for_tests()
+    ratelimit._set_storage_for_tests(MemoryStorage())
+    monkey_host = "slowcdn.example"
+    original_rates = h._DOMAIN_RATES
+    h._DOMAIN_RATES = ((monkey_host, 1, 1),)
+    try:
+        url = f"https://{monkey_host}/a.jpg"
+        assert await h._gate(url) is True
+        # Window is now full; the gate must wait for it to roll, not give up.
+        assert await h._gate(url) is True
+    finally:
+        h._DOMAIN_RATES = original_rates
+        ratelimit._reset_for_tests()

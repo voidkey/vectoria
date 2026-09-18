@@ -545,7 +545,9 @@ groups:
 
       - alert: VectoriaRateLimitBlockedSpike
         # 持续 blocked 说明某 CDN（xhs/qpic/pbs.twimg）在节流我们。
-        # 不是 bug，但运维可以考虑调整 per-domain 桶。
+        # 注意：blocked 计的是每一次被挡的 acquire，**含之后重试成功的那些**，
+        # 所以它是"有多拥挤"，不是"丢了多少"。真实内容损失看
+        # VectoriaUrlImagesDropped —— 排查时先看那条，别按这条的数量估损失。
         expr: |
           sum by (key) (rate(vectoria_ratelimit_checks_total{result="blocked"}[10m]))
           > 0.1
@@ -559,6 +561,30 @@ groups:
           description: |
             限流 key：{{ $labels.key }}
             被阻速率：{{ $value | humanize }}/秒（阈值 0.1/s）
-            通常是某 CDN（xhs、qpic、pbs.twimg 等）在节流我们的图片下载。
-            若该 CDN 能接受更高并发，考虑调整 parsers/url/_handlers.py
-            里的 per-domain rate。
+            桶拥挤本身不等于丢图：_gate 会等到 _GATE_WAIT_BUDGET_S 再放弃。
+            先查 vectoria_url_images_dropped_total 确认是否真有损失；
+            只有它同时在涨，才考虑调 parsers/url/_handlers.py 里的
+            per-domain rate 或等待预算。
+
+      - alert: VectoriaUrlImagesDropped
+        # 每条 = 一张永久丢失的图：不会重取，文档照样 completed。
+        # 与上面的 blocked 不同，这里非 0 就是实打实的内容损失。
+        expr: |
+          sum by (key, reason) (rate(vectoria_url_images_dropped_total[10m]))
+          > 0
+        for: 5m
+        labels:
+          severity: warning
+          service: vectoria
+          component: url_images
+        annotations:
+          summary: "[{{ $externalLabels.env }}] 图片被丢弃 key={{ $labels.key }} reason={{ $labels.reason }}（{{ $value | humanize }}/秒）"
+          description: |
+            丢弃速率：{{ $value | humanize }}/秒，原因：{{ $labels.reason }}
+            这是真实内容损失——图片不会入库，且文档 image_status 仍是 completed，
+            前端看不出少图。
+            reason=rate_limit：等满 _GATE_WAIT_BUDGET_S 仍拿不到令牌。多半是
+            该 CDN 的 per-domain 桶配得太紧，或并发量涨了。先看
+            vectoria_ratelimit_checks_total{result="blocked"} 判断拥挤程度，
+            再决定调桶还是调预算（parsers/url/_handlers.py）。
+            受影响文档需要重新解析才能补回图片。

@@ -205,6 +205,17 @@ URL_IMAGES_TRUNCATED_TOTAL = Counter(
     labelnames=("handler",),  # generic, xhs, x, wechat
 )
 
+URL_IMAGES_DROPPED_TOTAL = Counter(
+    "vectoria_url_images_dropped_total",
+    "Images the URL handler gave up on, one per lost image. This is actual "
+    "content loss: the image is never fetched or stored and the document "
+    "still completes. Distinct from "
+    "vectoria_ratelimit_checks_total{result=\"blocked\"}, which counts every "
+    "blocked acquire attempt — including the ones that succeed on retry and "
+    "lose nothing.",
+    labelnames=("key", "reason"),  # key: CDN host; reason: rate_limit
+)
+
 UPLOAD_MIME_MISMATCH_TOTAL = Counter(
     "vectoria_upload_mime_mismatch_total",
     "Uploads where sniffed magic-byte family did not match the "
