@@ -545,9 +545,11 @@ groups:
 
       - alert: VectoriaRateLimitBlockedSpike
         # 持续 blocked 说明某 CDN（xhs/qpic/pbs.twimg）在节流我们。
-        # 注意：blocked 计的是每一次被挡的 acquire，**含之后重试成功的那些**，
-        # 所以它是"有多拥挤"，不是"丢了多少"。真实内容损失看
-        # VectoriaUrlImagesDropped —— 排查时先看那条，别按这条的数量估损失。
+        # 口径：一次"逻辑请求被拒"记一条；图片 gate 在等待期间的反复重试记在
+        # result="wait_poll" 而不是这里（见 infra/ratelimit.acquire 的
+        # denied_result），所以这条不会随退避节奏变化，阈值是稳的。
+        # 它衡量的是"有多拥挤"，不是"丢了多少"——真实内容损失看
+        # VectoriaUrlImagesDropped，排查时先看那条，别按这条的数量估损失。
         expr: |
           sum by (key) (rate(vectoria_ratelimit_checks_total{result="blocked"}[10m]))
           > 0.1

@@ -112,6 +112,7 @@ async def acquire(
     rate: int,
     per_seconds: int = 1,
     metric_label: str | None = None,
+    denied_result: str = "blocked",
 ) -> bool:
     """Consume one token for ``key``. Returns True if allowed.
 
@@ -127,6 +128,16 @@ async def acquire(
     /metrics grows one time series per distinct caller. Outbound
     domain-based callers leave this None — their key is already low
     cardinality.
+
+    ``denied_result`` is the ``result`` label recorded when the bucket
+    is empty. It exists so a caller that *polls* — re-acquiring in a
+    wait loop until a token frees up — can keep ``result="blocked"``
+    meaning "one logical request was denied" instead of "one poll was
+    denied". Without it the counter measures the caller's polling
+    interval, which is an implementation detail: tightening a back-off
+    would inflate the series and de-calibrate every threshold built on
+    it. Poll again with ``denied_result="wait_poll"`` and count the
+    first denial only (see ``parsers.url._handlers._gate``).
 
     On Redis failure, degrades to a per-process in-memory token bucket
     with the same rate (see module docstring). Callers treat the
@@ -163,7 +174,7 @@ async def acquire(
                 logger.info("rate limit Redis recovered; resuming shared bucket")
                 _last_redis_error_ts = 0.0
             RATELIMIT_CHECKS_TOTAL.labels(
-                key=label, result="allowed" if allowed else "blocked",
+                key=label, result="allowed" if allowed else denied_result,
             ).inc()
             return allowed
 

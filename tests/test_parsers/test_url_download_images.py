@@ -170,7 +170,7 @@ async def test_rate_table_used_when_gating():
     """
     recorded: list[tuple[int, int]] = []
 
-    async def _spy(key, *, rate, per_seconds):
+    async def _spy(key, *, rate, per_seconds, denied_result="blocked"):
         recorded.append((rate, per_seconds))
         return True
 

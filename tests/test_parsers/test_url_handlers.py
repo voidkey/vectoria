@@ -244,8 +244,9 @@ async def test_gate_waits_out_a_saturated_window(monkeypatch):
 
     calls = {"n": 0}
 
-    async def _fake_acquire(host, *, rate, per_seconds):
+    async def _fake_acquire(host, *, rate, per_seconds, denied_result="blocked"):
         calls["n"] += 1
+        calls.setdefault("labels", []).append(denied_result)
         return calls["n"] > 6  # blocked well past the old 3-attempt ceiling
 
     slept: list[float] = []
@@ -268,7 +269,7 @@ async def test_gate_gives_up_after_budget_and_records_the_loss(monkeypatch):
     import parsers.url._handlers as h
     from infra import metrics
 
-    async def _always_blocked(host, *, rate, per_seconds):
+    async def _always_blocked(host, *, rate, per_seconds, denied_result="blocked"):
         return False
 
     monkeypatch.setattr(h, "rl_acquire", _always_blocked)
@@ -304,3 +305,31 @@ async def test_gate_budget_covers_a_real_full_window():
     finally:
         h._DOMAIN_RATES = original_rates
         ratelimit._reset_for_tests()
+
+
+async def test_gate_counts_one_blocked_per_image_not_one_per_poll(monkeypatch):
+    """`blocked` must stay "a request was denied", not "a poll was denied".
+
+    The gate now polls a saturated window ~15 times where the old fixed
+    retry count polled 3. If every poll counted as blocked, the series
+    would track the back-off schedule rather than contention, and the
+    0.1/s threshold on it would silently stop meaning anything.
+    """
+    import parsers.url._handlers as h
+
+    seen: list[str] = []
+
+    async def _fake_acquire(host, *, rate, per_seconds, denied_result="blocked"):
+        seen.append(denied_result)
+        return len(seen) > 5
+
+    async def _fake_sleep(_s):
+        pass
+
+    monkeypatch.setattr(h, "rl_acquire", _fake_acquire)
+    monkeypatch.setattr(h.asyncio, "sleep", _fake_sleep)
+
+    assert await h._gate("https://mmbiz.qpic.cn/img1.jpg") is True
+    assert seen[0] == "blocked"
+    assert seen.count("blocked") == 1
+    assert seen[1:].count("wait_poll") == len(seen) - 1

@@ -125,9 +125,20 @@ async def _gate(url: str, *, budget: float = _GATE_WAIT_BUDGET_S) -> bool:
     deadline = time.monotonic() + budget
     delay = 0.1
     waited = 0.0
+    polls = 0
     while True:
-        if await rl_acquire(host, rate=rate, per_seconds=per):
+        # Only the first denial is a "blocked" request; the rest are this
+        # loop asking again while it waits. Counting every poll would make
+        # `vectoria_ratelimit_checks_total{result="blocked"}` a function of
+        # the back-off schedule — a saturated window used to cost 3 samples
+        # (the old fixed retry count) and would now cost ~15, silently
+        # de-calibrating every threshold built on that series.
+        if await rl_acquire(
+            host, rate=rate, per_seconds=per,
+            denied_result="blocked" if polls == 0 else "wait_poll",
+        ):
             return True
+        polls += 1
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             break
