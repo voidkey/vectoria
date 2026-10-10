@@ -171,6 +171,19 @@ async def test_dns_failure_surfaces_as_422():
         assert e.value.status_code == 422
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad_url", [
+    "http://a..example.com/",
+    "http://" + "a" * 64 + ".example.com/",
+])
+async def test_malformed_hostname_label_surfaces_as_422(bad_url):
+    """Empty or >63-char labels make getaddrinfo's IDNA step raise
+    UnicodeError; that must be a 422, not an unhandled 500."""
+    with pytest.raises(AppError) as e:
+        await validate_url(bad_url)
+    assert e.value.status_code == 422
+
+
 # ---------------------------------------------------------------------------
 # File-extension blocks (existing behaviour — guard regression)
 # ---------------------------------------------------------------------------

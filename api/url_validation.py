@@ -119,6 +119,11 @@ def _resolve_and_check_ssrf(hostname: str, url: str) -> None:
     except socket.gaierror:
         raise AppError(422, ErrorCode.DNS_RESOLVE_FAILED,
                         f"Cannot resolve hostname: {hostname}")
+    except UnicodeError:
+        # IDNA encoding rejects empty labels ("a..com") and labels over
+        # 63 chars before any lookup happens.
+        raise AppError(422, ErrorCode.INVALID_URL,
+                        f"Invalid hostname: {hostname}")
 
     for _, _, _, _, sockaddr in addr_infos:
         ip = ipaddress.ip_address(sockaddr[0])
