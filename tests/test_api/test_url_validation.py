@@ -178,10 +178,13 @@ async def test_dns_failure_surfaces_as_422():
 ])
 async def test_malformed_hostname_label_surfaces_as_422(bad_url):
     """Empty or >63-char labels make getaddrinfo's IDNA step raise
-    UnicodeError; that must be a 422, not an unhandled 500."""
-    with pytest.raises(AppError) as e:
-        await validate_url(bad_url)
+    UnicodeError; that must be a 422 from the format check, before any
+    DNS lookup."""
+    with patch("api.url_validation.socket.getaddrinfo") as resolve:
+        with pytest.raises(AppError) as e:
+            await validate_url(bad_url)
     assert e.value.status_code == 422
+    resolve.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
