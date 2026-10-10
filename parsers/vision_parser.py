@@ -73,12 +73,7 @@ class VisionNativeParser(BaseParser):
         # a config load before settings are fully wired (matches the
         # pattern used by other parsers).
         from vision.client import VisionClient
-        cfg = get_settings()
-        client = VisionClient(
-            base_url=cfg.vision_base_url,
-            api_key=cfg.vision_api_key.get_secret_value(),
-            model=cfg.vision_model,
-        )
+        client = VisionClient.from_settings()
 
         markdown = await client.parse_image(source)
 

@@ -180,6 +180,13 @@ class Settings(BaseSettings):
     vision_base_url: str = ""
     vision_api_key: SecretStr = SecretStr("")
     vision_model: str = "gpt-4o"
+    # Retried once when the primary model is unavailable (404, "offline"
+    # 400, 429, 5xx). Empty = no fallback.
+    vision_fallback_model: str = ""
+    # Send ``enable_thinking: false`` for hybrid-reasoning models (Qwen3.5+)
+    # so they answer directly. Off by default: providers that don't know
+    # the parameter (e.g. OpenAI) reject it.
+    vision_disable_thinking: bool = False
     # Default output language for vision results when a request doesn't
     # specify one. "zh" preserves the original Chinese behavior; overseas
     # deployments set VISION_DEFAULT_LANGUAGE=en (per-request locale is the

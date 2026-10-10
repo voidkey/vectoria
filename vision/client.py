@@ -1,7 +1,13 @@
 import base64
 import logging
 
-from openai import AsyncOpenAI
+from openai import (
+    AsyncOpenAI,
+    BadRequestError,
+    InternalServerError,
+    NotFoundError,
+    RateLimitError,
+)
 
 from infra.circuit_breaker import CircuitOpenError, get_breaker
 from parsers.image_metadata import detect_mime_type
@@ -62,14 +68,67 @@ def _build_user_text(
     return "\n".join(parts) if parts else "Judge based on the image content."
 
 
+def _model_unavailable(exc: BaseException) -> bool:
+    """True when the error is about the model itself (retired, missing,
+    throttled, or down) rather than the request, so a different model
+    may succeed."""
+    if isinstance(exc, (NotFoundError, RateLimitError, InternalServerError)):
+        return True
+    return isinstance(exc, BadRequestError) and "offline" in str(exc).lower()
+
+
 class VisionClient:
-    def __init__(self, base_url: str, api_key: str, model: str):
+    def __init__(
+        self,
+        base_url: str,
+        api_key: str,
+        model: str,
+        fallback_model: str = "",
+        disable_thinking: bool = False,
+    ):
         self._model = model
+        self._fallback_model = fallback_model
+        self._extra_body = {"enable_thinking": False} if disable_thinking else None
         self.is_configured = bool(base_url)
         if self.is_configured:
             self._client = AsyncOpenAI(base_url=base_url, api_key=api_key)
         else:
             self._client = None
+
+    @classmethod
+    def from_settings(cls) -> "VisionClient":
+        from config import get_settings
+
+        cfg = get_settings()
+        return cls(
+            base_url=cfg.vision_base_url,
+            api_key=cfg.vision_api_key.get_secret_value(),
+            model=cfg.vision_model,
+            fallback_model=cfg.vision_fallback_model,
+            disable_thinking=cfg.vision_disable_thinking,
+        )
+
+    async def _complete(self, messages: list[dict], max_tokens: int):
+        """One chat completion, retried once on the fallback model when
+        the primary model is unavailable. Runs inside the breaker, so a
+        fallback success counts as a success."""
+        kwargs = {"messages": messages, "max_tokens": max_tokens}
+        if self._extra_body:
+            kwargs["extra_body"] = self._extra_body
+        try:
+            return await self._client.chat.completions.create(
+                model=self._model, **kwargs,
+            )
+        except Exception as exc:
+            if not self._fallback_model or not _model_unavailable(exc):
+                raise
+            logger.warning(
+                "Vision model %s unavailable (%s); retrying with %s",
+                self._model, type(exc).__name__, self._fallback_model,
+            )
+            return await self._client.chat.completions.create(
+                model=self._fallback_model, **kwargs,
+            )
 
     async def describe(
         self,
@@ -106,8 +165,7 @@ class VisionClient:
         ]
         try:
             resp = await get_breaker("vision").call(
-                self._client.chat.completions.create,
-                model=self._model, messages=messages, max_tokens=200,
+                self._complete, messages, 200,
             )
             get_cost_tracker().record(purpose="describe")
             return resp.choices[0].message.content.strip()
@@ -162,8 +220,7 @@ class VisionClient:
         # Don't suppress here — let the parser's caller (handler with
         # per-attempt fallback) see real exceptions and route around.
         resp = await get_breaker("vision").call(
-            self._client.chat.completions.create,
-            model=self._model, messages=messages, max_tokens=max_tokens,
+            self._complete, messages, max_tokens,
         )
         get_cost_tracker().record(purpose="parse")
         return (resp.choices[0].message.content or "").strip()

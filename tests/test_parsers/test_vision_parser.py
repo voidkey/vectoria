@@ -126,7 +126,7 @@ async def test_parse_returns_markdown_with_title_header(monkeypatch):
     fake_client.parse_image = AsyncMock(
         return_value="## Description\nA sales comparison chart.\n\n## Verbatim\nQ1=2M Q2=3.5M",
     )
-    with patch("vision.client.VisionClient", return_value=fake_client):
+    with patch("vision.client.VisionClient.from_settings", return_value=fake_client):
         result = await VisionNativeParser().parse(_PNG_HEAD, filename="chart.png")
 
     assert "# chart" in result.content       # title header from filename stem
@@ -147,7 +147,7 @@ async def test_parse_raises_on_empty_vlm_response(monkeypatch):
 
     fake_client = AsyncMock()
     fake_client.parse_image = AsyncMock(return_value="   \n  ")
-    with patch("vision.client.VisionClient", return_value=fake_client):
+    with patch("vision.client.VisionClient.from_settings", return_value=fake_client):
         with pytest.raises(ValueError, match="empty content"):
             await VisionNativeParser().parse(_PNG_HEAD, filename="x.png")
 
@@ -202,8 +202,8 @@ async def test_vision_parser_does_not_pass_per_request_language():
     from parsers.vision_parser import VisionNativeParser
     fake_client = AsyncMock()
     fake_client.parse_image = AsyncMock(return_value="## Description\nx\n\n## Verbatim\ny")
-    # Client is constructed inline via `vision.client.VisionClient(...)` — patch the class.
-    with patch("vision.client.VisionClient", return_value=fake_client):
+    # Client is built via `VisionClient.from_settings()` — patch that.
+    with patch("vision.client.VisionClient.from_settings", return_value=fake_client):
         await VisionNativeParser().parse(b"\x89PNG\r\n\x1a\n" + b"\x00" * 16, filename="x.png")
     _, kwargs = fake_client.parse_image.call_args
     assert "language" not in kwargs

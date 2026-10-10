@@ -536,12 +536,7 @@ async def handle_analyze_images(payload: dict) -> None:
     from vision.client import VisionClient
     from storage import get_storage
 
-    cfg = get_settings()
-    client = VisionClient(
-        base_url=cfg.vision_base_url,
-        api_key=cfg.vision_api_key.get_secret_value(),
-        model=cfg.vision_model,
-    )
+    client = VisionClient.from_settings()
     if not client.is_configured:
         return
 
