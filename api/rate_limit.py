@@ -13,9 +13,13 @@ Principal derivation
 --------------------
 In priority order:
 
-1. **JWT ``sub`` / ``uid`` claim** — strongest identity.
-2. **X-API-Key value (sha256-truncated)** — when callers share a single
-   service key. The hash is in the bucket id (and therefore in
+1. **Authenticated principal** (``request.state.principal``, set by
+   ``verify_auth``): ``jwt:<uid>`` for end users; ``key:<service>`` for a
+   named service key; ``key:<service>@<uid>`` when that service acts for a
+   user via ``X-Vectoria-On-Behalf-Of``, so users behind one service don't
+   share a budget. Service *names*, never key values, appear in bucket ids.
+2. **X-API-Key value (sha256-truncated)** — only if no principal was
+   recorded. The hash is in the bucket id (and therefore in
    metric labels) so the raw secret never leaks via ``/metrics``.
 3. **X-Forwarded-For first hop** — behind a reverse proxy or load
    balancer the direct peer is an internal address; the real client
