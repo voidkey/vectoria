@@ -62,7 +62,12 @@ async def get_browser() -> "Browser":
         _playwright = await async_playwright().start()
         _browser = await _playwright.chromium.launch(
             headless=True,
-            args=["--no-sandbox", "--disable-setuid-sandbox"],
+            args=[
+                "--no-sandbox", "--disable-setuid-sandbox",
+                # WebRTC UDP doesn't go through the egress proxy; without
+                # this a page's JS could still send packets to internal IPs.
+                "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
+            ],
         )
         logger.info("Chromium launched (pid visible via playwright)")
     return _browser

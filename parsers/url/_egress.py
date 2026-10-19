@@ -26,6 +26,7 @@ import ipaddress
 import logging
 import socket
 import threading
+from collections import deque
 from urllib.parse import urlsplit
 
 import httpx
@@ -128,7 +129,8 @@ class EgressProxy:
     parse that hit it (:attr:`blocked`)."""
 
     def __init__(self) -> None:
-        self.blocked: list[str] = []
+        # Bounded: the shared httpx proxy lives for the whole process.
+        self.blocked: deque[str] = deque(maxlen=50)
         self._server: asyncio.base_events.Server | None = None
         self.port: int = 0
 
@@ -182,7 +184,7 @@ class EgressProxy:
 
 
 _loop: asyncio.AbstractEventLoop | None = None
-_loop_lock = threading.Lock()
+_loop_lock = threading.RLock()  # re-entered by shared_proxy_url via _proxy_loop
 
 
 def _proxy_loop() -> asyncio.AbstractEventLoop:
@@ -206,3 +208,27 @@ async def start_proxy() -> EgressProxy:
 async def stop_proxy(proxy: EgressProxy) -> None:
     fut = asyncio.run_coroutine_threadsafe(proxy._stop(), _proxy_loop())
     await asyncio.wrap_future(fut)
+
+
+_shared: EgressProxy | None = None
+
+
+def shared_proxy_url() -> str:
+    """Process-wide proxy for httpx clients. The request hook already
+    attributes and reports blocks; routing through the proxy additionally
+    pins each connection to the address that was checked, closing the
+    re-resolve-then-connect DNS-rebinding window. Sync because
+    ``make_async_client`` is; binding a listener takes milliseconds."""
+    global _shared  # noqa: PLW0603
+    with _loop_lock:
+        proxy = _shared
+    if proxy is None:
+        proxy = EgressProxy()
+        asyncio.run_coroutine_threadsafe(proxy._start(), _proxy_loop()).result(timeout=5)
+        with _loop_lock:
+            if _shared is None:
+                _shared = proxy
+            else:  # lost a race; keep the first one
+                asyncio.run_coroutine_threadsafe(proxy._stop(), _proxy_loop())
+                proxy = _shared
+    return proxy.server_url

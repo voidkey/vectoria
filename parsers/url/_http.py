@@ -10,7 +10,7 @@ from __future__ import annotations
 import httpx
 
 from config import get_settings
-from parsers.url._egress import guard_httpx_request
+from parsers.url._egress import guard_httpx_request, shared_proxy_url
 from parsers.url._handlers import DEFAULT_BROWSER_UA
 
 
@@ -33,6 +33,11 @@ def make_async_client(**kw) -> httpx.AsyncClient:
         headers={"User-Agent": DEFAULT_BROWSER_UA},
     )
     hooks = dict(kw.pop("event_hooks", None) or {})
+    if "transport" not in kw:
+        # Connections go via the egress proxy, which connects to the IP it
+        # validated (DNS-rebinding pin). Skipped for an injected transport
+        # (tests): httpx's proxy mount would take precedence over it.
+        opts["proxy"] = shared_proxy_url()
     opts.update(kw)
     hooks["request"] = [guard_httpx_request, *hooks.get("request", [])]
     opts["event_hooks"] = hooks

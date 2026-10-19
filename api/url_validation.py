@@ -119,14 +119,37 @@ def _check_url_format(url: str) -> str:
     return hostname
 
 
-def is_blocked_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
-    """True if ``ip`` is in a private / internal / metadata range.
+_NAT64_PREFIX = ipaddress.ip_network("64:ff9b::/96")
 
-    IPv4-mapped IPv6 (``::ffff:127.0.0.1``) is unwrapped first so it can't
-    slip past the IPv4 ranges."""
-    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
-        ip = ip.ipv4_mapped
-    return any(ip in net for net in _SSRF_BLOCKED_NETWORKS)
+
+def _embedded_ipv4(ip: ipaddress.IPv6Address) -> ipaddress.IPv4Address | None:
+    """IPv4 address carried inside an IPv6 one (mapped / NAT64 / 6to4 /
+    Teredo client), or None. ``ipaddress`` rates NAT64 and 6to4 as global,
+    so ``64:ff9b::7f00:1`` would otherwise pass as a public address."""
+    if ip.ipv4_mapped is not None:
+        return ip.ipv4_mapped
+    if ip in _NAT64_PREFIX:
+        return ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF)
+    if ip.sixtofour is not None:
+        return ip.sixtofour
+    if ip.teredo is not None:
+        return ip.teredo[1]
+    return None
+
+
+def is_blocked_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    """True unless ``ip`` is a plain public unicast address.
+
+    The explicit ranges above are the ones we name; ``is_global`` catches
+    the rest of the IANA special-purpose space (benchmarking 198.18/15,
+    documentation nets, ...) so a gap in the list can't leak through."""
+    if isinstance(ip, ipaddress.IPv6Address):
+        inner = _embedded_ipv4(ip)
+        if inner is not None:
+            return is_blocked_ip(inner)
+    if any(ip in net for net in _SSRF_BLOCKED_NETWORKS):
+        return True
+    return not ip.is_global or ip.is_multicast
 
 
 def _resolve_and_check_ssrf(hostname: str, url: str) -> None:
@@ -138,7 +161,8 @@ def _resolve_and_check_ssrf(hostname: str, url: str) -> None:
                         f"Cannot resolve hostname: {hostname}")
 
     for _, _, _, _, sockaddr in addr_infos:
-        ip = ipaddress.ip_address(sockaddr[0])
+        # Link-local IPv6 comes back with a scope suffix ("fe80::1%eth0").
+        ip = ipaddress.ip_address(sockaddr[0].split("%", 1)[0])
         if is_blocked_ip(ip):
             logger.warning("SSRF blocked: %s resolves to private IP %s", url, ip)
             raise AppError(403, ErrorCode.BLOCKED_ADDRESS,

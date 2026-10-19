@@ -113,7 +113,7 @@ async def test_proxy_tunnels_allowed_target(monkeypatch):
     finally:
         await _egress.stop_proxy(proxy)
         srv.close()
-    assert proxy.blocked == []
+    assert not proxy.blocked
 
 
 def test_rewrite_plain_http_forces_close_and_origin_form():
@@ -141,3 +141,46 @@ async def test_parse_session_turns_failure_after_block_into_permanent():
     assert kw["proxy"]["server"] == "http://127.0.0.1:1"
     assert kw["service_workers"] == "block"
     stop.assert_awaited_once_with(proxy)
+
+
+@pytest.mark.parametrize("addr", [
+    "64:ff9b::7f00:1",                          # NAT64 → 127.0.0.1
+    "64:ff9b::a9fe:a9fe",                       # NAT64 → 169.254.169.254
+    "2002:7f00:1::",                            # 6to4 → 127.0.0.1
+    "2001:0:4136:e378:8000:63bf:80ff:fffe",     # Teredo → 127.0.0.1
+    "::ffff:10.0.0.1",                          # IPv4-mapped
+    "198.18.0.1",                               # benchmarking, not in the explicit list
+    "192.0.2.1",                                # documentation net
+])
+def test_is_blocked_ip_unwraps_embedded_and_special_ranges(addr):
+    import ipaddress
+    from api.url_validation import is_blocked_ip
+    assert is_blocked_ip(ipaddress.ip_address(addr))
+
+
+@pytest.mark.parametrize("addr", ["8.8.8.8", "2606:4700::1111", "64:ff9b::808:808"])
+def test_is_blocked_ip_allows_public(addr):
+    import ipaddress
+    from api.url_validation import is_blocked_ip
+    assert not is_blocked_ip(ipaddress.ip_address(addr))
+
+
+def test_resolve_handles_scoped_ipv6():
+    from api.errors import AppError
+    from api.url_validation import _resolve_and_check_ssrf
+    infos = [(socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("fe80::1%eth0", 0, 0, 2))]
+    with patch("api.url_validation.socket.getaddrinfo", return_value=infos):
+        with pytest.raises(AppError) as ei:
+            _resolve_and_check_ssrf("h.test", "http://h.test/")
+    assert ei.value.status_code == 403
+
+
+async def test_httpx_client_routes_through_shared_proxy():
+    c = make_async_client()
+    try:
+        url = _egress.shared_proxy_url()
+        assert url.startswith("http://127.0.0.1:")
+        assert url == _egress.shared_proxy_url()  # one per process
+        assert c._mounts  # proxy mount installed
+    finally:
+        await c.aclose()
