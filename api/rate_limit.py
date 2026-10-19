@@ -85,9 +85,10 @@ def _principal_key(request: Request, claims: dict | None) -> str:
     if principal.kind == "jwt":
         return principal.label()
     if principal.kind == "service":
-        # One bucket per service key (not per acted-for user): the service
-        # itself is what's being rate limited.
-        return f"key:{principal.service}"
+        # Acting for a user: that user's own bucket within the service, so
+        # one heavy user can't drain the service's budget for everyone else
+        # (and shows up by name). Otherwise one bucket for the service.
+        return principal.label()
     if claims:
         ident = claims.get("sub") or claims.get("uid")
         if ident:

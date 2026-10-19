@@ -498,3 +498,22 @@ async def test_query_returns_429_after_threshold(client, monkeypatch):
         )
         assert resp.status_code == 429, resp.text
         assert resp.json()["code"] == ErrorCode.RATE_LIMITED
+
+
+def test_principal_key_service_buckets_per_acted_for_user():
+    from types import SimpleNamespace
+    from api.auth import Principal
+    from api.rate_limit import _principal_key
+
+    def req(principal):
+        return SimpleNamespace(state=SimpleNamespace(principal=principal), headers={}, client=None)
+
+    figlens = Principal(kind="service", service="figlens")
+    for_42 = Principal(kind="service", service="figlens", uid="42")
+    for_7 = Principal(kind="service", service="figlens", uid="7")
+    assert _principal_key(req(figlens), None) == "key:figlens"
+    assert _principal_key(req(for_42), None) == "key:figlens@42"
+    # Two users behind the same service don't share a bucket, and neither
+    # shares the user's direct (JWT) bucket.
+    assert len({_principal_key(req(p), None) for p in (figlens, for_42, for_7)}) == 3
+    assert _principal_key(req(Principal(kind="jwt", uid="42")), None) == "jwt:42"

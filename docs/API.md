@@ -19,6 +19,7 @@
 - API key 是服务端凭证，不要下发到浏览器或客户端。
 - 归属上线前创建的 KB 没有 owner：`KB_LEGACY_UNOWNED_ACCESS=true` 时 JWT 仍可凭 id 访问（会记录日志，供回填），回填后关闭。
 - 服务从用户手里拿到 kb_id 时，应先带 `X-Vectoria-On-Behalf-Of` 校验一次归属，再以服务身份使用。
+- 写类接口（建 KB、提交文档、编辑、检索）按调用方分桶限流：JWT 按 `uid`；服务按 key 名；服务代表用户时按「服务 + 用户」，同一服务背后的用户互不挤占。超限返回 429 并带 `Retry-After`。
 
 ---
 
