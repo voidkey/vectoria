@@ -4,7 +4,21 @@
 
 - **框架**: FastAPI
 - **交互式文档**: `http://localhost:8000/docs`（Swagger UI 自动生成）
-- **OpenAPI Spec**: `http://localhost:8000/openapi.json`
+- **OpenAPI Spec**: `http://localhost:8000/openapi.json`（`API_DOCS_ENABLED=false` 时关闭）
+
+## 认证与 KB 归属
+
+| 调用方 | 凭证 | 可访问的 KB |
+|------|------|------|
+| 终端用户 | JWT：`X-Authorization-Token` 或 `Authorization: Bearer` | 仅自己创建的（`uid` 匹配） |
+| 服务 | `X-API-Key`（`API_KEYS` 中每个服务一把） | 全部 |
+| 服务代表某用户 | `X-API-Key` + `X-Vectoria-On-Behalf-Of: <uid>` | 同该用户 |
+
+- JWT 校验与 go-atlas `pillar/auth` 一致：必须有 `exp`、非空 `uid`、`typ` 为 `access`（refresh token 不能当请求凭证），`iss` 须在 `JWT_VALID_ISSUERS` 中；容忍 `JWT_LEEWAY_SECONDS`（默认 30s）时钟偏差。
+- 用 JWT 创建的 KB 归属该 `uid`；`GET /knowledgebases` 只列出自己的。访问他人 KB 与不存在的 KB 一样返回 404。
+- API key 是服务端凭证，不要下发到浏览器或客户端。
+- 归属上线前创建的 KB 没有 owner：`KB_LEGACY_UNOWNED_ACCESS=true` 时 JWT 仍可凭 id 访问（会记录日志，供回填），回填后关闭。
+- 服务从用户手里拿到 kb_id 时，应先带 `X-Vectoria-On-Behalf-Of` 校验一次归属，再以服务身份使用。
 
 ---
 
@@ -25,7 +39,7 @@
 | POST | `/analyze/file` | 上传文件解析为 Markdown（multipart/form-data） |
 | POST | `/analyze/url` | 传入 URL 解析为 Markdown |
 
-> `/analyze/*` 仅接受静态 `X-API-Key` 认证（内部/运维用途）；JWT 调用方返回 403。纯 JWT 部署（只设 `JWT_SECRET`、未设 `API_KEY`）下 analyze 不可用 —— 需 analyze 时请配置 `API_KEY`。
+> `/analyze/*` 仅接受静态 `X-API-Key` 认证（内部/运维用途）；JWT 调用方返回 403。纯 JWT 部署（只设 `JWT_SECRET`、未配置任何 API key）下 analyze 不可用 —— 需 analyze 时请配置 `API_KEYS`（或旧的 `API_KEY`）。
 
 #### 请求 - `/analyze/url`（AnalyzeURLRequest）
 

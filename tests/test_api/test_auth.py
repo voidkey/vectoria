@@ -37,6 +37,8 @@ def settings(monkeypatch):
     monkeypatch.setattr(s.jwt_secret, "get_secret_value", lambda: "")
     monkeypatch.setattr(s, "jwt_algorithm", "HS256")
     monkeypatch.setattr(s, "jwt_issuer", "")
+    monkeypatch.setattr(s, "jwt_valid_issuers", [])
+    monkeypatch.setattr(s, "api_keys", {})
     monkeypatch.setattr(s, "allow_unauthenticated", True)
     return s
 
@@ -50,8 +52,12 @@ def _set_jwt_secret(monkeypatch, settings, value: str):
 
 
 def _make_jwt(secret: str, **claims) -> str:
-    payload = {"uid": "user-1", "iat": int(time.time()), "exp": int(time.time()) + 300}
+    """Token shaped like a go-atlas access token. Pass ``claim=None`` to
+    drop a claim."""
+    payload = {"uid": "user-1", "typ": "access",
+               "iat": int(time.time()), "exp": int(time.time()) + 300}
     payload.update(claims)
+    payload = {k: v for k, v in payload.items() if v is not None}
     return pyjwt.encode(payload, secret, algorithm="HS256")
 
 
@@ -160,7 +166,8 @@ async def test_jwt_wrong_signature(monkeypatch, settings):
 @pytest.mark.asyncio
 async def test_jwt_expired(monkeypatch, settings):
     _set_jwt_secret(monkeypatch, settings, "a-jwt-secret-at-least-32-bytes-long!")
-    token = _make_jwt("a-jwt-secret-at-least-32-bytes-long!", uid="alice", exp=int(time.time()) - 1)
+    # Past the default 30s clock-drift leeway.
+    token = _make_jwt("a-jwt-secret-at-least-32-bytes-long!", uid="alice", exp=int(time.time()) - 120)
     req = _make_request({"X-Authorization-Token": token})
     with pytest.raises(AppError) as exc:
         await verify_auth(req)

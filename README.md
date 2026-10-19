@@ -188,7 +188,11 @@ All settings are configured via environment variables (see [`.env.example`](.env
 | `MINERU_API_URL` | — | MinerU remote API URL (PDF fallback B, kicks in when paddle is unavailable or returns empty) |
 | `MINERU_BACKEND` | `pipeline` | MinerU backend mode |
 | `MINERU_LANGUAGE` | `ch` | MinerU OCR language |
-| `API_KEY` | *(blank = public)* | API key for client authentication (`X-API-Key` header) |
+| `API_KEYS` | `{}` | Per-service keys, JSON `{"name": "key"}`; sent as `X-API-Key`. Server-to-server only — end users use JWT |
+| `API_KEY` | — | Legacy single key, accepted as service `default` |
+| `JWT_SECRET` / `JWT_VALID_ISSUERS` | — | JWT verification (go-atlas compatible: `exp`, `uid`, `typ=access` required). A KB created with a JWT is owned by its `uid` |
+| `KB_LEGACY_UNOWNED_ACCESS` | `true` | Let JWT callers reach KBs that predate ownership (logged); turn off after backfill |
+| `API_DOCS_ENABLED` | `true` | Serve `/docs`, `/redoc`, `/openapi.json` |
 | `CORS_ORIGINS` | `["*"]` | Allowed CORS origins |
 
 ### Object storage bucket configuration

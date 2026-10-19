@@ -23,6 +23,11 @@ class KnowledgeBase(Base):
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str] = mapped_column(Text, default="", server_default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    # End user who created the KB (JWT ``uid``); NULL = created by a service,
+    # or before ownership was recorded. See api/kb_access.py.
+    owner_uid: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    # Team scope the creator was acting in (``meta.stid``); audit only.
+    owner_team_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     documents: Mapped[list["Document"]] = relationship(
         back_populates="knowledge_base", cascade="all, delete-orphan"

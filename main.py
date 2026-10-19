@@ -9,7 +9,8 @@ from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import JSONResponse
 from prometheus_fastapi_instrumentator import Instrumentator
 
-from api.auth import require_api_key, verify_auth
+from api.auth import auth_config_warnings, require_api_key, verify_auth
+from api.kb_access import authorize_kb
 from api.errors import AppError, ErrorCode, error_meta
 from api.middleware import RequestIdMiddleware, RequestIdFilter
 from api.routes.analyze import router as analyze_router
@@ -57,6 +58,8 @@ def _log_parser_config() -> None:
         paddle, mineru, vision, cfg.vision_model,
         budget if budget else "uncapped", cfg.vision_cost_per_call_usd,
     )
+    for warning in auth_config_warnings():
+        log.warning("auth config: %s", warning)
 
 
 @asynccontextmanager
@@ -74,7 +77,14 @@ _log_format = "%(asctime)s %(levelname)s [%(request_id)s] %(name)s: %(message)s"
 logging.basicConfig(level=logging.INFO, format=_log_format)
 logging.getLogger().handlers[0].addFilter(RequestIdFilter())
 
-app = FastAPI(title="Vectoria", version=_VERSION, root_path="/vectoria", lifespan=lifespan)
+app = FastAPI(
+    title="Vectoria", version=_VERSION, root_path="/vectoria", lifespan=lifespan,
+    # Interactive docs and the schema map the whole API; turn off where the
+    # service is internet-facing (API_DOCS_ENABLED=false).
+    docs_url="/docs" if settings.api_docs_enabled else None,
+    redoc_url="/redoc" if settings.api_docs_enabled else None,
+    openapi_url="/openapi.json" if settings.api_docs_enabled else None,
+)
 
 # --- Middleware ---
 app.add_middleware(RequestIdMiddleware)
@@ -103,16 +113,18 @@ if settings.cors_origins:
 app.include_router(health_router)
 
 # --- Protected routes (require JWT or API key when configured) ---
-_auth = [Depends(verify_auth)]
+# Every /knowledgebases/{kb_id}/... route also checks KB ownership.
+_kb_auth = [Depends(verify_auth), Depends(authorize_kb)]
+_service_only = [Depends(require_api_key)]
 
-app.include_router(analyze_router, prefix="/v1", dependencies=[Depends(require_api_key)])
-app.include_router(kb_router, prefix="/v1", dependencies=_auth)
-app.include_router(docs_router, prefix="/v1", dependencies=_auth)
-app.include_router(query_router, prefix="/v1", dependencies=_auth)
-app.include_router(images_router, prefix="/v1", dependencies=_auth)
-app.include_router(edited_router, prefix="/v1", dependencies=_auth)
-app.include_router(captures_router, prefix="/v1", dependencies=_auth)
-app.include_router(debug_router, prefix="/v1", dependencies=_auth)
+app.include_router(analyze_router, prefix="/v1", dependencies=_service_only)
+app.include_router(kb_router, prefix="/v1", dependencies=_kb_auth)
+app.include_router(docs_router, prefix="/v1", dependencies=_kb_auth)
+app.include_router(query_router, prefix="/v1", dependencies=_kb_auth)
+app.include_router(images_router, prefix="/v1", dependencies=_kb_auth)
+app.include_router(edited_router, prefix="/v1", dependencies=_kb_auth)
+app.include_router(captures_router, prefix="/v1", dependencies=_kb_auth)
+app.include_router(debug_router, prefix="/v1", dependencies=_service_only)
 
 
 logger = logging.getLogger(__name__)

@@ -37,7 +37,7 @@ from typing import Callable
 
 from fastapi import Depends, Request, Response
 
-from api.auth import API_KEY_HEADER, verify_auth
+from api.auth import API_KEY_HEADER, get_principal, verify_auth
 from api.errors import AppError, ErrorCode
 from infra.ratelimit import acquire, get_window_stats
 
@@ -81,6 +81,13 @@ RATE_LIMITED_RESPONSE = {
 
 def _principal_key(request: Request, claims: dict | None) -> str:
     """Derive a stable bucket id for the caller."""
+    principal = get_principal(request)
+    if principal.kind == "jwt":
+        return principal.label()
+    if principal.kind == "service":
+        # One bucket per service key (not per acted-for user): the service
+        # itself is what's being rate limited.
+        return f"key:{principal.service}"
     if claims:
         ident = claims.get("sub") or claims.get("uid")
         if ident:

@@ -213,8 +213,21 @@ class Settings(BaseSettings):
     embedding_breaker_reset_timeout: float = 60.0
 
     # Security
+    # Single static key, kept for existing deployments; it authenticates as
+    # the service named "default".
     api_key: SecretStr = SecretStr("")
+    # Named service keys, e.g. API_KEYS='{"figlens": "...", "ops": "..."}'.
+    # One key per calling service, so a leaked key can be revoked alone and
+    # logs show which service made a call. Coexists with ``api_key``.
+    api_keys: dict[str, SecretStr] = {}
     cors_origins: list[str] = []
+    # Serve /docs, /redoc and /openapi.json. Disable on internet-facing deploys.
+    api_docs_enabled: bool = True
+
+    # KBs created before ownership was recorded have no owner. While True,
+    # JWT callers may still reach them by id (each access is logged so
+    # owners can be backfilled); set False once backfill is done.
+    kb_legacy_unowned_access: bool = True
 
     # Explicit gate for "no auth configured" mode. When both ``api_key``
     # and ``jwt_secret`` are empty, ``verify_auth`` lets everything
@@ -230,9 +243,31 @@ class Settings(BaseSettings):
     jwt_secret: SecretStr = SecretStr("")
     # Restricted to go-atlas's supported set; rejects `none` and other algos at load time.
     jwt_algorithm: Literal["HS256", "HS384", "HS512"] = "HS256"
-    # When set, tokens must carry a matching `iss` claim. When empty, issuer is not
-    # verified — tokens with any (or no) issuer are accepted.
+    # Issuers accepted on incoming tokens (go-atlas ``valid_issuers``). A token
+    # must carry one of these as ``iss``; a missing ``iss`` is rejected. Empty
+    # means issuer is not checked — a startup warning says so.
+    jwt_valid_issuers: list[str] = []
+    # Older single-value spelling of the above. Vectoria only verifies tokens,
+    # so this always meant "accepted issuer"; used when jwt_valid_issuers is empty.
     jwt_issuer: str = ""
+    # Clock drift tolerated between the token issuer and this host for
+    # exp / iat / nbf (go-atlas default). Without it a verifier whose clock
+    # runs slightly behind rejects freshly issued tokens ("iat in the future").
+    jwt_leeway_seconds: int = 30
+
+    def effective_jwt_issuers(self) -> list[str]:
+        if self.jwt_valid_issuers:
+            return list(self.jwt_valid_issuers)
+        return [self.jwt_issuer] if self.jwt_issuer else []
+
+    def named_api_keys(self) -> dict[str, str]:
+        """All configured service keys by name; the legacy ``api_key`` is
+        ``default``. Empty values are dropped."""
+        keys = {name: v.get_secret_value() for name, v in self.api_keys.items()}
+        legacy = self.api_key.get_secret_value()
+        if legacy:
+            keys.setdefault("default", legacy)
+        return {name: v for name, v in keys.items() if v}
 
     # RAG pipeline toggles
     # Query rewrite: ``eval/reports/baseline-2026-04-22.json`` showed

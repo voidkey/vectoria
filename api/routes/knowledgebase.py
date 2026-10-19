@@ -1,8 +1,10 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from fastapi import Query
 from sqlalchemy import select, func
 
+from api.auth import get_principal
 from api.errors import AppError, ErrorCode
+from api.kb_access import owner_filter
 from api.rate_limit import RATE_LIMITED_RESPONSE, rate_limit
 from api.schemas import KnowledgeBaseCreate, KnowledgeBaseResponse, KnowledgeBaseListResponse
 from config import get_settings
@@ -25,9 +27,16 @@ router = APIRouter(prefix="/knowledgebases")
         per_seconds=60,
     ))],
 )
-async def create_kb(body: KnowledgeBaseCreate):
+async def create_kb(body: KnowledgeBaseCreate, request: Request):
+    principal = get_principal(request)
     async with get_session() as session:
-        kb = KnowledgeBase(name=body.name, description=body.description)
+        kb = KnowledgeBase(
+            name=body.name, description=body.description,
+            # The creating user owns it; a service creating for itself leaves
+            # it unowned (reachable by services only).
+            owner_uid=principal.uid,
+            owner_team_id=principal.team_id,
+        )
         session.add(kb)
         await session.commit()
         await session.refresh(kb)
@@ -38,11 +47,20 @@ async def create_kb(body: KnowledgeBaseCreate):
 
 
 @router.get("", response_model=KnowledgeBaseListResponse)
-async def list_kbs(offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=200)):
+async def list_kbs(
+    request: Request, offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=200),
+):
+    # Scoped callers see only KBs they own — never unowned legacy ones, so
+    # the listing can't be used to harvest ids.
+    where = owner_filter(get_principal(request))
+    count_q = select(func.count()).select_from(KnowledgeBase)
+    list_q = select(KnowledgeBase)
+    if where is not None:
+        count_q, list_q = count_q.where(where), list_q.where(where)
     async with get_session() as session:
-        total = await session.scalar(select(func.count()).select_from(KnowledgeBase))
+        total = await session.scalar(count_q)
         result = await session.execute(
-            select(KnowledgeBase).order_by(KnowledgeBase.created_at.desc())
+            list_q.order_by(KnowledgeBase.created_at.desc())
             .offset(offset).limit(limit)
         )
         kbs = result.scalars().all()
