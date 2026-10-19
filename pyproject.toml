@@ -97,3 +97,6 @@ dev = [
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+markers = [
+    "real_egress_guard: run the real SSRF egress DNS check instead of the test stub",
+]

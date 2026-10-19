@@ -27,6 +27,22 @@ def _allow_unauthenticated_in_tests(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _skip_egress_dns_check(request, monkeypatch):
+    """The httpx egress hook re-resolves every request's host; tests use
+    fake hosts (``x.test``) behind MockTransport, so stub the DNS check.
+    tests/test_parsers/test_egress.py opts back in with
+    ``@pytest.mark.real_egress_guard``.
+    """
+    if request.node.get_closest_marker("real_egress_guard"):
+        return
+
+    async def _noop(url):
+        return None
+
+    monkeypatch.setattr("parsers.url._egress.reresolve_and_check_ssrf", _noop)
+
+
+@pytest.fixture(autouse=True)
 def _reset_circuit_breakers():
     """Each test starts with a clean breaker registry so one test's forced
     failures can't open the circuit for the next test.

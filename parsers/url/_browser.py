@@ -34,6 +34,8 @@ import logging
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, AsyncIterator
 
+from parsers.url._egress import BlockedAddressError, start_proxy, stop_proxy
+
 if TYPE_CHECKING:
     from playwright.async_api import Browser, BrowserContext, Playwright
 
@@ -125,27 +127,51 @@ async def parse_session(
       * ``init_script`` — JS injected into every page on load, before
         page JS runs. Used for the ``navigator.webdriver`` anti-detection
         shim on stubborn targets (threads.net / instagram style).
+
+    All traffic of the context goes through a per-context SSRF egress
+    proxy (see ``parsers/url/_egress.py``). If the body fails after the
+    proxy refused an internal address — typically a redirect into the
+    private network — the error is re-raised as the permanent
+    :class:`BlockedAddressError` instead of a retryable navigation error.
     """
     browser = await get_browser()
-    new_ctx_kwargs: dict = {}
+    proxy = await start_proxy()
+    new_ctx_kwargs: dict = {
+        # Playwright already forces loopback through the proxy on
+        # Chromium; the explicit bypass rule keeps that true if it ever
+        # stops doing so.
+        "proxy": {"server": proxy.server_url, "bypass": "<-loopback>"},
+        # Service workers can issue requests that context.route never sees.
+        "service_workers": "block",
+    }
     if user_agent is not None:
         new_ctx_kwargs["user_agent"] = user_agent
     if viewport is not None:
         new_ctx_kwargs["viewport"] = viewport
     if locale is not None:
         new_ctx_kwargs["locale"] = locale
-    context = await browser.new_context(**new_ctx_kwargs)
-    if init_script:
-        await context.add_init_script(init_script)
-    if block_heavy:
-        await context.route("**/*", _block_heavy_resources)
     try:
+        context = await browser.new_context(**new_ctx_kwargs)
+    except BaseException:
+        await stop_proxy(proxy)
+        raise
+    try:
+        if init_script:
+            await context.add_init_script(init_script)
+        if block_heavy:
+            await context.route("**/*", _block_heavy_resources)
         yield context
+    except Exception as exc:
+        if proxy.blocked and not isinstance(exc, BlockedAddressError):
+            raise BlockedAddressError(
+                f"blocked internal address: {proxy.blocked[0]}") from exc
+        raise
     finally:
         try:
             await context.close()
         except Exception:
             logger.exception("error closing browser context")
+        await stop_proxy(proxy)
 
 
 def _reset_for_tests() -> None:

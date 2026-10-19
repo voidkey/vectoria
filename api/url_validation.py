@@ -119,6 +119,16 @@ def _check_url_format(url: str) -> str:
     return hostname
 
 
+def is_blocked_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    """True if ``ip`` is in a private / internal / metadata range.
+
+    IPv4-mapped IPv6 (``::ffff:127.0.0.1``) is unwrapped first so it can't
+    slip past the IPv4 ranges."""
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped
+    return any(ip in net for net in _SSRF_BLOCKED_NETWORKS)
+
+
 def _resolve_and_check_ssrf(hostname: str, url: str) -> None:
     """Blocking DNS resolve + private IP check. Run in executor."""
     try:
@@ -129,7 +139,7 @@ def _resolve_and_check_ssrf(hostname: str, url: str) -> None:
 
     for _, _, _, _, sockaddr in addr_infos:
         ip = ipaddress.ip_address(sockaddr[0])
-        if any(ip in net for net in _SSRF_BLOCKED_NETWORKS):
+        if is_blocked_ip(ip):
             logger.warning("SSRF blocked: %s resolves to private IP %s", url, ip)
             raise AppError(403, ErrorCode.BLOCKED_ADDRESS,
                             "URL points to a private/internal network address")

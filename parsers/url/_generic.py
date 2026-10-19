@@ -236,6 +236,7 @@ class GenericHandler:
         re-enter Playwright and re-trigger the original "Page.goto:
         Download is starting" failure.
         """
+        from parsers.url._egress import BlockedAddressError
         from parsers.url._http import ResponseTooLargeError, fetch_capped, make_async_client
         try:
             await acquire_page_token((urlparse(url).hostname or "").lower())
@@ -249,6 +250,8 @@ class GenericHandler:
             return ParseResult(content="", title="")
         except (ResponseTooLargeError, httpx.TooManyRedirects):
             return ParseResult(content="", title="")
+        except BlockedAddressError:
+            raise  # redirect into an internal address — no browser retry
         except Exception:
             return ParseResult(content="", title="")
 

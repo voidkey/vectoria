@@ -15,6 +15,7 @@ from urllib.parse import urlparse
 from config import get_settings
 from curl_cffi import requests as _cc
 from infra.ratelimit import acquire as _rl_acquire
+from parsers.url._egress import BlockedAddressError, EgressProxy, start_proxy, stop_proxy
 from parsers.url._handlers import detect_block_reason, extract_html_title, raise_if_gone
 
 logger = logging.getLogger(__name__)
@@ -66,12 +67,31 @@ async def fetch_impersonated(
     ``proxy`` is reserved for future use (kuaidaili); unused in P1.
     """
     host = (urlparse(url).hostname or "").lower()
+    # curl_cffi follows redirects itself, so route it through the SSRF egress
+    # proxy (CONNECT tunnel — the Chrome JA3 handshake is still curl's own).
+    egress = None if proxy else await start_proxy()
+    try:
+        return await _fetch_impersonated(
+            url, host, retries=retries, proxy=proxy or egress.server_url,
+            egress=egress, retry_on_block=retry_on_block)
+    finally:
+        if egress is not None:
+            await stop_proxy(egress)
+
+
+async def _fetch_impersonated(
+    url: str, host: str, *, retries: int, proxy: str,
+    egress: EgressProxy | None, retry_on_block: bool,
+) -> str | None:
     for attempt in range(retries):
         await acquire_page_token(host)    # politeness gate, does NOT consume the attempt
         try:
-            kw = {"proxies": {"http": proxy, "https": proxy}} if proxy else {}
-            resp = await asyncio.to_thread(_cc_get, url, **kw)
+            resp = await asyncio.to_thread(
+                _cc_get, url, proxies={"http": proxy, "https": proxy})
         except Exception:
+            if egress is not None and egress.blocked:
+                raise BlockedAddressError(
+                    f"blocked internal address: {egress.blocked[0]}") from None
             logger.warning("fetch_impersonated error on %s (attempt %d)", url, attempt + 1, exc_info=True)
             html = ""
         else:

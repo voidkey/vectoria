@@ -126,7 +126,8 @@ async def test_parse_session_creates_and_closes_context():
         async with _browser.parse_session(user_agent="UA/1") as ctx:
             assert ctx is context
 
-    browser.new_context.assert_awaited_once_with(user_agent="UA/1")
+    browser.new_context.assert_awaited_once()
+    assert browser.new_context.call_args.kwargs["user_agent"] == "UA/1"
     context.close.assert_awaited_once()
 
 

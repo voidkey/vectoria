@@ -10,6 +10,7 @@ from __future__ import annotations
 import httpx
 
 from config import get_settings
+from parsers.url._egress import guard_httpx_request
 from parsers.url._handlers import DEFAULT_BROWSER_UA
 
 
@@ -19,7 +20,11 @@ class ResponseTooLargeError(Exception):
 
 def make_async_client(**kw) -> httpx.AsyncClient:
     """httpx.AsyncClient with redirect cap + sane defaults. Caller ``kw``
-    (e.g. ``headers``, ``timeout``, ``transport``) overrides the defaults."""
+    (e.g. ``headers``, ``timeout``, ``transport``) overrides the defaults.
+
+    The SSRF egress hook is always installed (caller hooks are appended,
+    never replace it): it re-validates every request, including each
+    redirect hop, so a public URL can't redirect into an internal one."""
     s = get_settings()
     opts: dict = dict(
         follow_redirects=True,
@@ -27,7 +32,10 @@ def make_async_client(**kw) -> httpx.AsyncClient:
         timeout=15,
         headers={"User-Agent": DEFAULT_BROWSER_UA},
     )
+    hooks = dict(kw.pop("event_hooks", None) or {})
     opts.update(kw)
+    hooks["request"] = [guard_httpx_request, *hooks.get("request", [])]
+    opts["event_hooks"] = hooks
     return httpx.AsyncClient(**opts)
 
 
