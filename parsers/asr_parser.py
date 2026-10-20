@@ -27,24 +27,26 @@ Status handling (``X-Api-Status-Code`` response header):
   * other 45xxxxxx      → request error: not counted by the breaker
   * anything else       → service-side failure: counts toward the
                           ``volc_asr`` circuit breaker; the worker
-                          retries the task (no fallback engine exists)
+                          falls back to openai-asr or retries the task
 """
 from __future__ import annotations
 
 import asyncio
 import base64
 import logging
-import shutil
-import tempfile
 import uuid
 from pathlib import Path
 
 import httpx
 
-from api.errors import ErrorCode
 from config import get_settings
 from infra.circuit_breaker import get_breaker
-from parsers.base import BaseParser, ParseResult, PermanentParseError
+from parsers._audio import (
+    UnreadableAudioError,
+    render_transcript,
+    transcode_to_mp3,
+)
+from parsers.base import BaseParser, ParseResult
 
 logger = logging.getLogger(__name__)
 
@@ -86,11 +88,6 @@ class AsrBadFormatError(AsrRequestError):
     """The service could not decode the audio (45000151)."""
 
 
-class UnreadableAudioError(PermanentParseError):
-    """Audio that neither the service nor ffmpeg can decode."""
-    error_code = ErrorCode.FILE_CORRUPTED
-
-
 async def _call_asr_api(
     url: str, headers: dict, body: dict, timeout: httpx.Timeout,
 ) -> dict:
@@ -117,62 +114,17 @@ async def _call_asr_api(
     raise AsrUpstreamError(detail)
 
 
-async def _transcode_to_mp3(content: bytes, timeout: float) -> bytes:
-    """Transcode any ffmpeg-readable audio to 16 kHz mono MP3.
-
-    Input goes through a temp file, not a pipe: MP4-family containers
-    (m4a) often carry their index (moov atom) at the end, and the demuxer
-    cannot seek back to it on a pipe — long m4a files fail that way.
-    """
-    if shutil.which("ffmpeg") is None:
-        raise RuntimeError("ffmpeg not found; cannot transcode audio")
-    with tempfile.TemporaryDirectory(prefix="asr-") as tmp:
-        src = Path(tmp) / "input"
-        src.write_bytes(content)
-        proc = await asyncio.create_subprocess_exec(
-            "ffmpeg", "-nostdin", "-loglevel", "error",
-            "-i", str(src),
-            "-vn", "-ac", "1", "-ar", "16000", "-b:a", "32k",
-            "-f", "mp3", "pipe:1",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        try:
-            out, err = await asyncio.wait_for(proc.communicate(), timeout)
-        except asyncio.TimeoutError:
-            proc.kill()
-            await proc.wait()
-            raise
-    if proc.returncode != 0 or not out:
-        raise UnreadableAudioError(
-            f"ffmpeg could not decode audio: "
-            f"{err.decode('utf-8', 'replace').strip()[-300:]}",
-        )
-    return out
-
-
-def _format_ts(ms: int) -> str:
-    secs = max(int(ms), 0) // 1000
-    h, rem = divmod(secs, 3600)
-    m, s = divmod(rem, 60)
-    return f"{h:02d}:{m:02d}:{s:02d}" if h else f"{m:02d}:{s:02d}"
-
-
 def _render_markdown(title: str, payload: dict) -> str:
     result = payload.get("result") or {}
-    lines: list[str] = []
-    for utt in result.get("utterances") or []:
-        text = (utt.get("text") or "").strip()
-        if text:
-            lines.append(f"[{_format_ts(utt.get('start_time') or 0)}] {text}")
-    if not lines:
-        # No utterance segmentation — fall back to the flat transcript.
-        text = (result.get("text") or "").strip()
-        if not text:
-            return ""
-        lines.append(text)
-    body = "\n\n".join(lines)
-    return f"# {title}\n\n{body}\n"
+    segments = [
+        (utt.get("start_time") or 0, utt.get("text") or "")
+        for utt in result.get("utterances") or []
+    ]
+    rendered = render_transcript(title, segments)
+    if rendered:
+        return rendered
+    # No utterance segmentation — fall back to the flat transcript.
+    return render_transcript(title, [(None, result.get("text") or "")])
 
 
 class VolcAsrParser(BaseParser):
@@ -244,7 +196,7 @@ class VolcAsrParser(BaseParser):
         passthrough = ext in _PASSTHROUGH_FORMATS
         audio = (
             source if passthrough
-            else await _transcode_to_mp3(source, cfg.volc_asr_timeout)
+            else await transcode_to_mp3(source, cfg.volc_asr_timeout)
         )
         # A CircuitOpenError is left to propagate: audio has no fallback
         # engine, so returning empty here would mislabel an outage as
@@ -261,7 +213,7 @@ class VolcAsrParser(BaseParser):
             logger.info(
                 "volc-asr: %s rejected as-is; retrying transcoded", filename,
             )
-            audio = await _transcode_to_mp3(source, cfg.volc_asr_timeout)
+            audio = await transcode_to_mp3(source, cfg.volc_asr_timeout)
             try:
                 payload = await self._recognize(audio)
             except AsrBadFormatError as e:

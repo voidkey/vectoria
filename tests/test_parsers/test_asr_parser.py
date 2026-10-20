@@ -154,14 +154,14 @@ async def test_non_native_format_is_transcoded_to_mp3():
 async def test_transcodes_long_m4a_with_trailing_index(tmp_path):
     # ffmpeg's mp4 muxer writes the moov atom last by default; past the
     # demuxer's probe window that is unreadable from a pipe.
-    from parsers.asr_parser import _transcode_to_mp3
+    from parsers._audio import transcode_to_mp3
     path = tmp_path / "a.m4a"
     subprocess.run(
         ["ffmpeg", "-loglevel", "error", "-f", "lavfi", "-i", "sine=f=440:d=300",
          "-b:a", "128k", str(path)],
         check=True,
     )
-    out = await _transcode_to_mp3(path.read_bytes(), timeout=60)
+    out = await transcode_to_mp3(path.read_bytes(), timeout=60)
     # 300 s at 32 kbps ≈ 1.2 MB; a truncated decode yields a few bytes.
     assert len(out) > 1_000_000
 
@@ -170,7 +170,7 @@ async def test_transcodes_long_m4a_with_trailing_index(tmp_path):
 async def test_rejected_passthrough_is_retried_transcoded():
     with patch("parsers.asr_parser.httpx.AsyncClient") as MockClient, \
          patch("parsers.asr_parser.get_settings") as mock_settings, \
-         patch("parsers.asr_parser._transcode_to_mp3",
+         patch("parsers.asr_parser.transcode_to_mp3",
                AsyncMock(return_value=b"mp3")) as transcode:
         _patch_settings(mock_settings)
         client = _mock_client(
@@ -191,7 +191,7 @@ async def test_rejected_passthrough_is_retried_transcoded():
 async def test_rejected_after_transcode_is_permanent():
     with patch("parsers.asr_parser.httpx.AsyncClient") as MockClient, \
          patch("parsers.asr_parser.get_settings") as mock_settings, \
-         patch("parsers.asr_parser._transcode_to_mp3",
+         patch("parsers.asr_parser.transcode_to_mp3",
                AsyncMock(return_value=b"mp3")):
         _patch_settings(mock_settings)
         _mock_client(MockClient, _response("45000151"))

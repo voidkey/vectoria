@@ -321,6 +321,11 @@ def get_breaker(name: str) -> CircuitBreaker:
             cfg.volc_asr_breaker_reset_timeout,
             _http_server_error_unless_client,
         ),
+        "openai_asr": (
+            cfg.openai_asr_breaker_threshold,
+            cfg.openai_asr_breaker_reset_timeout,
+            _http_server_error,
+        ),
         "embedding": (
             cfg.embedding_breaker_threshold,
             cfg.embedding_breaker_reset_timeout,

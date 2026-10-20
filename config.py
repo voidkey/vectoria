@@ -222,6 +222,23 @@ class Settings(BaseSettings):
     volc_asr_breaker_threshold: int = 5
     volc_asr_breaker_reset_timeout: float = 300.0
 
+    # OpenAI-compatible ASR (``parsers/openai_asr_parser.py``): second in
+    # the audio chain after volc-asr. Empty base URL disables it.
+    openai_asr_base_url: str = ""
+    openai_asr_api_key: SecretStr = SecretStr("")
+    openai_asr_model: str = "whisper-1"
+    # Request verbose_json segment timestamps. gpt-4o-* transcribe models
+    # reject verbose_json — set false for those.
+    openai_asr_timestamps: bool = True
+    # Audio is cut into pieces of this length to stay under the ~25 MB
+    # per-request cap (20 min of 32 kbps MP3 ≈ 4.8 MB).
+    openai_asr_segment_seconds: int = 1200
+    # Per request (one piece), and for the transcode step.
+    openai_asr_timeout: float = 300.0
+    openai_asr_concurrency: int = 2
+    openai_asr_breaker_threshold: int = 5
+    openai_asr_breaker_reset_timeout: float = 300.0
+
     # Embedding reliability. Threshold is higher than mineru/vision because
     # the embedder already retries internally with backoff; the breaker is
     # the last resort when retries can't drain the outage.

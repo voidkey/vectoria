@@ -51,18 +51,18 @@ _EXT_PREFERENCE: dict[str, list[str]] = {
     ".tiff": ["vision-native", "ocr-native"],
     ".bmp":  ["vision-native", "ocr-native"],
     ".webp": ["vision-native", "ocr-native"],
-    # Audio: Volcengine ASR only. No local fallback — when it is
-    # unconfigured or its breaker is open, audio uploads fail and the
-    # queue retries.
-    ".mp3":  ["volc-asr"],
-    ".wav":  ["volc-asr"],
-    ".m4a":  ["volc-asr"],
-    ".aac":  ["volc-asr"],
-    ".flac": ["volc-asr"],
-    ".ogg":  ["volc-asr"],
-    ".opus": ["volc-asr"],
-    ".amr":  ["volc-asr"],
-    ".wma":  ["volc-asr"],
+    # Audio: Volcengine ASR first, any OpenAI-compatible transcription
+    # endpoint second. Both are remote and optional; with neither
+    # configured, audio uploads fail and the queue retries.
+    ".mp3":  ["volc-asr", "openai-asr"],
+    ".wav":  ["volc-asr", "openai-asr"],
+    ".m4a":  ["volc-asr", "openai-asr"],
+    ".aac":  ["volc-asr", "openai-asr"],
+    ".flac": ["volc-asr", "openai-asr"],
+    ".ogg":  ["volc-asr", "openai-asr"],
+    ".opus": ["volc-asr", "openai-asr"],
+    ".amr":  ["volc-asr", "openai-asr"],
+    ".wma":  ["volc-asr", "openai-asr"],
     ".csv":  ["markitdown"],
     ".md":   ["markitdown"],
     ".txt":  ["markitdown"],
@@ -180,6 +180,8 @@ from parsers.paddle_parser import PaddleParser  # noqa: E402
 registry.register(PaddleParser)
 from parsers.asr_parser import VolcAsrParser  # noqa: E402
 registry.register(VolcAsrParser)
+from parsers.openai_asr_parser import OpenAIAsrParser  # noqa: E402
+registry.register(OpenAIAsrParser)
 from parsers.url import UrlParser  # noqa: E402
 registry.register(UrlParser)
 from parsers.markitdown_parser import MarkitdownParser  # noqa: E402

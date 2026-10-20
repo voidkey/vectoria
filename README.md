@@ -4,7 +4,7 @@ A lightweight RAG (Retrieval-Augmented Generation) backend service built with Fa
 
 ## Features
 
-- **Multi-format document ingestion** — PDF, DOCX, PPTX, XLSX, CSV, Markdown, plain text, images, audio (transcribed via Volcengine ASR), and URLs
+- **Multi-format document ingestion** — PDF, DOCX, PPTX, XLSX, CSV, Markdown, plain text, images, audio (transcribed via Volcengine ASR or any OpenAI-compatible transcription endpoint), and URLs
 - **Async document processing** — persistent PG-backed task queue with status tracking, auto-retry, and separate worker process (no Redis needed)
 - **Image extraction & vision** — automatically extracts images from documents, stores them in S3-compatible object storage, and optionally describes them via vision LLM
 - **Hybrid search** — combines vector similarity search with BM25 keyword search via Reciprocal Rank Fusion
@@ -176,7 +176,7 @@ All settings are configured via environment variables (see [`.env.example`](.env
 | `S3_ADDRESSING_STYLE` | `auto` | `auto`, `virtual`, or `path` |
 | `S3_PRESIGN_EXPIRES` | `3600` | Presigned download URL expiry (seconds) |
 | `S3_PRESIGN_UPLOAD_EXPIRES` | `600` | Presigned **upload** (PUT) URL expiry (seconds) — direct-upload path |
-| `DEFAULT_PARSE_ENGINE` | `auto` | Parser engine (`auto`, `docx-native`, `pptx-native`, `xlsx-native`, `pdfium`, `ocr-native`, `paddle`, `mineru`, `markitdown`, `volc-asr`, `url`) |
+| `DEFAULT_PARSE_ENGINE` | `auto` | Parser engine (`auto`, `docx-native`, `pptx-native`, `xlsx-native`, `pdfium`, `ocr-native`, `paddle`, `mineru`, `markitdown`, `volc-asr`, `openai-asr`, `url`) |
 | `ENABLE_QUERY_REWRITE` | `true` | Rewrite queries with LLM before retrieval |
 | `ENABLE_RERANKER` | `false` | Enable cross-encoder reranking |
 | `RERANKER_BASE_URL` | — | Reranker API URL |
@@ -185,6 +185,8 @@ All settings are configured via environment variables (see [`.env.example`](.env
 | `VISION_MODEL` | `gpt-4o` | Vision model |
 | `VOLC_ASR_API_KEY` | — | Volcengine ASR API key (new console) for audio uploads; alternatively set `VOLC_ASR_APP_KEY` + `VOLC_ASR_ACCESS_KEY` (old console). Unset = audio uploads fail |
 | `VOLC_ASR_RESOURCE_ID` | `volc.bigasr.auc_turbo` | Volcengine ASR resource (flash recording recognition) |
+| `OPENAI_ASR_BASE_URL` | — | OpenAI-compatible `/audio/transcriptions` endpoint for audio (OpenAI, Groq, SiliconFlow, self-hosted speaches); second after Volcengine. Empty disables |
+| `OPENAI_ASR_API_KEY` / `OPENAI_ASR_MODEL` | — / `whisper-1` | Its API key and model. Set `OPENAI_ASR_TIMESTAMPS=false` for `gpt-4o-*-transcribe` (no segment timestamps) |
 | `PADDLE_API_URL` | — | PaddleOCR-VL gateway URL (e.g. `https://your-gateway/vl`); empty disables the paddle engine, chain falls through to mineru/pdfium |
 | `PADDLE_API_KEY` | — | Bearer token for the PaddleOCR-VL gateway |
 | `MINERU_API_URL` | — | MinerU remote API URL (PDF fallback B, kicks in when paddle is unavailable or returns empty) |
