@@ -169,3 +169,9 @@ def test_fallback_chain_office_falls_back_to_markitdown():
     # ``after=`` still rotates the chain correctly.
     assert registry.fallback_chain(filename="deck.pptx", after="pptx-native") == ["markitdown"]
     assert registry.fallback_chain(filename="deck.pptx", after="markitdown") == []
+
+
+def test_audio_extensions_route_to_volc_asr():
+    from parsers.registry import registry
+    for ext in (".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg", ".opus", ".amr", ".wma"):
+        assert registry.fallback_chain(filename=f"x{ext}") == ["volc-asr"]

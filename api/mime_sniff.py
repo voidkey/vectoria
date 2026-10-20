@@ -38,6 +38,15 @@ EXT_FAMILIES: dict[str, str] = {
     ".bmp":  "image",
     ".tiff": "image",
     ".tif":  "image",
+    ".mp3":  "audio",
+    ".wav":  "audio",
+    ".m4a":  "audio",
+    ".aac":  "audio",
+    ".flac": "audio",
+    ".ogg":  "audio",
+    ".opus": "audio",
+    ".amr":  "audio",
+    ".wma":  "audio",
     ".md":   "text",
     ".txt":  "text",
     ".csv":  "text",
@@ -63,6 +72,14 @@ _MIME_TO_FAMILY: list[tuple[str, str]] = [
     ("ms-powerpoint",                "office-slide"),
     ("presentationml",               "office-slide"),
     ("officedocument.presentationml","office-slide"),
+    # Audio. Containers sniff ambiguously: m4a's first match is
+    # video/mp4 (the ".m4a" candidate carries no MIME), ogg is
+    # application/ogg, amr has no MIME at all — hence the extension
+    # needles alongside "audio/".
+    ("audio/",                       "audio"),
+    ("application/ogg",              "audio"),
+    (".m4a",                         "audio"),
+    (".amr",                         "audio"),
     # Images
     ("image/",                       "image"),
     ("png",                          "image"),

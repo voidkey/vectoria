@@ -41,6 +41,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libpango-1.0-0 libcairo2 libasound2 libatspi2.0-0 \
         fonts-noto-cjk \
         tini \
+        ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 ENV PATH="/app/.venv/bin:$PATH" \

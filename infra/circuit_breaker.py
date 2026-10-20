@@ -275,6 +275,14 @@ def _http_server_error(exc: BaseException) -> bool:
     return True
 
 
+def _http_server_error_unless_client(exc: BaseException) -> bool:
+    """``_http_server_error``, except exceptions flagged ``client_error``:
+    for services that report request / content errors in a status on an
+    HTTP 200 (e.g. Volcengine ASR's 45xxxxxx codes), which would
+    otherwise be counted as outages by the catch-all branch."""
+    return not getattr(exc, "client_error", False) and _http_server_error(exc)
+
+
 _breakers: dict[str, CircuitBreaker] = {}
 
 
@@ -307,6 +315,11 @@ def get_breaker(name: str) -> CircuitBreaker:
             cfg.vision_breaker_threshold,
             cfg.vision_breaker_reset_timeout,
             _http_server_error,
+        ),
+        "volc_asr": (
+            cfg.volc_asr_breaker_threshold,
+            cfg.volc_asr_breaker_reset_timeout,
+            _http_server_error_unless_client,
         ),
         "embedding": (
             cfg.embedding_breaker_threshold,

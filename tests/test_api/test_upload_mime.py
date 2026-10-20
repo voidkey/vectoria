@@ -381,3 +381,26 @@ async def test_too_large_reject_emits_upload_rejected_log_and_counter(client, ca
     assert "filename=huge.bin" in msg
     assert "reason=too_large" in msg
     assert f"limit={limit}" in msg
+
+
+# Audio heads. m4a sniffs as video/mp4 first and ogg as application/ogg —
+# check_mime must still accept them under their audio extensions.
+_AUDIO_HEADS = {
+    "a.mp3":  b"ID3\x03\x00\x00\x00\x00\x00\x00" + b"\xff\xfb\x90\x00" + b"\x00" * 32,
+    "a.wav":  b"RIFF\x24\x00\x00\x00WAVEfmt \x10\x00\x00\x00" + b"\x00" * 32,
+    "a.flac": b"fLaC\x00\x00\x00\x22" + b"\x00" * 40,
+    "a.ogg":  b"OggS\x00\x02" + b"\x00" * 40,
+    "a.m4a":  b"\x00\x00\x00\x20ftypM4A \x00\x00\x02\x00M4A isommp42" + b"\x00" * 32,
+}
+
+
+@pytest.mark.parametrize("filename", sorted(_AUDIO_HEADS))
+def test_check_mime_accepts_audio(filename):
+    ok, detected = check_mime(filename, _AUDIO_HEADS[filename])
+    assert ok is True, detected
+
+
+def test_check_mime_rejects_pdf_claimed_as_audio():
+    ok, detected = check_mime("song.mp3", _PDF_HEAD)
+    assert ok is False
+    assert detected == "pdf"

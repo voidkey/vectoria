@@ -206,6 +206,22 @@ class Settings(BaseSettings):
     # ceiling, conservative tune accordingly.
     vision_daily_budget_usd: float = 0.0
 
+    # Volcengine ASR for audio uploads (``parsers/asr_parser.py``). Auth is
+    # either the new-console API key, or the old-console app key + access
+    # token; with neither set, audio uploads have no engine and fail.
+    volc_asr_url: str = (
+        "https://openspeech.bytedance.com/api/v3/auc/bigmodel/recognize/flash"
+    )
+    volc_asr_api_key: SecretStr = SecretStr("")
+    volc_asr_app_key: str = ""
+    volc_asr_access_key: SecretStr = SecretStr("")
+    volc_asr_resource_id: str = "volc.bigasr.auc_turbo"
+    # Covers the upload plus recognition of up to 2 h of audio.
+    volc_asr_timeout: float = 600.0
+    volc_asr_concurrency: int = 2
+    volc_asr_breaker_threshold: int = 5
+    volc_asr_breaker_reset_timeout: float = 300.0
+
     # Embedding reliability. Threshold is higher than mineru/vision because
     # the embedder already retries internally with backoff; the breaker is
     # the last resort when retries can't drain the outage.
