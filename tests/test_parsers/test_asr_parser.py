@@ -36,6 +36,7 @@ def _patch_settings(
     s.volc_asr_resource_id = "volc.bigasr.auc_turbo"
     s.volc_asr_timeout = 30.0
     s.volc_asr_concurrency = 2
+    s.max_audio_seconds = 7200
 
 
 def _response(status: str, body: dict | None = None) -> MagicMock:
@@ -70,6 +71,16 @@ _OK_BODY = {
 }
 
 
+@pytest.fixture
+def fake_transcode():
+    """Skip ffmpeg: the "transcoded" audio is the input bytes."""
+    with patch(
+        "parsers.asr_parser.transcode_to_mp3",
+        AsyncMock(side_effect=lambda content, timeout: content),
+    ) as mock:
+        yield mock
+
+
 def _wav_bytes() -> bytes:
     return subprocess.run(
         ["ffmpeg", "-loglevel", "error", "-f", "lavfi", "-i", "sine=f=440:d=1",
@@ -84,7 +95,7 @@ def _wav_bytes() -> bytes:
 
 
 @pytest.mark.asyncio
-async def test_mp3_passes_through_and_renders_timestamps():
+async def test_sends_transcoded_audio_and_renders_timestamps(fake_transcode):
     audio = b"ID3\x03\x00fake-mp3-bytes"
     with patch("parsers.asr_parser.httpx.AsyncClient") as MockClient, \
          patch("parsers.asr_parser.get_settings") as mock_settings:
@@ -106,7 +117,7 @@ async def test_mp3_passes_through_and_renders_timestamps():
 
 
 @pytest.mark.asyncio
-async def test_old_console_credentials_use_app_and_access_key_headers():
+async def test_old_console_credentials_use_app_and_access_key_headers(fake_transcode):
     with patch("parsers.asr_parser.httpx.AsyncClient") as MockClient, \
          patch("parsers.asr_parser.get_settings") as mock_settings:
         _patch_settings(mock_settings, api_key="", app_key="app", access_key="tok")
@@ -121,7 +132,7 @@ async def test_old_console_credentials_use_app_and_access_key_headers():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("status", ["20000003", "45000002"])
-async def test_silent_or_empty_audio_returns_empty_content(status):
+async def test_silent_or_empty_audio_returns_empty_content(status, fake_transcode):
     with patch("parsers.asr_parser.httpx.AsyncClient") as MockClient, \
          patch("parsers.asr_parser.get_settings") as mock_settings:
         _patch_settings(mock_settings)
@@ -137,7 +148,7 @@ async def test_silent_or_empty_audio_returns_empty_content(status):
 
 @_needs_ffmpeg
 @pytest.mark.asyncio
-async def test_non_native_format_is_transcoded_to_mp3():
+async def test_audio_is_transcoded_to_mp3():
     with patch("parsers.asr_parser.httpx.AsyncClient") as MockClient, \
          patch("parsers.asr_parser.get_settings") as mock_settings:
         _patch_settings(mock_settings)
@@ -167,32 +178,9 @@ async def test_transcodes_long_m4a_with_trailing_index(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_rejected_passthrough_is_retried_transcoded():
+async def test_rejected_format_is_permanent(fake_transcode):
     with patch("parsers.asr_parser.httpx.AsyncClient") as MockClient, \
-         patch("parsers.asr_parser.get_settings") as mock_settings, \
-         patch("parsers.asr_parser.transcode_to_mp3",
-               AsyncMock(return_value=b"mp3")) as transcode:
-        _patch_settings(mock_settings)
-        client = _mock_client(
-            MockClient,
-            _response("45000151"),
-            _response("20000000", _OK_BODY),
-        )
-        result = await VolcAsrParser().parse(b"adpcm-wav", filename="a.wav")
-
-    transcode.assert_awaited_once()
-    assert client.post.call_count == 2
-    second = client.post.call_args_list[1].kwargs["json"]["audio"]["data"]
-    assert base64.b64decode(second) == b"mp3"
-    assert "向量检索" in result.content
-
-
-@pytest.mark.asyncio
-async def test_rejected_after_transcode_is_permanent():
-    with patch("parsers.asr_parser.httpx.AsyncClient") as MockClient, \
-         patch("parsers.asr_parser.get_settings") as mock_settings, \
-         patch("parsers.asr_parser.transcode_to_mp3",
-               AsyncMock(return_value=b"mp3")):
+         patch("parsers.asr_parser.get_settings") as mock_settings:
         _patch_settings(mock_settings)
         _mock_client(MockClient, _response("45000151"))
         with pytest.raises(UnreadableAudioError):
@@ -214,7 +202,7 @@ async def test_undecodable_input_is_permanent():
 
 
 @pytest.mark.asyncio
-async def test_server_busy_raises_breaker_counted_error():
+async def test_server_busy_raises_breaker_counted_error(fake_transcode):
     with patch("parsers.asr_parser.httpx.AsyncClient") as MockClient, \
          patch("parsers.asr_parser.get_settings") as mock_settings:
         _patch_settings(mock_settings)
@@ -225,7 +213,7 @@ async def test_server_busy_raises_breaker_counted_error():
 
 
 @pytest.mark.asyncio
-async def test_request_error_is_not_counted_by_breaker():
+async def test_request_error_is_not_counted_by_breaker(fake_transcode):
     with patch("parsers.asr_parser.httpx.AsyncClient") as MockClient, \
          patch("parsers.asr_parser.get_settings") as mock_settings:
         _patch_settings(mock_settings)
@@ -268,3 +256,39 @@ def test_render_falls_back_to_flat_text():
 
 def test_render_empty_payload():
     assert _render_markdown("t", {}) == ""
+
+
+@pytest.mark.asyncio
+async def test_over_max_duration_is_permanent_and_skips_request(fake_transcode):
+    from parsers._audio import AudioTooLongError
+    # 32 kbps → 4000 B/s; 2 h + 10 min of "encoded" audio.
+    long_audio = b"\x00" * (4000 * 7800)
+    with patch("parsers.asr_parser.httpx.AsyncClient") as MockClient, \
+         patch("parsers.asr_parser.get_settings") as mock_settings:
+        _patch_settings(mock_settings)
+        client = _mock_client(MockClient)
+        with pytest.raises(AudioTooLongError):
+            await VolcAsrParser().parse(long_audio, filename="long.m4a")
+    client.post.assert_not_called()
+
+
+def test_check_duration_allows_cap_and_disabled():
+    from parsers._audio import check_duration
+    check_duration(4000 * 7200, 7200)       # exactly at the cap
+    check_duration(4000 * 100_000, 0)       # 0 = no cap
+
+
+@_needs_ffmpeg
+@pytest.mark.asyncio
+async def test_encoded_size_tracks_real_duration():
+    # The duration check assumes our encode is 32 kbps CBR.
+    from parsers._audio import transcode_to_mp3
+    out = await transcode_to_mp3(
+        subprocess.run(
+            ["ffmpeg", "-loglevel", "error", "-f", "lavfi", "-i",
+             "sine=f=440:d=120", "-f", "wav", "pipe:1"],
+            check=True, capture_output=True,
+        ).stdout,
+        timeout=60,
+    )
+    assert abs(len(out) / 4000 - 120) < 1.2

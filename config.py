@@ -206,6 +206,11 @@ class Settings(BaseSettings):
     # ceiling, conservative tune accordingly.
     vision_daily_budget_usd: float = 0.0
 
+    # Longest audio accepted by either ASR engine; longer uploads fail
+    # permanently with CONTENT_TOO_LARGE. 2 h matches the Volcengine flash
+    # endpoint's per-request ceiling. 0 = no cap.
+    max_audio_seconds: int = 7200
+
     # Volcengine ASR for audio uploads (``parsers/asr_parser.py``). Auth is
     # either the new-console API key, or the old-console app key + access
     # token; with neither set, audio uploads have no engine and fail.

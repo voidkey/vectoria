@@ -27,7 +27,7 @@ from openai import AsyncOpenAI
 
 from config import get_settings
 from infra.circuit_breaker import get_breaker
-from parsers._audio import render_transcript, transcode_segments
+from parsers._audio import check_duration, render_transcript, transcode_segments
 from parsers.base import BaseParser, ParseResult
 
 logger = logging.getLogger(__name__)
@@ -88,6 +88,7 @@ class OpenAIAsrParser(BaseParser):
         pieces = await transcode_segments(
             source, cfg.openai_asr_segment_seconds, cfg.openai_asr_timeout,
         )
+        check_duration(sum(len(a) for _, a in pieces), cfg.max_audio_seconds)
         client = AsyncOpenAI(
             base_url=cfg.openai_asr_base_url,
             api_key=cfg.openai_asr_api_key.get_secret_value() or "none",

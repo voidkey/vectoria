@@ -25,6 +25,7 @@ def _patch_settings(
     s.openai_asr_segment_seconds = 1200
     s.openai_asr_timeout = 30.0
     s.openai_asr_concurrency = 2
+    s.max_audio_seconds = 7200
 
 
 def _verbose(*segs: tuple[float, str]) -> SimpleNamespace:

@@ -3,16 +3,13 @@
 Sends the audio to Volcengine's big-model recording recognition
 "flash" endpoint (``recognize/flash``): one synchronous request with the
 audio inline as base64, no submit/query polling and no public URL
-needed. The service caps a single request at 2 h / 100 MB, which our
-``max_upload_bytes`` (50 MB → ~67 MB base64) stays under.
+needed. The service caps a single request at 2 h / 100 MB.
 
-The endpoint only decodes WAV / MP3 / OGG OPUS. MP3 and WAV pass
-through untouched; every other container (m4a, aac, flac, amr, wma,
-ogg-vorbis, …) is transcoded with ffmpeg to 16 kHz mono MP3 first —
-speech recognition gains nothing above 16 kHz and the smaller body
-shortens the upload. A pass-through file the service still rejects as
-an unknown format (e.g. a ``.wav`` holding ADPCM) is transcoded and
-retried once.
+The endpoint only decodes WAV / MP3 / OGG OPUS, so every upload is
+transcoded with ffmpeg to 16 kHz mono MP3 first, whatever its format:
+one path for all containers, ~14 MB per hour on the wire (vs ~67 MB
+base64 for a 50 MB WAV), and a duration we can check against
+``max_audio_seconds`` before spending a request.
 
 Output is markdown with one paragraph per utterance, each prefixed
 with its start timestamp, so retrieved chunks can be traced back to a
@@ -22,8 +19,8 @@ Status handling (``X-Api-Status-Code`` response header):
   * 20000000            → success
   * 20000003 / 45000002 → silent / empty audio: return empty content so
                           the worker marks the doc empty_content
-  * 45000151            → undecodable audio even after transcoding:
-                          PermanentParseError (FILE_CORRUPTED)
+  * 45000151            → undecodable audio: PermanentParseError
+                          (FILE_CORRUPTED)
   * other 45xxxxxx      → request error: not counted by the breaker
   * anything else       → service-side failure: counts toward the
                           ``volc_asr`` circuit breaker; the worker
@@ -43,6 +40,7 @@ from config import get_settings
 from infra.circuit_breaker import get_breaker
 from parsers._audio import (
     UnreadableAudioError,
+    check_duration,
     render_transcript,
     transcode_to_mp3,
 )
@@ -54,11 +52,6 @@ _STATUS_OK = "20000000"
 _STATUS_SILENT = "20000003"
 _STATUS_EMPTY_AUDIO = "45000002"
 _STATUS_BAD_FORMAT = "45000151"
-
-# Extensions the flash endpoint decodes as-is. Ogg is deliberately not
-# here: the endpoint only takes Opus inside Ogg, and telling Opus from
-# Vorbis needs a probe — transcoding is cheaper than guessing.
-_PASSTHROUGH_FORMATS = {".mp3", ".wav"}
 
 _SEMAPHORE: asyncio.Semaphore | None = None
 _SEM_SIZE: int = 0
@@ -191,33 +184,16 @@ class VolcAsrParser(BaseParser):
             )
         cfg = get_settings()
         title = Path(filename).stem if filename else "audio"
-        ext = Path(filename).suffix.lower()
 
-        passthrough = ext in _PASSTHROUGH_FORMATS
-        audio = (
-            source if passthrough
-            else await transcode_to_mp3(source, cfg.volc_asr_timeout)
-        )
-        # A CircuitOpenError is left to propagate: audio has no fallback
-        # engine, so returning empty here would mislabel an outage as
-        # empty_content instead of letting the queue retry.
+        audio = await transcode_to_mp3(source, cfg.volc_asr_timeout)
+        check_duration(len(audio), cfg.max_audio_seconds)
+        # A CircuitOpenError is left to propagate: returning empty here
+        # would mark the doc empty_content instead of letting the worker
+        # fall back to openai-asr or retry.
         try:
             payload = await self._recognize(audio)
-        except AsrBadFormatError:
-            if not passthrough:
-                raise UnreadableAudioError(
-                    "volc asr could not decode transcoded audio",
-                )
-            # Right extension, unsupported codec inside — normalize and
-            # give the service one more try.
-            logger.info(
-                "volc-asr: %s rejected as-is; retrying transcoded", filename,
-            )
-            audio = await transcode_to_mp3(source, cfg.volc_asr_timeout)
-            try:
-                payload = await self._recognize(audio)
-            except AsrBadFormatError as e:
-                raise UnreadableAudioError(str(e)) from e
+        except AsrBadFormatError as e:
+            raise UnreadableAudioError(str(e)) from e
 
         content = _render_markdown(title, payload)
         duration_ms = (payload.get("audio_info") or {}).get("duration")

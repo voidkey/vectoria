@@ -19,12 +19,32 @@ from pathlib import Path
 from api.errors import ErrorCode
 from parsers.base import PermanentParseError
 
-_ENCODE_ARGS = ["-vn", "-ac", "1", "-ar", "16000", "-b:a", "32k"]
+_BITRATE_BPS = 32_000
+_ENCODE_ARGS = [
+    "-vn", "-ac", "1", "-ar", "16000", "-b:a", str(_BITRATE_BPS),
+]
 
 
 class UnreadableAudioError(PermanentParseError):
     """Audio that neither the ASR service nor ffmpeg can decode."""
     error_code = ErrorCode.FILE_CORRUPTED
+
+
+class AudioTooLongError(PermanentParseError):
+    """Audio longer than ``max_audio_seconds``."""
+    error_code = ErrorCode.CONTENT_TOO_LARGE
+
+
+def check_duration(mp3_bytes: int, max_seconds: int) -> None:
+    """Reject audio over ``max_seconds`` (0 = no cap). Duration is read
+    off the size of our own constant-bitrate encode — exact to a few
+    frames, with no extra ffprobe pass."""
+    seconds = mp3_bytes * 8 / _BITRATE_BPS
+    # 1 % slack for container overhead (ID3 / Xing header).
+    if max_seconds and seconds > max_seconds * 1.01:
+        raise AudioTooLongError(
+            f"audio is ~{seconds / 60:.0f} min; max is {max_seconds / 60:.0f} min",
+        )
 
 
 async def _run_ffmpeg(args: list[str], timeout: float) -> bytes:

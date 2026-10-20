@@ -185,6 +185,7 @@ All settings are configured via environment variables (see [`.env.example`](.env
 | `VISION_MODEL` | `gpt-4o` | Vision model |
 | `VOLC_ASR_API_KEY` | — | Volcengine ASR API key (new console) for audio uploads; alternatively set `VOLC_ASR_APP_KEY` + `VOLC_ASR_ACCESS_KEY` (old console). Unset = audio uploads fail |
 | `VOLC_ASR_RESOURCE_ID` | `volc.bigasr.auc_turbo` | Volcengine ASR resource (flash recording recognition) |
+| `MAX_AUDIO_SECONDS` | `7200` | Longest audio accepted (either ASR engine); longer uploads fail with `CONTENT_TOO_LARGE`. `0` = no cap |
 | `OPENAI_ASR_BASE_URL` | — | OpenAI-compatible `/audio/transcriptions` endpoint for audio (OpenAI, Groq, SiliconFlow, self-hosted speaches); second after Volcengine. Empty disables |
 | `OPENAI_ASR_API_KEY` / `OPENAI_ASR_MODEL` | — / `whisper-1` | Its API key and model. Set `OPENAI_ASR_TIMESTAMPS=false` for `gpt-4o-*-transcribe` (no segment timestamps) |
 | `PADDLE_API_URL` | — | PaddleOCR-VL gateway URL (e.g. `https://your-gateway/vl`); empty disables the paddle engine, chain falls through to mineru/pdfium |
