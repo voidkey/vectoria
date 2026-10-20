@@ -117,6 +117,15 @@ class BaseParser(ABC):
     def is_available(cls) -> bool:
         return True
 
+    @classmethod
+    def is_configured(cls) -> bool:
+        """Static half of ``is_available``: False when the engine can never
+        run in this deployment (no endpoint / credentials), regardless of
+        transient state such as an open breaker. ``fallback_chain`` skips
+        such engines so a deliberately absent one can't mask the real
+        failure, or turn an empty result into a retry loop."""
+        return True
+
     @abstractmethod
     async def parse(self, source: bytes | str, filename: str = "", **kwargs) -> ParseResult:
         ...

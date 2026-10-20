@@ -64,9 +64,12 @@ class OpenAIAsrParser(BaseParser):
     ]
 
     @classmethod
+    def is_configured(cls) -> bool:
+        return bool(get_settings().openai_asr_base_url)
+
+    @classmethod
     def is_available(cls) -> bool:
-        cfg = get_settings()
-        if not cfg.openai_asr_base_url:
+        if not cls.is_configured():
             return False
         from infra.circuit_breaker import State
         return get_breaker("openai_asr").current_state() is not State.OPEN
@@ -78,11 +81,11 @@ class OpenAIAsrParser(BaseParser):
             raise ValueError(
                 f"openai-asr expects bytes, got {type(source).__name__}",
             )
-        cfg = get_settings()
-        if not cfg.openai_asr_base_url:
-            # Reached only as a fallback after volc-asr failed; raise so
-            # the queue retries rather than reporting empty content.
+        if not self.is_configured():
+            # Defensive: fallback_chain skips unconfigured engines, so
+            # this is reached only via an explicit engine selection.
             raise RuntimeError("openai-asr is not configured")
+        cfg = get_settings()
         title = Path(filename).stem if filename else "audio"
 
         pieces = await transcode_segments(

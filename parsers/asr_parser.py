@@ -66,8 +66,9 @@ def _get_semaphore(limit: int) -> asyncio.Semaphore:
 
 
 class AsrUpstreamError(RuntimeError):
-    """Service-side failure reported in the status header (55xxxxxx) on an
-    HTTP 200. Counted by the circuit breaker like an HTTP 5xx."""
+    """Service-side failure reported in the status header (55xxxxxx, or
+    any other non-success code outside 45xxxxxx) on an HTTP 200. Counted
+    by the circuit breaker like an HTTP 5xx."""
 
 
 class AsrRequestError(RuntimeError):
@@ -128,7 +129,7 @@ class VolcAsrParser(BaseParser):
     ]
 
     @classmethod
-    def is_available(cls) -> bool:
+    def is_configured(cls) -> bool:
         cfg = get_settings()
         if not cfg.volc_asr_url:
             return False
@@ -137,7 +138,11 @@ class VolcAsrParser(BaseParser):
         has_old = bool(
             cfg.volc_asr_app_key and cfg.volc_asr_access_key.get_secret_value(),
         )
-        if not (has_new or has_old):
+        return has_new or has_old
+
+    @classmethod
+    def is_available(cls) -> bool:
+        if not cls.is_configured():
             return False
         from infra.circuit_breaker import State
         return get_breaker("volc_asr").current_state() is not State.OPEN
@@ -182,6 +187,9 @@ class VolcAsrParser(BaseParser):
             raise ValueError(
                 f"volc-asr expects bytes, got {type(source).__name__}",
             )
+        if not self.is_configured():
+            # Selected only when no audio engine is configured at all.
+            raise RuntimeError("volc-asr is not configured")
         cfg = get_settings()
         title = Path(filename).stem if filename else "audio"
 

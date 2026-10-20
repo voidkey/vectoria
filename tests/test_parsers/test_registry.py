@@ -171,7 +171,32 @@ def test_fallback_chain_office_falls_back_to_markitdown():
     assert registry.fallback_chain(filename="deck.pptx", after="markitdown") == []
 
 
-def test_audio_extensions_route_to_volc_asr():
+_AUDIO_EXTS = (".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg", ".opus", ".amr", ".wma")
+
+
+def test_audio_extensions_route_to_asr_engines():
+    from unittest.mock import patch
+    from parsers.asr_parser import VolcAsrParser
+    from parsers.openai_asr_parser import OpenAIAsrParser
     from parsers.registry import registry
-    for ext in (".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg", ".opus", ".amr", ".wma"):
-        assert registry.fallback_chain(filename=f"x{ext}") == ["volc-asr", "openai-asr"]
+    with patch.object(VolcAsrParser, "is_configured", return_value=True), \
+         patch.object(OpenAIAsrParser, "is_configured", return_value=True):
+        for ext in _AUDIO_EXTS:
+            assert registry.fallback_chain(filename=f"x{ext}") == [
+                "volc-asr", "openai-asr",
+            ]
+
+
+def test_fallback_chain_skips_unconfigured_engines():
+    """Only volc configured: after it fails there is nothing to fall back
+    to — the unconfigured openai-asr must not run and mask the error."""
+    from unittest.mock import patch
+    from parsers.asr_parser import VolcAsrParser
+    from parsers.openai_asr_parser import OpenAIAsrParser
+    from parsers.registry import registry
+    with patch.object(VolcAsrParser, "is_configured", return_value=True), \
+         patch.object(OpenAIAsrParser, "is_configured", return_value=False):
+        assert registry.fallback_chain(filename="x.mp3", after="volc-asr") == []
+    with patch.object(VolcAsrParser, "is_configured", return_value=False), \
+         patch.object(OpenAIAsrParser, "is_configured", return_value=True):
+        assert registry.fallback_chain(filename="x.mp3") == ["openai-asr"]

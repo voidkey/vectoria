@@ -122,9 +122,10 @@ class ParserRegistry:
         name — used by the worker handler to ask "what should I try
         next after engine X failed at the dependency level?"
 
-        Each returned engine is registered (skipped silently if not).
-        Availability is *not* filtered here — the caller may want to
-        attempt a circuit-open engine anyway, or may have a stale view.
+        Each returned engine is registered and configured (skipped
+        silently if not). Availability is *not* filtered here — the
+        caller may want to attempt a circuit-open engine anyway, or may
+        have a stale view.
         """
         if url:
             chain = list(_EXT_PREFERENCE.get("url", ["url"]))
@@ -138,7 +139,7 @@ class ParserRegistry:
             except ValueError:
                 return []
             chain = chain[idx + 1:]
-        return chain
+        return [e for e in chain if self._engines[e].is_configured()]
 
     def supported_types(self) -> list[str]:
         """Return deduplicated list of supported file extensions and 'url'."""
