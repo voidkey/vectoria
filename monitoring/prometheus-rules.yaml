@@ -61,7 +61,9 @@ groups:
             仪表盘：http://grafana.internal:3000/d/vectoria-core
 
       - alert: VectoriaWorkerAbsent
-        expr: up{job="vectoria-worker"} == 0
+        # worker 走 DNS 发现：容器全没了时 target 列表为空、up 序列消失，
+        # `up == 0` 不会触发，所以补一个 absent() 分支兜底。
+        expr: up{job="vectoria-worker"} == 0 or absent(up{job="vectoria-worker"})
         for: 2m
         labels:
           severity: critical
@@ -72,7 +74,8 @@ groups:
           description: |
             vectoria-worker 的 /metrics 连续 2 分钟无响应。
             警告：此时队列会无声堆积，RSS/OOM 等兜底告警全部失效。
-            排查：docker logs vectoria-worker-1 | tail -200
+            实例：{{ $labels.instance }}（为空表示一个 worker 都没发现）
+            排查：docker ps | grep vectoria-worker；docker logs <对应容器> | tail -200
             看是否 OOM、段错误、Python 异常栈。
             仪表盘：http://grafana.internal:3000/d/vectoria-core
 
@@ -280,7 +283,9 @@ groups:
     rules:
 
       - alert: VectoriaQueueBacklogGrowing
-        expr: vectoria_queue_depth > 50
+        # 每个 worker 副本都从 DB 采样同一份队列数据，max 去掉 instance 维度，
+        # 多副本时不会一份积压报 N 条。
+        expr: max by (task_type) (vectoria_queue_depth) > 50
         for: 5m
         labels:
           severity: warning
@@ -299,7 +304,7 @@ groups:
             仪表盘：http://grafana.internal:3000/d/vectoria-core
 
       - alert: VectoriaQueueTaskAging
-        expr: vectoria_queue_oldest_age_seconds > 600
+        expr: max by (task_type) (vectoria_queue_oldest_age_seconds) > 600
         for: 2m
         labels:
           severity: warning
@@ -323,7 +328,12 @@ groups:
         # "同一链接刷屏 + 一小时发好几遍" 的真因（不是 repeat_interval）。
         # count by 把同源折叠成单一稳定 series：组成员不再抖动，96h child
         # route 的 repeat_interval 才真正生效 → 每个来源只推一次。
-        expr: count by (source, task_type) (vectoria_queue_dead_tasks) > 0
+        # 内层 max 先按 task_id 折叠各 worker 副本的重复 series，否则 N 个副本
+        # 会把死信数算成 N 倍。
+        expr: |
+          count by (source, task_type) (
+            max by (task_id, source, task_type) (vectoria_queue_dead_tasks)
+          ) > 0
         for: 1m
         labels:
           severity: warning

@@ -41,12 +41,20 @@ scrape_configs:
         labels:
           component: api
 
+  # The worker may run as several replicas (`--scale worker=N`). Docker's
+  # embedded DNS returns one A record per replica for the service name, so
+  # DNS discovery scrapes each of them; a static target would hit whichever
+  # replica the resolver picked.
   - job_name: vectoria-worker
     metrics_path: /metrics
-    static_configs:
-      - targets: ['worker:9001']
-        labels:
-          component: worker
+    dns_sd_configs:
+      - names: ['worker']
+        type: A
+        port: 9001
+        refresh_interval: 30s
+    relabel_configs:
+      - target_label: component
+        replacement: worker
 
   - job_name: prometheus
     static_configs:

@@ -49,7 +49,7 @@
       "title": "Queue depth (all types)",
       "gridPos": {"x": 12, "y": 1, "w": 6, "h": 4},
       "datasource": {"type": "prometheus", "uid": "Prometheus"},
-      "targets": [{"refId": "A", "expr": "sum(vectoria_queue_depth)"}],
+      "targets": [{"refId": "A", "expr": "sum(max by (task_type) (vectoria_queue_depth))"}],
       "fieldConfig": {
         "defaults": {"unit": "short", "thresholds": {"mode": "absolute", "steps": [
           {"color": "green", "value": null}, {"color": "orange", "value": 50}, {"color": "red", "value": 200}
@@ -162,7 +162,7 @@
       "title": "Queue depth by task_type",
       "gridPos": {"x": 0, "y": 36, "w": 12, "h": 8},
       "datasource": {"type": "prometheus", "uid": "Prometheus"},
-      "targets": [{"refId": "A", "expr": "vectoria_queue_depth", "legendFormat": "{{task_type}}"}],
+      "targets": [{"refId": "A", "expr": "max by (task_type) (vectoria_queue_depth)", "legendFormat": "{{task_type}}"}],
       "fieldConfig": {"defaults": {"unit": "short"}}
     },
 
@@ -171,7 +171,7 @@
       "title": "Oldest pending task age (s)",
       "gridPos": {"x": 12, "y": 36, "w": 8, "h": 8},
       "datasource": {"type": "prometheus", "uid": "Prometheus"},
-      "targets": [{"refId": "A", "expr": "vectoria_queue_oldest_age_seconds", "legendFormat": "{{task_type}}"}],
+      "targets": [{"refId": "A", "expr": "max by (task_type) (vectoria_queue_oldest_age_seconds)", "legendFormat": "{{task_type}}"}],
       "fieldConfig": {"defaults": {"unit": "s"}}
     },
 
@@ -180,7 +180,7 @@
       "title": "Dead tasks (DLQ)",
       "gridPos": {"x": 20, "y": 36, "w": 4, "h": 8},
       "datasource": {"type": "prometheus", "uid": "Prometheus"},
-      "targets": [{"refId": "A", "expr": "sum(vectoria_queue_dead_tasks)"}],
+      "targets": [{"refId": "A", "expr": "count(max by (task_id) (vectoria_queue_dead_tasks))"}],
       "fieldConfig": {"defaults": {"thresholds": {"mode": "absolute", "steps": [
         {"color": "green", "value": null}, {"color": "red", "value": 1}
       ]}}}
