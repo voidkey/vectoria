@@ -72,6 +72,12 @@ services:
     image: ${VECTORIA_IMAGE:-voidkey/vectoria:latest}
     env_file: ${ENV_FILE:-.env.prod}
     command: ["python", "-m", "worker"]
+    # Two replicas so a burst of uploads doesn't queue behind one serial
+    # worker. Dequeue uses FOR UPDATE SKIP LOCKED, so replicas never claim the
+    # same task. Declared here (not `--scale`) because deploy.sh's `up` would
+    # otherwise scale back to 1. Override with WORKER_REPLICAS on smaller hosts.
+    deploy:
+      replicas: ${WORKER_REPLICAS:-2}
     expose: []
     healthcheck:
       test: ["CMD-SHELL", "[ -f /tmp/worker-heartbeat ] && [ $$(( $$(date +%s) - $$(cat /tmp/worker-heartbeat) )) -lt 120 ]"]
